@@ -401,16 +401,53 @@ function lit_results(output)
     return results
 end
 
-# the ledger of a test: the number of invocations of each pass
+# The ledger of a test: per process, the pipeline jlopt ran (if it was jlopt) and the
+# number of invocations of each pass.
+mutable struct LedgerProcess
+    pipeline::Union{Nothing,String}
+    counts::Dict{String,Int}
+end
+
 function read_ledger(path)
-    counts = Dict{String,Int}()
-    isfile(path) || return counts
+    processes = Dict{String,LedgerProcess}()
+    isfile(path) || return processes
     for line in eachline(path)
         fields = split(line, '\t')
-        length(fields) >= 3 && fields[2] == "pass" || continue
-        counts[fields[3]] = get(counts, fields[3], 0) + 1
+        length(fields) >= 3 || continue
+        process = get!(() -> LedgerProcess(nothing, Dict{String,Int}()), processes, fields[1])
+        if fields[2] == "jlopt"
+            process.pipeline = fields[3]
+        elseif fields[2] == "pass"
+            process.counts[fields[3]] = get(process.counts, fields[3], 0) + 1
+        end
     end
-    return counts
+    return collect(values(processes))
+end
+
+# Check that every `opt` invocation of the fixture's RUN lines ran the ports in its
+# pipeline: each needs a jlopt process of its own that ran that pipeline and invoked
+# those ports.
+function check_ledger(f, processes)
+    failures = String[]
+    used = falses(length(processes))
+    empty = get(f.entry, "ledger_empty", String[])
+    for (run, status, _, pipelines) in f.runs
+        status == :run || continue
+        for pipeline in pipelines
+            expected = setdiff(ported_names(pipeline), empty)
+            isempty(expected) && continue
+            i = findfirst(eachindex(processes)) do i
+                !used[i] && processes[i].pipeline == pipeline &&
+                    all(name -> get(processes[i].counts, name, 0) > 0, expected)
+            end
+            if i === nothing
+                push!(failures, "$(f.name): the ledger shows no run of $(join(expected, ", ")) for RUN line $(run.index) (`$pipeline`)")
+            else
+                used[i] = true
+            end
+        end
+    end
+    return failures
 end
 
 function check_pin(manifest, src::String, minor::String)
@@ -424,6 +461,10 @@ function check_pin(manifest, src::String, minor::String)
     end
     head == pin["commit"] ||
         throw(HarnessError("$src is at $head, but Julia $minor's fixtures are pinned to $(pin["commit"]) ($(pin["tag"]))"))
+    # the fixtures must be those of the commit
+    changes = readchomp(`git -C $src status --porcelain --untracked-files=all -- test/llvmpasses test/testhelpers`)
+    isempty(changes) ||
+        throw(HarnessError("the fixtures in $src differ from commit $head:\n$changes"))
     expected = VersionNumber(pin["julia"])
     if VERSION != expected
         if isempty(VERSION.prerelease)
@@ -491,7 +532,8 @@ function main(args)
     minor = "$(VERSION.major).$(VERSION.minor)"
     pin = check_pin(manifest, src, minor)
 
-    names = sort(readdir(joinpath(src, "test", "llvmpasses")))
+    # the fixtures of the pinned commit (which check_pin verified are checked out)
+    names = sort(map(basename, readlines(`git -C $src ls-tree --name-only $(pin["commit"]) test/llvmpasses/`)))
     fixtures = [plan_fixture(manifest, src, name, minor; cpp, manifest_dir=dirname(manifest_path))
                 for name in names]
     if do_report
@@ -517,7 +559,10 @@ function main(args)
         suite = joinpath(dir, "llvmpasses")
         mkpath(suite)
         cp(joinpath(src, "test", "testhelpers"), joinpath(dir, "testhelpers"); force=true)
-        ledger_dir = mkpath(joinpath(dir, "ledger"))
+        # ledgers are appended to: start from scratch, also in a reused work directory
+        ledger_dir = joinpath(dir, "ledger")
+        rm(ledger_dir; recursive=true, force=true)
+        mkpath(ledger_dir)
         write(joinpath(suite, "lit.cfg.py"), lit_config("Julia-llvmpasses-$minor"; ledger_dir, cpp))
         for (name, text) in files
             write(joinpath(suite, name), text)
@@ -539,16 +584,13 @@ function main(args)
             push!(failures, "$(f.name): $result")
             continue
         end
-        counts = read_ledger(joinpath(ledger_dir, f.name * ".ledger"))
+        processes = read_ledger(joinpath(ledger_dir, f.name * ".ledger"))
         if cpp
-            isempty(counts) ||
-                push!(failures, "$(f.name): ports ran although Julia's passes were requested: $(join(keys(counts), ", "))")
+            ran = unique(name for p in processes for name in keys(p.counts))
+            isempty(ran) ||
+                push!(failures, "$(f.name): ports ran although Julia's passes were requested: $(join(ran, ", "))")
         else
-            expected = unique(n for r in f.runs if r[2] == :run for p in r[4] for n in ported_names(p))
-            for name in setdiff(expected, get(f.entry, "ledger_empty", String[]))
-                get(counts, name, 0) > 0 ||
-                    push!(failures, "$(f.name): the ledger shows no run of $name")
-            end
+            append!(failures, check_ledger(f, processes))
         end
     end
     ok && !isempty(failures) && println(output)

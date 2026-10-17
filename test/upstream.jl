@@ -117,8 +117,9 @@ mktempdir() do dir
         ; CHECK: target datalayout = "e-i64:64"
         ; TYPED: this never matches
         """)
-    # passes, but runs Julia's pass instead of the port
+    # passes, but its second RUN line runs Julia's pass instead of the port
     write(joinpath(passes, "cpp.ll"), """
+        ; RUN: opt -passes=RemoveNI -S %s | FileCheck %s
         ; RUN: opt -map-julia-passes=0 -passes=RemoveNI -S %s | FileCheck %s
         target datalayout = "e-i64:64-ni:10:11:12:13"
         ; CHECK: target datalayout = "e-i64:64"
@@ -235,7 +236,16 @@ mktempdir() do dir
     # proof that the port ran
     code, out = harness(write_manifest(good * cpp * override))
     @test code == 1
-    @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni", out)
+    @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
+    @test !occursin("RUN line 1 ", out)
+
+    # ledgers of a previous run in the same work directory don't count
+    workdir = joinpath(dir, "work")
+    code, _ = harness(write_manifest(good * override * excluded_cpp), "--workdir", workdir)
+    @test code == 0
+    code, out = harness(write_manifest(good * cpp * override), "--workdir", workdir)
+    @test code == 1
+    @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
 
     # with Julia's passes, the ports must not run
     code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "cpp|good")
@@ -262,8 +272,14 @@ mktempdir() do dir
     no_port = replace(good, "[\"RemoveNI\"]" => "[\"RemoveNI\", \"AllocOpt\"]")
     @test_throws "the ports of AllocOpt do not exist" harness(write_manifest(no_port * override * excluded_cpp))
 
-    # the checkout must be at the pinned commit
+    # the checkout must be at the pinned commit, with its fixtures unchanged
     @test_throws "pinned to" harness(write_manifest(good * override * excluded_cpp; commit="0"^40))
+    mv(joinpath(passes, "good.ll"), joinpath(dir, "good.ll"))
+    @test_throws "differ from commit" harness(write_manifest(good * override * excluded_cpp))
+    mv(joinpath(dir, "good.ll"), joinpath(passes, "good.ll"))
+    write(joinpath(passes, "new.ll"), "")
+    @test_throws "differ from commit" harness(write_manifest(good * override * excluded_cpp))
+    rm(joinpath(passes, "new.ll"))
 
     # the report covers every fixture
     code, out = harness(write_manifest(good * override * excluded_cpp), "--report")
