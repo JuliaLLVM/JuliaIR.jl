@@ -26,6 +26,7 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
 
     # round trip
     for str in ["julia=1.12.0", "julia=1.14.0-DEV.3782;fp16=demote",
+                "julia=1.11.9;fp16=keep;bf16=demote",
                 "julia=1.10.12;gc-barrier=snapshot-field-precise"]
         @test options_string(parse_options(str)) == str
         @test parse_options(options_string(parse_options(str))) == parse_options(str)
@@ -45,6 +46,9 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test_throws "not supported" parse_options("julia=1.9")
     @test_throws "invalid Julia version" parse_options("julia=latest")
     @test_throws "invalid fp16 policy" parse_options("fp16=maybe")
+    @test_throws "invalid bf16 policy" parse_options("bf16=maybe")
+    @test_throws "requires a value" parse_options("bf16")
+    @test parse_options(""; bf16=:keep).dialect == Dialect(VERSION; bf16=:keep)
 end
 
 # a pass that records what it was called with, without being registered globally

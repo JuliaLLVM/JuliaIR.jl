@@ -87,8 +87,7 @@ missing = ["ExpandAtomicModify"]
 [fixtures."float16.ll"]
 kind = "port"
 ports = ["DemoteFloat16"]
-status = "skip"
-missing = ["DemoteFloat16"]
+status = "run"
 
 [fixtures."gc-invariant-verifier.ll"]
 kind = "port"

@@ -13,6 +13,7 @@ library supported by LLVM.jl. Only IR with opaque pointers is supported.
 | `jl-remove-ni` | `RemoveNI` | yes |
 | `jl-alloc-opt` | `AllocOpt` | no |
 | `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | no |
+| `jl-demote-float16` | `DemoteFloat16` | yes |
 
 Differences with Julia's C++ passes:
 
@@ -27,3 +28,9 @@ Differences with Julia's C++ passes:
   `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
   value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass
   turns it into `llvm.memset`).
+- DemoteFloat16 never uses the host's CPU features (on Julia 1.10 and 1.11, the C++ pass
+  falls back to them for functions without `target-features`); the `fp16` and `bf16`
+  options override the Julia version's rule. It leaves alone instructions that have no
+  operand to demote (the C++ pass recreates every instruction with a 16-bit result,
+  dropping its name), names the replacement like the original, and runs on `optnone`
+  functions (it changes their semantics, so it is a required pass).

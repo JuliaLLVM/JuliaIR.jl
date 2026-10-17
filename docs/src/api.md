@@ -10,6 +10,7 @@ JuliaIR.passes
 JuliaIR.RemoveNIPass
 JuliaIR.AllocOptPass
 JuliaIR.PropagateAddrspacesPass
+JuliaIR.DemoteFloat16Pass
 ```
 
 ## Dialects and options

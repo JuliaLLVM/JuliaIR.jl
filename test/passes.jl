@@ -37,6 +37,21 @@ end
     end
 end
 
+@testset "DemoteFloat16" begin
+    @test JuliaIR.DemoteFloat16Pass().required
+    @test_throws "invalid bf16 policy" JuliaIR.DemoteFloat16Pass(; bf16=:never)
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            define half @f(half %a) {
+              %r = fadd half %a, %a
+              ret half %r
+            }""") begin
+        run!(JuliaIR.DemoteFloat16Pass(; julia=v"1.12", fp16=:keep), mod)
+        @test occursin("%r = fadd half", string(mod))
+        run!(JuliaIR.DemoteFloat16Pass(; julia=v"1.12", fp16=:demote), mod)
+        @test occursin("%r = fptrunc float", string(mod))
+    end
+end
+
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
 

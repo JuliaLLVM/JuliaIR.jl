@@ -13,7 +13,7 @@ that does not contain Julia's own passes.
 ## Status
 
 Work in progress. Ported so far: RemoveNI (`jl-remove-ni`), AllocOpt (`jl-alloc-opt`),
-PropagateJuliaAddrspaces (`jl-propagate-addrspaces`).
+PropagateJuliaAddrspaces (`jl-propagate-addrspaces`), DemoteFloat16 (`jl-demote-float16`).
 
 ## Supported dialects and libraries
 

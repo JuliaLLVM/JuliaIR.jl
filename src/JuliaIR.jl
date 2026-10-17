@@ -13,6 +13,7 @@ include("allocations.jl")
 include("passes/remove_ni.jl")
 include("passes/alloc_opt.jl")
 include("passes/propagate_addrspaces.jl")
+include("passes/demote_float16.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
