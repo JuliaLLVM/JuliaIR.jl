@@ -153,22 +153,28 @@ ledger_record(name::String, dialect::Dialect) =
 ## pass definitions
 
 # A pass of this package. `impl(ir, am, opts::PassOptions)` runs it on a module (module
-# pass) or function (function pass) and returns the preserved analyses.
+# pass) or function (function pass) and returns the preserved analyses. `cpp_name` is
+# the name of Julia's C++ pass it ports, which `jlopt` maps to this pass.
 struct PassDefinition
     name::String
     kind::Symbol
     required::Bool
     impl::Any
     extra::NamedTuple
+    cpp_name::String
 end
+
+PassDefinition(name, kind, required, impl, extra=(;)) =
+    PassDefinition(name, kind, required, impl, extra, "")
 
 # all passes, in the order they were defined
 const PASSES = PassDefinition[]
 
-function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;))
+function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
+                     cpp_name::String)
     startswith(name, "jl-") || error("pass names must start with jl-")
     kind in (:module, :function) || error("invalid pass kind $kind")
-    def = PassDefinition(name, kind, required, impl, extra)
+    def = PassDefinition(name, kind, required, impl, extra, cpp_name)
     filter!(p -> p.name != name, PASSES)
     push!(PASSES, def)
     return def

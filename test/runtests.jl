@@ -5,6 +5,7 @@ using JuliaIR
 
 include("dialect.jl")
 include("registration.jl")
+include("passes.jl")
 
 @testset "Aqua" begin
     using Aqua
