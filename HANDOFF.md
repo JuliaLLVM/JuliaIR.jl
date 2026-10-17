@@ -13,7 +13,7 @@ read it first, including its Log). This file says where things are and how to co
 | S3 upstream harness, manifest (mode A) | done | b97b57a, e39a309, 3614dd5, 33ad510 |
 | S4 AllocOpt | port done; open: S12, S13 | f728275, 5df7c8c, PR #2 |
 | E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
-| S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | ports done; open: CI, S12 | 48e29df, 6f09543, 1d0b5c9 (`tb/s5-small-passes`) |
+| S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, CI green); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -25,9 +25,9 @@ the plan's Log entry for S4 and in `docs/src/index.md`.
 On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. `main` (7c99736) is green on every OS
 and version. Open, stacked (gh stack #3): PR #1 `tb/llvm-dev-ci` (CI tests against LLVM.jl
 `main`, see `.github/actions/llvm-dev`), PR #2 `tb/promote-mem-to-reg` on top (the E1 use
-in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack. S5 is
+in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack. S5 is PR #4
 `tb/s5-small-passes` on top of PR #2 (it needs nothing unreleased; stacked to keep the
-hand-off linear).
+hand-off linear), green on every CI job.
 
 S5 details: one file per pass in `src/passes/`, shared pointer and metadata helpers in
 `src/irutils.jl`. Every upstream fixture of the three passes passes in mode A at every
@@ -100,7 +100,7 @@ keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S5: watch the PR's CI (stacked on PR #2); then S6 (LateLowerGC cleanup). S6 needs a
+2. S6 (LateLowerGC cleanup). S6 needs a
    TBAA helper (`createMutableTBAAAccessTag`) that LLVM.jl doesn't have; first decide
    whether it can be a pure-Julia metadata rewrite.
 3. A differential check like the one used for S4 and S5 (C++ pass vs port, in-process, on
