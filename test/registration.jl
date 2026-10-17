@@ -12,6 +12,7 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test parse_options("").dialect == Dialect(VERSION)
     @test parse_options(""; julia=v"1.11").dialect == Dialect(v"1.11")
     @test parse_options("julia=1.13"; julia=v"1.11").dialect == Dialect(v"1.13")
+    @test parse_options("julia=1.15").dialect == Dialect(v"1.14.0-DEV")
     @test parse_options("gc-barrier=field-precise").dialect.gc_barrier === :field_precise
 
     # pass-specific options
@@ -42,7 +43,6 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test_throws "more than once" parse_options("foo-bar;no-foo_bar"; extra=(; foo_bar=false))
     @test_throws "requires a version" parse_options("julia")
     @test_throws "not supported" parse_options("julia=1.9")
-    @test_throws "newer than" parse_options("julia=1.15")
     @test_throws "invalid Julia version" parse_options("julia=latest")
     @test_throws "invalid fp16 policy" parse_options("fp16=maybe")
 end

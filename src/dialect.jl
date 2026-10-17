@@ -21,7 +21,9 @@ The IR dialect emitted by Julia version `julia`, which every pass of this packag
 as its `julia` option. Every Julia version from 1.10 up to the development version this
 package knows about is supported; a prerelease like `v"1.13.0-DEV.123"` has the dialect
 of the release it precedes, and the development version has the dialect of the Julia
-master commit this package is tested against.
+master commit this package is tested against. Newer versions get the development
+version's dialect: a new minor version starts out emitting the same IR as its
+predecessor, and only diverges as changes land on master.
 
 The dialect only describes Julia's IR. What depends on the version of LLVM (e.g., the
 signature of the lifetime intrinsics) is determined by the library the passes run on,
@@ -167,14 +169,9 @@ end
 # the known minor version whose dialect a Julia version has
 function dialect_minor(julia::VersionNumber)
     minor = VersionNumber(julia.major, julia.minor)
-    if !(minor in KNOWN_MINORS)
-        if minor < first(KNOWN_MINORS)
-            throw(ArgumentError("Julia $julia is not supported; the oldest supported dialect is Julia $(first(KNOWN_MINORS))"))
-        else
-            throw(ArgumentError("Julia $julia is newer than the newest dialect this version of JuliaIR knows ($DEVELOPMENT_MINOR-DEV)"))
-        end
-    end
-    return minor
+    minor < first(KNOWN_MINORS) &&
+        throw(ArgumentError("Julia $julia is not supported; the oldest supported dialect is Julia $(first(KNOWN_MINORS))"))
+    return min(minor, DEVELOPMENT_MINOR)
 end
 
 # dialects are compared by what they describe, not by the version they were requested with

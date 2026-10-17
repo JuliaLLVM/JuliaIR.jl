@@ -22,7 +22,7 @@ harness will report those overrides as stale. The design choices (which historic
 behaviours are kept per Julia version, which fixes are applied to every version) are in
 the plan's Log entry for S4 and in `docs/src/index.md`.
 
-Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pushes.
+Pushed to https://github.com/JuliaLLVM/JuliaIR.jl (`main`).
 
 ## Layout
 
@@ -111,15 +111,12 @@ Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pu
   ledger) doesn't see them.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
 
-## Open questions for Tim
+## Decisions (Tim, 2026-10-17)
 
-1. Package name and GitHub repo (JuliaIR.jl under JuliaLLVM assumed).
-2. Versions newer than the development minor (1.14) are rejected by `Dialect`; a new
-   Julia minor then needs a JuliaIR release. Alternative: map unknown newer versions to the
-   development dialect with a warning.
-3. The nightly CI `upstream` job warns on drift instead of failing (setup-julia can't
-   install a specific nightly). OK?
-4. The CI workflows have not run on GitHub; Windows and macOS were never run locally.
+1. Name and repo: `JuliaLLVM/JuliaIR.jl`.
+2. Versions newer than the development minor get its dialect (no error, no warning).
+3. Nightly pin check: explained, decision pending.
+4. CI covers Windows and macOS; no local runs needed before pushing.
 
 ## Peer conversations (pegasus)
 
