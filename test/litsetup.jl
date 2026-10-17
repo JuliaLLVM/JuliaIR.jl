@@ -65,8 +65,11 @@ Run lit on the given test directories or files.
 function run_lit(paths::String...; python::String, params::Dict, args::Vector{String}=String[])
     litpy = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools", "lit", "lit.py")
     param_args = ["--param=$k=$v" for (k, v) in params]
+    # -E -s: ignore PYTHON* variables and user site-packages, but not -I, which would drop
+    # lit.py's directory from sys.path: the JLL's lit package is found through it, and
+    # without it Python picks up a system-wide lit or none.
     # -B: don't write bytecode of the lit configuration's modules into the source tree
-    cmd = `$python -I -B $litpy -v -j $(lit_jobs()) $param_args $args $paths`
+    cmd = `$python -E -s -B $litpy -v -j $(lit_jobs()) $param_args $args $paths`
     output = IOBuffer()
     proc = run(pipeline(ignorestatus(cmd); stdout=output, stderr=output))
     return success(proc), String(take!(output))

@@ -83,8 +83,11 @@ Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pu
 - `JuliaIR.register!` is not `LLVM.register!` (different arity; don't extend LLVM's).
 - `ignorestatus(pipeline(...))` fails before Julia 1.13: use `pipeline(ignorestatus(cmd); ...)`.
 - lit test formats must live in an importable module (`juliair_lit.py`): classes defined
-  in a lit config can't be pickled to lit's workers. Run lit with `python -I -B`, or
-  Python 3.14's forkserver workers write `__pycache__` into the source tree.
+  in a lit config can't be pickled to lit's workers. Run lit with `python -B`, or
+  Python 3.14's forkserver workers write `__pycache__` into the source tree. Not with
+  `-I`: it drops `lit.py`'s directory from `sys.path`, so the JLL's lit package isn't
+  found. That went unnoticed on pegasus, where Arch's system-wide lit was used instead;
+  test with a Python without lit (`uv python find 3.12`) to see what CI sees.
 - LLVM_utils_unified_jll has `lit.py` but not `update_test_checks.py`.
 - jlopt must create a TargetMachine for modules with a triple (as opt does): x86 fixtures'
   outputs depend on TTI.
