@@ -73,16 +73,6 @@ kind = "port"
 ports = ["AllocOpt"]
 status = "run"
 
-[fixtures."alloc-opt-pass.ll".pins."1.13"]
-status = "override"
-patch = "derived/1.13/alloc-opt-pass.ll.patch"
-reason = "the port does not promote the reference slots of split allocations to registers yet (PromoteMemToReg, plan item E1); SROA does in Julia's pipelines, so `objref_no_multiloc` returns a load of the slot instead of %val"
-
-[fixtures."alloc-opt-pass.ll".pins."1.14"]
-status = "override"
-patch = "derived/1.14/alloc-opt-pass.ll.patch"
-reason = "the port does not promote the reference slots of split allocations to registers yet (PromoteMemToReg, plan item E1); SROA does in Julia's pipelines, so `objref_no_multiloc` returns a load of the slot instead of %val"
-
 [fixtures."alloc-opt-unsized.ll"]
 kind = "port"
 ports = ["AllocOpt"]

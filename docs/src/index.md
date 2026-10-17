@@ -15,8 +15,6 @@ library supported by LLVM.jl. Only IR with opaque pointers is supported.
 
 Differences with Julia's C++ passes:
 
-- AllocOpt does not promote the reference slots of allocations it splits to registers
-  (C++'s `PromoteMemToReg`); SROA, which follows AllocOpt in Julia's pipelines, does.
 - Fixes from later Julia versions are applied to the IR of every version: for AllocOpt,
   the handling of write barriers that have the allocation as one of several children
   (Julia master), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots

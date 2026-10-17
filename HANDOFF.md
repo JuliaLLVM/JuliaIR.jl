@@ -15,10 +15,9 @@ read it first, including its Log). This file says where things are and how to co
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
-pin. Not done: `PromoteMemToReg` on the reference slots of split allocations (LLVM.jl has
-no wrapper; plan item E1). Until then `test/upstream/derived/{1.13,1.14}/alloc-opt-pass.ll.patch`
-weakens the one CHECK that depends on it; once E1 lands, call it in `finish_split!` and the
-harness will report those overrides as stale. The design choices (which historical
+pin. `finish_split!` promotes the reference slots of split allocations with LLVM.jl's
+`promote_mem_to_reg!` (plan item E1, LLVM.jl #669, not released yet; see next steps), so
+`alloc-opt-pass.ll` runs without overrides. The design choices (which historical
 behaviours are kept per Julia version, which fixes are applied to every version) are in
 the plan's Log entry for S4 and in `docs/src/index.md`.
 
@@ -67,10 +66,18 @@ version as of a8bf3f2.
 
 ## Next steps
 
-1. E1 in LLVM.jl (worktree `~/Julia/pkg/LLVM-alloc-opt-api`, branch `tb/alloc-opt-api`,
-   `PR.md`, never push): `PromoteMemToReg(allocas, domtree)`; the other E1 items are
-   optional (alloca AS and allockind/retalign are read in Julia; intrinsic redeclaration
-   uses `LLVM.Function(mod, intr, ft)`, which exists).
+1. E1: `promote_mem_to_reg!` is in LLVM.jl `main` (#669, merged), not released; its
+   LLVMExtra functions need LLVMExtra_jll from Yggdrasil #15179. This repo's local branch
+   `tb/promote-mem-to-reg` (not pushed) uses it in `finish_split!` and drops the
+   `alloc-opt-pass.ll` overrides. For local development, the checkout has uncommitted
+   `[sources]` entries (root and test `Project.toml`) pointing LLVM at LLVM.jl `main`, and a
+   gitignored `LocalPreferences.toml` (root and `test/`) with `[LLVM] libLLVMExtra` set to a
+   `deps/build_local.jl` build for the Julia version used. Don't commit `[sources]`: Julia 1.10
+   ignores it and CI can't build LLVMExtra. Validated this way: package tests on 1.13 (250)
+   and 1.11 (254, `Manifest-v1.11.toml`), upstream fixtures at the 1.13.2 pin (6/6 ports,
+   35/35 `--cpp`), and earlier at the master pin. Once LLVM.jl is released with the new
+   LLVMExtra_jll: drop `[sources]`, raise the LLVM compat bound, merge into `main`, and mark
+   E1 done in the plan.
 2. S5 (PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier), then S6.
 3. A differential check like the one used for S4 (C++ pass vs port, in-process, on every
    pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found the

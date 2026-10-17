@@ -140,17 +140,12 @@ define i64 @atomic_field(i64 %x) {
   ret i64 %r
 }
 
-; a reference field, preserved: the preserve and the ccall roots refer to the field's slot
+; a reference field, preserved: the preserve and the ccall roots refer to the field, whose
+; slot is promoted to a register
 ; CHECK-LABEL: @preserved_ref(
-; the reference slot is null-initialized; Julia's C++ pass also promotes it to a register
-; (PromoteMemToReg, not ported yet)
-; CHECK: [[SLOT:%.*]] = alloca ptr addrspace(10), align 16
-; CHECK: store ptr addrspace(10) null, ptr [[SLOT]], align 8
-; CHECK: store ptr addrspace(10) %w, ptr [[SLOT]], align 8
-; CHECK: [[R1:%.*]] = load ptr addrspace(10), ptr [[SLOT]], align 8
-; CHECK: call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) [[R1]])
-; CHECK: [[R2:%.*]] = load ptr addrspace(10), ptr [[SLOT]], align 8
-; CHECK: call void @ccall_roots() [ "jl_roots"(ptr addrspace(10) [[R2]]) ]
+; CHECK-NOT: alloca
+; CHECK: call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %w)
+; CHECK: call void @ccall_roots() [ "jl_roots"(ptr addrspace(10) %w) ]
 define void @preserved_ref(ptr addrspace(10) %w) {
   %pgcstack = call ptr @julia.get_pgcstack()
   %v = call noalias ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 8, ptr addrspace(10) @tag)
