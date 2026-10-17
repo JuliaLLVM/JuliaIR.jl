@@ -1,0 +1,12 @@
+[deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+FileCheck = "4e644321-382b-4b05-b0b6-5d23c3d944fb"
+JuliaIR = "3913dba9-7ba9-44aa-bf76-1cfa3b3073b1"
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+LLVM_utils_unified_jll = "0def2053-1a45-54bc-bfc1-6427e7aae702"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+Aqua = "0.8"
+FileCheck = "1.2"
+LLVM_utils_unified_jll = "0.1"

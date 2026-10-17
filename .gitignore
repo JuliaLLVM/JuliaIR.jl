@@ -1,0 +1,7 @@
+*.jl.*.cov
+*.jl.mem
+Manifest*.toml
+LocalPreferences.toml
+/docs/build/
+/test/lit/Output/
+*.core

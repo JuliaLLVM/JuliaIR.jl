@@ -1,0 +1,14 @@
+name = "JuliaIR"
+uuid = "3913dba9-7ba9-44aa-bf76-1cfa3b3073b1"
+version = "0.1.0"
+authors = ["Tim Besard <tim.besard@gmail.com>"]
+
+[workspace]
+projects = ["test", "docs"]
+
+[deps]
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+
+[compat]
+LLVM = "10.2.1"
+julia = "1.10"
