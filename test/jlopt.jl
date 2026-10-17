@@ -20,6 +20,9 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
     end
     @test parse_jlopt_args(["-mtriple=nvptx64-nvidia-cuda"]).triple == "nvptx64-nvidia-cuda"
     @test parse_jlopt_args(["-verify-memoryssa"]).llvm_options == ["-verify-memoryssa"]
+    @test parse_jlopt_args(["--print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]).llvm_options ==
+          ["-print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]
+    @test_throws "unknown option" parse_jlopt_args(["-force-vector-width=two"])
     @test !parse_jlopt_args(["-map-julia-passes=0"]).map_passes
 
     # Julia's plugin is accepted, others are not

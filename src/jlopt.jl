@@ -80,6 +80,10 @@ struct FatalPassError <: Exception
     ex::Any
 end
 
+# LLVM's own command-line options that tests use, which are passed on to LLVM. They are
+# process-wide, so they also affect later runs of `jlopt` in the same process.
+const LLVM_OPTIONS = r"^--?(verify-memoryssa|print-before-all|print-after-all|print-(before|after)=[\w-]+|force-vector-width=\d+|print-module-scope)$"
+
 Base.@kwdef mutable struct JloptOptions
     pipeline::Union{Nothing,String} = nothing
     legacy::Vector{String} = String[]
@@ -108,7 +112,9 @@ const JLOPT_USAGE = """
       -julia=VERSION            the Julia dialect of the input for JuliaIR's passes
                                 (default: \$JULIAIR_JULIA, or the running Julia's version)
       -map-julia-passes=0       don't replace Julia's C++ passes by the ports
-      -verify-memoryssa         verify MemorySSA after every update (LLVM option)
+      -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
+      -print-after-all, -print-module-scope, -force-vector-width=N
+                                LLVM options, set for the whole process
       -enable-new-pm=0, -PASS   run the passes in a legacy pass manager pipeline
                                 (translated into the new pass manager's syntax)
       --opaque-pointers=1       accepted; =0 is an error (opaque pointers only)
@@ -149,8 +155,8 @@ function parse_jlopt_args(args::Vector{String})
             opts.julia = parse_julia_version(m[1])
         elseif (m = match(r"^--?map-julia-passes=([01])$", arg)) !== nothing
             opts.map_passes = m[1] == "1"
-        elseif arg in ("-verify-memoryssa", "--verify-memoryssa")
-            push!(opts.llvm_options, "-verify-memoryssa")
+        elseif occursin(LLVM_OPTIONS, arg)
+            push!(opts.llvm_options, "-" * lstrip(arg, '-'))
         elseif (m = match(r"^--?enable-new-pm=([01])$", arg)) !== nothing
             opts.new_pm = m[1] == "1"
         elseif (m = match(r"^--?opaque-pointers=([01])$", arg)) !== nothing

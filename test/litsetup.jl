@@ -16,25 +16,23 @@ function find_python()
     return nothing
 end
 
-# Write a directory with an `opt` that runs bin/jlopt with the running Julia, using the
-# same flags (so that precompiled code is reused) and the active project.
-function jlopt_bindir(dir::String; julia_cmd::Cmd=Base.julia_cmd(),
-                      project::String=Base.active_project())
-    mkpath(dir)
+# The command that runs bin/jlopt with the running Julia, using the same flags (so that
+# precompiled code is reused) and the active project.
+function jlopt_cmd(; julia_cmd::Cmd=Base.julia_cmd(), project::String=Base.active_project())
     jlopt = joinpath(JULIAIR_DIR, "bin", "jlopt")
-    cmd = `$julia_cmd --startup-file=no --project=$project $jlopt`
-    if Sys.iswindows()
-        line = join(map(arg -> "\"$arg\"", cmd.exec), " ")
-        for name in ("opt", "jlopt")
-            write(joinpath(dir, "$name.cmd"), "@$line %*\r\n")
-        end
-    else
-        line = Base.shell_escape(cmd)
-        for name in ("opt", "jlopt")
-            path = joinpath(dir, name)
-            write(path, "#!/bin/sh\nexec $line \"\$@\"\n")
-            chmod(path, 0o755)
-        end
+    return `$julia_cmd --startup-file=no --project=$project $jlopt`
+end
+
+# Write a directory with an `opt` (and `jlopt`) that runs bin/jlopt. Not on Windows, where
+# lit cannot execute scripts; there, lit.cfg substitutes the command into RUN lines.
+function jlopt_bindir(dir::String; kwargs...)
+    mkpath(dir)
+    Sys.iswindows() && return dir
+    line = Base.shell_escape(jlopt_cmd(; kwargs...))
+    for name in ("opt", "jlopt")
+        path = joinpath(dir, name)
+        write(path, "#!/bin/sh\nexec $line \"\$@\"\n")
+        chmod(path, 0o755)
     end
     return dir
 end
@@ -50,6 +48,10 @@ function lit_params(; exec_root::String, bindir::String)
                          Sys.isapple() ? "DYLD_FALLBACK_LIBRARY_PATH" : "LD_LIBRARY_PATH",
         "shlibext" => "." * Base.Libc.Libdl.dlext,
         "common_cfg" => joinpath(JULIAIR_DIR, "test", "lit", "common.cfg.py"),
+        # for lit's internal shell on Windows, with forward slashes (which Windows accepts,
+        # and lit's lexer does not take for escapes)
+        "jlopt_cmd" => join(map(arg -> "\"" * replace(arg, '\\' => '/') * "\"",
+                                jlopt_cmd().exec), " "),
     )
 end
 

@@ -20,6 +20,13 @@ else:
 path.append(os.environ.get('PATH', ''))
 config.environment['PATH'] = os.pathsep.join(p for p in path if p)
 
+# Windows cannot run the `opt` wrapper script that is on PATH elsewhere, so RUN lines
+# get the command that runs jlopt instead (`substitute_jlopt=1` does that elsewhere too,
+# to test it)
+if platform.system() == 'Windows' or params.get('substitute_jlopt') == '1':
+    for tool in ('opt', 'jlopt'):
+        config.substitutions.append((r'(?<![\w.%/-])' + tool + r'(?=\s)', params['jlopt_cmd']))
+
 # what the Julia driver needs to find its packages and write its caches
 for var, value in os.environ.items():
     if var.startswith('JULIA_') or var in ('HOME', 'USER', 'TMPDIR', 'TEMP', 'TMP',
@@ -32,3 +39,8 @@ config.environment.pop('JULIAIR_JULIA', None)
 
 if platform.machine() in ('x86_64', 'AMD64'):
     config.available_features.add('x86_64')
+elif platform.machine() in ('aarch64', 'arm64'):
+    config.available_features.add('aarch64')
+elif platform.machine() == 'riscv64':
+    config.available_features.add('riscv64')
+config.environment['JULIA_OBJCACHE'] = '0' 
