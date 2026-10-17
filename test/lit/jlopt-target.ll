@@ -1,6 +1,8 @@
 ; Like opt, jlopt optimizes for the target of a module that has a triple: the loop
 ; vectorizer only vectorizes this loop with a target machine's cost model.
 
+; REQUIRES: x86-registered-target
+
 ; RUN: opt -passes=loop-vectorize -S %s | FileCheck %s --check-prefix=GENERIC
 ; RUN: opt -mtriple=x86_64-unknown-linux-gnu -passes=loop-vectorize -S %s | FileCheck %s --check-prefix=X86
 

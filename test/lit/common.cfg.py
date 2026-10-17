@@ -44,4 +44,9 @@ elif platform.machine() in ('aarch64', 'arm64'):
     config.available_features.add('aarch64')
 elif platform.machine() == 'riscv64':
     config.available_features.add('riscv64')
-config.environment['JULIA_OBJCACHE'] = '0' 
+config.environment['JULIA_OBJCACHE'] = '0'
+
+# LLVM's names for the targets of the library, for `REQUIRES: x86-registered-target`
+for target in params['targets'].split(','):
+    if target:
+        config.available_features.add(target + '-registered-target') 

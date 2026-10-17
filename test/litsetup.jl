@@ -2,6 +2,7 @@
 # test/lit, and by test/upstream/run.jl for Julia's own test/llvmpasses.
 
 using LLVM_utils_unified_jll
+using LLVM: LLVM
 
 const JULIAIR_DIR = dirname(@__DIR__)
 
@@ -48,6 +49,8 @@ function lit_params(; exec_root::String, bindir::String)
                          Sys.isapple() ? "DYLD_FALLBACK_LIBRARY_PATH" : "LD_LIBRARY_PATH",
         "shlibext" => "." * Base.Libc.Libdl.dlext,
         "common_cfg" => joinpath(JULIAIR_DIR, "test", "lit", "common.cfg.py"),
+        # the library's targets differ per platform (macOS lacks X86, for one)
+        "targets" => join(lowercase.(string.(LLVM.backends())), ","),
         # for lit's internal shell on Windows, with forward slashes (which Windows accepts,
         # and lit's lexer does not take for escapes)
         "jlopt_cmd" => join(map(arg -> "\"" * replace(arg, '\\' => '/') * "\"",
