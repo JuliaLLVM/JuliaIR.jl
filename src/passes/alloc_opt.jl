@@ -88,23 +88,7 @@ function replace_uses_of!(user::Instruction, from::Value, to::Value)
     end
 end
 
-function copy_metadata!(dst::Instruction, src::Instruction)
-    for (kind, md) in src.metadata
-        dst.metadata[kind] = md
-    end
-    dst.debug_location = src.debug_location
-    return dst
-end
-
 ## data layout queries
-
-function alloca_addrspace(layout::String)
-    for spec in split(layout, '-')
-        m = match(r"^A(\d+)$", spec)
-        m === nothing || return parse(Int, m[1])
-    end
-    return 0
-end
 
 function is_legal_integer(layout::String, bits::Integer)
     for spec in split(layout, '-')

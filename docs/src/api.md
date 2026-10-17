@@ -9,6 +9,7 @@ JuliaIR.register!
 JuliaIR.passes
 JuliaIR.RemoveNIPass
 JuliaIR.AllocOptPass
+JuliaIR.PropagateAddrspacesPass
 ```
 
 ## Dialects and options

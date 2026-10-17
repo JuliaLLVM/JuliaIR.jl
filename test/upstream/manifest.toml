@@ -147,14 +147,12 @@ missing = ["LowerSIMDLoop"]
 [fixtures."propagate-addrspace.ll"]
 kind = "port"
 ports = ["PropagateJuliaAddrspaces"]
-status = "skip"
-missing = ["PropagateJuliaAddrspaces"]
+status = "run"
 
 [fixtures."propagate-addrspace-non-zero.ll"]
 kind = "port"
 ports = ["PropagateJuliaAddrspaces"]
-status = "skip"
-missing = ["PropagateJuliaAddrspaces"]
+status = "run"
 
 [fixtures."remove-addrspaces.ll"]
 kind = "port"

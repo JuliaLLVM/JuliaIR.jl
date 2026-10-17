@@ -12,7 +12,8 @@ that does not contain Julia's own passes.
 
 ## Status
 
-Work in progress. Ported so far: RemoveNI (`jl-remove-ni`), AllocOpt (`jl-alloc-opt`).
+Work in progress. Ported so far: RemoveNI (`jl-remove-ni`), AllocOpt (`jl-alloc-opt`),
+PropagateJuliaAddrspaces (`jl-propagate-addrspaces`).
 
 ## Supported dialects and libraries
 

@@ -12,6 +12,7 @@ library supported by LLVM.jl. Only IR with opaque pointers is supported.
 |------|--------------|----------|
 | `jl-remove-ni` | `RemoveNI` | yes |
 | `jl-alloc-opt` | `AllocOpt` | no |
+| `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | no |
 
 Differences with Julia's C++ passes:
 
@@ -19,3 +20,10 @@ Differences with Julia's C++ passes:
   the handling of write barriers that have the allocation as one of several children
   (Julia master), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots
   (Julia 1.13). The layout and initialization of stack memory follow the Julia version.
+  For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
+  instead of the alloca address space (Julia master), and not walking the uses of
+  constant data (Julia master).
+- Bugs that no Julia version has fixed yet: PropagateJuliaAddrspaces declares
+  `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
+  value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass
+  turns it into `llvm.memset`).

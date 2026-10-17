@@ -22,6 +22,21 @@ using LLVM, LLVM.IR, LLVM.Passes
     @test JuliaIR.RemoveNIPass().required
 end
 
+@testset "PropagateJuliaAddrspaces" begin
+    @test !JuliaIR.PropagateAddrspacesPass().required
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            define i64 @f() {
+              %stack = alloca i64
+              %casted = addrspacecast ptr %stack to ptr addrspace(11)
+              %load = load i64, ptr addrspace(11) %casted
+              ret i64 %load
+            }""") begin
+        run!(JuliaIR.PropagateAddrspacesPass(; julia=v"1.12"), mod)
+        load = collect(first(first(mod.functions).blocks).instructions)[3]
+        @test load.operands[1] == first(first(first(mod.functions).blocks).instructions)
+    end
+end
+
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
 
