@@ -82,7 +82,8 @@ struct Dialect
     simdloop_check_combine::Bool
 
     # verification
-    "Whether GCInvariantVerifier also checks vectors of pointers and `julia.call3`."
+    "Whether GCInvariantVerifier also checks vectors of pointers (`julia.call3` is
+    covered by `has_call3`)."
     verifier_vector_pointers::Bool
 
     # DemoteFloat16
@@ -146,7 +147,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, gc_barrier::Symbol=:s
                    development,                           # has_zeroinit_indirect_bundle
                    tbaa_downgrade,
                    minor >= v"1.12",                      # simdloop_check_combine
-                   minor >= v"1.11",                      # verifier_vector_pointers
+                   minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
                    :common_leaf,
                    fp16, gc_barrier)

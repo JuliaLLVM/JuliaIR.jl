@@ -54,7 +54,7 @@ end
     @test dm.tbaa_downgrade == ["jtbaa_const", "jtbaa_memory"]
 
     @test !d11.simdloop_check_combine && d12.simdloop_check_combine
-    @test !d10.verifier_vector_pointers && d11.verifier_vector_pointers
+    @test !d11.verifier_vector_pointers && d12.verifier_vector_pointers
     @test (d10.fp16_rule, d11.fp16_rule, d12.fp16_rule) ==
           (:target_features, :target_features_bf16, :attributes)
     @test all(d -> d.propagate_addrspaces_target === :common_leaf, (d10, d13, dm))

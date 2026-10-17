@@ -34,7 +34,7 @@ function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
                        gc_barrier::Symbol=:stock, extra::NamedTuple=(;))
     julia = julia isa VersionNumber ? julia : parse_julia_version(string(julia))
     extra_values = Dict{Symbol,Any}(pairs(extra))
-    seen = Set{String}()
+    seen = Set{Symbol}()
     for opt in split(str, ';'; keepempty=false)
         key, value = if occursin('=', opt)
             k, v = split(opt, '='; limit=2)
@@ -50,8 +50,8 @@ function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
             key = key[4:end]
             name = Symbol(replace(key, '-' => '_'))
         end
-        key in seen && throw(ArgumentError("option $key is given more than once"))
-        push!(seen, key)
+        name in seen && throw(ArgumentError("option $key is given more than once"))
+        push!(seen, name)
 
         if key == "julia"
             value === nothing && throw(ArgumentError("option julia requires a version, e.g. julia=1.12"))
@@ -184,9 +184,13 @@ end
 # pipeline
 function custom_pass(def::PassDefinition; julia=VERSION, fp16::Symbol=:auto,
                      gc_barrier::Symbol=:stock, kwargs...)
+    for (k, v) in pairs(kwargs)
+        haskey(def.extra, k) ||
+            throw(ArgumentError("unknown option $k for pass $(def.name)"))
+        v isa typeof(def.extra[k]) ||
+            throw(ArgumentError("option $k of pass $(def.name) must be a $(typeof(def.extra[k]))"))
+    end
     extra = merge(def.extra, values(kwargs))
-    keys(extra) == keys(def.extra) ||
-        throw(ArgumentError("unknown option(s) $(join(setdiff(keys(extra), keys(def.extra)), ", ")) for pass $(def.name)"))
     # validate the defaults now, rather than when the pass is first used
     parse_options(""; julia, fp16, gc_barrier, extra)
     parse = str -> parse_options(str; julia, fp16, gc_barrier, extra)

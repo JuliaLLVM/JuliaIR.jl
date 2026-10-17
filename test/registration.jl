@@ -38,6 +38,8 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test_throws "unknown option frobnicate" parse_options("frobnicate")
     @test_throws "unknown option strong" parse_options("strong")
     @test_throws "more than once" parse_options("julia=1.11;julia=1.12")
+    @test_throws "more than once" parse_options("strong;no-strong"; extra)
+    @test_throws "more than once" parse_options("foo-bar;no-foo_bar"; extra=(; foo_bar=false))
     @test_throws "requires a version" parse_options("julia")
     @test_throws "not supported" parse_options("julia=1.9")
     @test_throws "newer than" parse_options("julia=1.15")
@@ -86,6 +88,7 @@ test_ir = """
         # invalid defaults are reported when the pass is created
         @test_throws "not supported" JuliaIR.custom_pass(test_pass; julia=v"1.9")
         @test_throws "unknown option" JuliaIR.custom_pass(test_pass; frobnicate=true)
+        @test_throws "must be a Bool" JuliaIR.custom_pass(test_pass; strong=:no)
     end
 end
 
