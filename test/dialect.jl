@@ -38,12 +38,13 @@ end
     @test "julia.field_write_barrier.p13" in dm.write_barriers
 
     @test !d10.has_gc_loaded && d11.has_gc_loaded && dm.has_gc_loaded
-    @test d11.gc_loaded_is_escape && !d12.gc_loaded_is_escape && !d10.gc_loaded_is_escape
     @test !d10.has_call3 && d11.has_call3
     @test !d12.has_atomicmodify && d13.has_atomicmodify && dm.has_atomicmodify
 
     @test (d10.alloc_initialization, d11.alloc_initialization, d12.alloc_initialization) ==
-          (:none, :freeze, :memset)
+          (:none, :store, :memset)
+    @test (d10.alloc_layout, d11.alloc_layout, d12.alloc_layout, dm.alloc_layout) ==
+          (:legacy, :legacy, :chunked, :chunked)
     @test !d10.alloc_callsite_attrs && d11.alloc_callsite_attrs
     @test !d13.alloc_bundles && dm.alloc_bundles
     @test !d11.has_gc_transition_bundle && d12.has_gc_transition_bundle

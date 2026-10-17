@@ -2,4 +2,4 @@
 
 ## Unreleased
 
-- Initial package skeleton.
+- Initial package skeleton, with ports of RemoveNI and AllocOpt.

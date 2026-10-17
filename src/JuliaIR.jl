@@ -1,13 +1,16 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
-using LLVM: API
+using LLVM: API, DataLayout, storage_size, abi_size, intptr
 
 include("dialect.jl")
 include("registration.jl")
 include("jlopt.jl")
 
+include("allocations.jl")
+
 include("passes/remove_ni.jl")
+include("passes/alloc_opt.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

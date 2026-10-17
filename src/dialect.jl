@@ -50,9 +50,6 @@ struct Dialect
     has_call3::Bool
     "Whether `julia.gc_loaded` exists."
     has_gc_loaded::Bool
-    "Whether AllocOpt treats a use by `julia.gc_loaded` as an escape (it exists, but is
-    not handled yet)."
-    gc_loaded_is_escape::Bool
     "Whether `julia.atomicmodify.*` intrinsics exist (lowered by ExpandAtomicModify)."
     has_atomicmodify::Bool
 
@@ -60,9 +57,15 @@ struct Dialect
     "Whether `julia.gc_alloc_obj` calls carry `allockind` and return alignment
     attributes at the call site (instead of only on the declaration)."
     alloc_callsite_attrs::Bool
-    "How AllocOpt initializes the memory of an allocation it moves to the stack: `:none`,
-    `:freeze` (store a frozen `undef`), or `:memset` (zero it)."
+    "How AllocOpt initializes the stack memory of an allocation that wasn't marked
+    uninitialized: `:none` (Julia 1.10), `:store` (store zero, or a frozen `undef` for
+    allocations of unknown kind; 1.11), or `:memset` (zero it; 1.12 and later). Reference
+    slots are always null-initialized, as since 1.13."
     alloc_initialization::Symbol
+    "The layout of the stack memory AllocOpt allocates: `:legacy` (a legal integer or a
+    byte array, aligned to a power of two up to 16; Julia 1.10 and 1.11), or `:chunked`
+    (alignment-sized integer chunks, aligned like the allocation but at least to 16)."
+    alloc_layout::Symbol
     "Whether allocations carry the `julia.gc_alloc_ptr_offsets` and
     `julia.gc_alloc_zeroinit` operand bundles."
     alloc_bundles::Bool
@@ -137,11 +140,11 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, gc_barrier::Symbol=:s
                    barrier_flavour, write_barriers,
                    minor >= v"1.11",                      # has_call3
                    minor >= v"1.11",                      # has_gc_loaded
-                   minor == v"1.11",                      # gc_loaded_is_escape
                    minor >= v"1.13",                      # has_atomicmodify
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
-                   minor == v"1.11" ? :freeze : :memset,  # alloc_initialization
+                   minor == v"1.11" ? :store : :memset,   # alloc_initialization
+                   minor <= v"1.11" ? :legacy : :chunked, # alloc_layout
                    development,                           # alloc_bundles
                    minor >= v"1.12",                      # has_gc_transition_bundle
                    development,                           # has_zeroinit_indirect_bundle

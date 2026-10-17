@@ -8,6 +8,7 @@ The API is not exported; use qualified names (`JuliaIR.register!`).
 JuliaIR.register!
 JuliaIR.passes
 JuliaIR.RemoveNIPass
+JuliaIR.AllocOptPass
 ```
 
 ## Dialects and options

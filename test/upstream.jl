@@ -59,7 +59,7 @@ end
 
     # legacy pass manager, with opaque pointers
     _, _, pipelines = classify_run(run("opt -enable-new-pm=0 --opaque-pointers=1 -load libjulia-codegen%shlibext -RemoveNI -AllocOpt -S %s"))
-    @test pipelines == ["jl-remove-ni,function(AllocOpt)"]
+    @test pipelines == ["jl-remove-ni,function(jl-alloc-opt)"]
 
     # what jlopt cannot run is an error
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
@@ -273,8 +273,8 @@ mktempdir() do dir
     @test_throws "which exist now" harness(write_manifest(stale_skip * override * excluded_cpp))
 
     # fixtures of ports that don't exist cannot run
-    no_port = replace(good, "[\"RemoveNI\"]" => "[\"RemoveNI\", \"AllocOpt\"]")
-    @test_throws "the ports of AllocOpt do not exist" harness(write_manifest(no_port * override * excluded_cpp))
+    no_port = replace(good, "[\"RemoveNI\"]" => "[\"RemoveNI\", \"JuliaLICM\"]")
+    @test_throws "the ports of JuliaLICM do not exist" harness(write_manifest(no_port * override * excluded_cpp))
 
     # the checkout must be at the pinned commit, with its fixtures unchanged
     @test_throws "pinned to" harness(write_manifest(good * override * excluded_cpp; commit="0"^40))
