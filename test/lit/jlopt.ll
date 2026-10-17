@@ -16,9 +16,12 @@
 ; RUN: opt -enable-new-pm=0 --opaque-pointers=1 -load libjulia-codegen%shlibext -RemoveNI -S %s | FileCheck %s
 ; RUN: opt -enable-new-pm=1 --opaque-pointers=1 --load-pass-plugin=libjulia-codegen%shlibext -passes=RemoveNI -S %s | FileCheck %s
 
-; overriding the triple
+; overriding the triple (see also jlopt-target.ll), and a triple LLVM has no target for
 ; RUN: opt -mtriple=x86_64-unknown-linux-gnu -passes=jl-remove-ni -S %s | FileCheck %s --check-prefix=TRIPLE
 ; TRIPLE: target triple = "x86_64-unknown-linux-gnu"
+; RUN: opt -mtriple=nonsense-unknown-none -passes=jl-remove-ni -S %s 2>&1 | FileCheck %s --check-prefix=NOTARGET
+; NOTARGET: jlopt: WARNING: failed to create target machine for 'nonsense-unknown-none'
+; NOTARGET: target triple = "nonsense-unknown-none"
 
 ; errors
 ; RUN: not opt -passes=jl-remove-ni --opaque-pointers=0 -S %s 2>&1 | FileCheck %s --check-prefix=TYPED

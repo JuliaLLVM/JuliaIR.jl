@@ -239,10 +239,15 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
             opts.triple === nothing || (mod.triple = opts.triple)
             # like opt, refuse broken input, and verify the output
             verify(mod)
-            @dispose pb=PassBuilder() begin
-                register!(pb; julia=opts.julia)
-                add!(pb, pipeline)
-                run!(pb, mod)
+            tm = target_machine(mod)
+            try
+                @dispose pb=PassBuilder() begin
+                    register!(pb; julia=opts.julia)
+                    add!(pb, pipeline)
+                    run!(pb, mod, tm)
+                end
+            finally
+                tm === nothing || dispose(tm)
             end
             verify(mod)
             write_output(mod, opts, stdout)
@@ -251,6 +256,25 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
         end
     end
     return
+end
+
+# Like `opt`, optimize for the module's target if it has one (with the default CPU and
+# features), which determines e.g. the cost model of the vectorizer.
+function target_machine(mod::LLVM.Module)
+    triple = mod.triple
+    isempty(triple) && return nothing
+    LLVM.InitializeAllTargetInfos()
+    LLVM.InitializeAllTargets()
+    LLVM.InitializeAllTargetMCs()
+    target = try
+        LLVM.Target(; triple)
+    catch err
+        err isa ArgumentError || rethrow()
+        println(Base.stderr, "jlopt: WARNING: failed to create target machine for '$triple': ",
+                sprint(showerror, err))
+        return nothing
+    end
+    return LLVM.TargetMachine(target, triple)
 end
 
 function write_output(mod::LLVM.Module, opts::JloptOptions, stdout::IO)
