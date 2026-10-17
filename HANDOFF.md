@@ -11,18 +11,20 @@ read it first, including its Log). This file says where things are and how to co
 | S1 dialect descriptor, registration | done | 5dbe95f, ee09d37, 0ccc23a |
 | S2 jlopt, lit suite, ledger, RemoveNI | done | 11db665, 335d996, e52f565, 83f7263 |
 | S3 upstream harness, manifest (mode A) | done | b97b57a, e39a309, 3614dd5, 33ad510 |
-| S4 AllocOpt | port done; open: E1, S12, S13 | f728275, 5df7c8c |
+| S4 AllocOpt | port done; open: S12, S13 | f728275, 5df7c8c, PR #2 |
+| E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
 pin. `finish_split!` promotes the reference slots of split allocations with LLVM.jl's
-`promote_mem_to_reg!` (plan item E1, LLVM.jl #669, not released yet; see next steps), so
-`alloc-opt-pass.ll` runs without overrides. The design choices (which historical
+`promote_mem_to_reg!` (E1; in PR #2), so `alloc-opt-pass.ll` runs without overrides. The design choices (which historical
 behaviours are kept per Julia version, which fixes are applied to every version) are in
 the plan's Log entry for S4 and in `docs/src/index.md`.
 
-Pushed to https://github.com/JuliaLLVM/JuliaIR.jl (`main`); CI green on every OS and
-version as of a8bf3f2.
+On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. `main` (7c99736) is green on every OS
+and version. Open, stacked (gh stack #3): PR #1 `tb/llvm-dev-ci` (CI tests against LLVM.jl
+`main`, see `.github/actions/llvm-dev`), PR #2 `tb/promote-mem-to-reg` on top (the E1 use
+in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
 
 ## Layout
 
@@ -39,14 +41,27 @@ version as of a8bf3f2.
 - `test/litsetup.jl`: finds Python, writes the `opt` wrapper, runs lit.
 - `test/upstream/`: `run.jl` (harness), `manifest.toml` (pins + every fixture),
   `derived/<minor>/*.patch` (overrides).
+- `.github/actions/llvm-dev`: develops LLVM.jl from a git ref (`ref`, default `main`) into
+  the environments and builds LLVMExtra when the ref has unreleased changes to it (LLVM.jl's
+  `deps/build_ci.jl`), then copies the preferences to `.`, `test/`, `docs/`. Used by every
+  CI job until the LLVM.jl changes are released; then delete it and its `uses:` lines, and
+  raise the LLVM compat bound.
 
 ## How to run each test tier (pegasus)
 
 - Package tests: `julia +<ver> --project -e 'using Pkg; Pkg.test()'` (1.10, 1.11, 1.12,
-  1.13, nightly). Each ~1 min. Test from a copy of the tree when running several versions
-  at once (Manifest.toml is shared between versions, and Pkg.test must not run on a tree
-  you edit): rsync the tree (without `.git`, `Manifest*.toml`) to a scratch dir per
-  version. At most 3 suites at once on pegasus.
+  1.13, nightly). Each ~1 min. Stay in your worktree; give each Julia version its own
+  manifest (`touch Manifest-v1.10.toml`, then `Pkg.resolve()`; gitignored). On 1.10 and
+  1.11 (no workspaces) use `Pkg.test()` from the root: `--project=test` there loads the
+  registered packages, and instantiating it writes a `test/Manifest.toml` that Pkg.test
+  then picks up (and, on 1.10, fails to merge with dev'd entries: "can not merge
+  projects"). At most 3 suites at once on pegasus.
+- Against unreleased LLVM.jl: locally, add (never commit; 1.10 ignores it, CI uses the
+  action instead) `[sources] LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "main"}`
+  to the root and `test/` Project.toml, and put `[LLVM] libLLVMExtra = "<path>"` in a
+  `LocalPreferences.toml` in the root and `test/` (gitignored), built by running LLVM.jl's
+  `deps/build_local.jl` under the same Julia version (one build per LLVM major, in a shared
+  scratch dir).
 - Iteration: `jld --test eval 'using Test, JuliaIR'` then `jld --test run test/<file>.jl`
   (Julia 1.13 daemon, test workspace). `jld --test restart` after adding files/includes.
 - Lit suite alone: `include("test/litsetup.jl")`, then `run_lit("test/lit"; python=find_python(),
@@ -58,7 +73,7 @@ version as of a8bf3f2.
   `julia +<ver> --project=test test/upstream/run.jl DIR` (ports) and `... --cpp` (Julia's
   passes; checks jlopt/harness) and `... --report`. On 1.10/1.11 first
   `julia --project=test -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate()'`
-  (in a tree copy; it writes test/Manifest.toml).
+  (it writes `test/Manifest.toml`: delete it before running `Pkg.test()` again).
 - Docs: `julia +1.12 --project=docs docs/make.jl`.
 - update_test_checks.py: not in any JLL; copy `llvm/utils/update_test_checks.py` and
   `UpdateTestChecks/` from an LLVM source tree, write a wrapper with `jlopt_bindir(dir)`,
@@ -66,19 +81,12 @@ version as of a8bf3f2.
 
 ## Next steps
 
-1. E1: `promote_mem_to_reg!` is in LLVM.jl `main` (#669, merged), not released; its
-   LLVMExtra functions need LLVMExtra_jll from Yggdrasil #15179. This repo's local branch
-   `tb/promote-mem-to-reg` (not pushed) uses it in `finish_split!` and drops the
-   `alloc-opt-pass.ll` overrides. For local development, the checkout has uncommitted
-   `[sources]` entries (root and test `Project.toml`) pointing LLVM at LLVM.jl `main`, and a
-   gitignored `LocalPreferences.toml` (root and `test/`) with `[LLVM] libLLVMExtra` set to a
-   `deps/build_local.jl` build for the Julia version used. Don't commit `[sources]`: Julia 1.10
-   ignores it and CI can't build LLVMExtra. Validated this way: package tests on 1.13 (250)
-   and 1.11 (254, `Manifest-v1.11.toml`), upstream fixtures at the 1.13.2 pin (6/6 ports,
-   35/35 `--cpp`), and earlier at the master pin. Once LLVM.jl is released with the new
-   LLVMExtra_jll: drop `[sources]`, raise the LLVM compat bound, merge into `main`, and mark
-   E1 done in the plan.
-2. S5 (PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier), then S6.
+1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
+   #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
+   and add the compat bound to PR #2), merge, and mark E1 done in the plan.
+2. S5 (PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier): needs nothing new
+   from LLVM.jl (IR editing, `FastMathFlags`, `function_attributes`, and
+   `LLVM.Function(mod, intr, ft)` to redeclare memory intrinsics are all in 10.2). Then S6.
 3. A differential check like the one used for S4 (C++ pass vs port, in-process, on every
    pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found the
    only real differences; S12 should formalize it with GPUCompiler's kernels.
@@ -118,6 +126,8 @@ version as of a8bf3f2.
 - A pass with `required=false` is skipped on `optnone` functions, so its callback (and the
   ledger) doesn't see them.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
+- `IRBuilder` can't create an alloca in a block that isn't in a function (it needs the
+  module's data layout; segfault).
 - Julia's libLLVM targets differ per platform (macOS arm64 has no X86, Linux x86 no
   AArch64): lit tests that need a target say `REQUIRES: <target>-registered-target`.
 
