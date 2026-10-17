@@ -100,9 +100,9 @@ keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S6 (LateLowerGC cleanup). S6 needs a
-   TBAA helper (`createMutableTBAAAccessTag`) that LLVM.jl doesn't have; first decide
-   whether it can be a pure-Julia metadata rewrite.
+2. S6 (LateLowerGC cleanup). Its TBAA helper (`createMutableTBAAAccessTag`) is a
+   pure-Julia metadata rewrite with LLVM.jl 10.2's `MDNode` API (see the plan's Log);
+   no LLVM.jl addition needed. Start with the GPU input contract (docs page).
 3. A differential check like the one used for S4 and S5 (C++ pass vs port, in-process, on
    every pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found
    the only real differences, including two C++ bugs; S12 should formalize it with
