@@ -7,6 +7,7 @@ include("dialect.jl")
 include("registration.jl")
 include("jlopt.jl")
 include("passes.jl")
+include("lit.jl")
 
 @testset "Aqua" begin
     using Aqua

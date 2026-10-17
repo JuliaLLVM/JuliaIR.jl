@@ -8,10 +8,11 @@ function main()
         # explicit, so that local builds work in a checkout without a remote
         repo = Remotes.GitHub("JuliaLLVM", "JuliaIR.jl"),
         authors = "Tim Besard",
-        format = Documenter.HTML(prettyurls = ci),
+        format = Documenter.HTML(prettyurls = ci, edit_link = "main"),
         modules = [JuliaIR],
         pages = [
             "Home" => "index.md",
+            "API reference" => "api.md",
         ],
         doctest = true,
     )
