@@ -1,0 +1,135 @@
+using LLVM, LLVM.IR, LLVM.Passes
+using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipeline
+
+@testset "jlopt" begin
+
+@testset "arguments" begin
+    opts = parse_jlopt_args(["-passes=foo", "-S", "in.ll", "-o", "out.ll"])
+    @test opts.pipeline == "foo"
+    @test opts.text
+    @test opts.input == "in.ll"
+    @test opts.output == "out.ll"
+    @test parse_jlopt_args(["--passes=foo"]).pipeline == "foo"
+    @test parse_jlopt_args(["-p", "foo"]).pipeline == "foo"
+    @test parse_jlopt_args(["-passes=foo", "-oout.bc"]).output == "out.bc"
+    @test parse_jlopt_args(["-julia=1.11.2"]).julia == v"1.11.2"
+    @test parse_jlopt_args(String[]).julia == VERSION
+    withenv("JULIAIR_JULIA" => "1.12.1") do
+        @test parse_jlopt_args(String[]).julia == v"1.12.1"
+        @test parse_jlopt_args(["-julia=1.13"]).julia == v"1.13"
+    end
+    @test parse_jlopt_args(["-mtriple=nvptx64-nvidia-cuda"]).triple == "nvptx64-nvidia-cuda"
+    @test parse_jlopt_args(["-verify-memoryssa"]).llvm_options == ["-verify-memoryssa"]
+    @test !parse_jlopt_args(["-map-julia-passes=0"]).map_passes
+
+    # Julia's plugin is accepted, others are not
+    @test parse_jlopt_args(["--load-pass-plugin=libjulia-codegen.so"]).pipeline === nothing
+    @test parse_jlopt_args(["-load", "/path/to/libjulia-codegen.dylib"]).pipeline === nothing
+    @test_throws "cannot load plugin" parse_jlopt_args(["--load-pass-plugin=libfoo.so"])
+
+    @test_throws "typed pointers" parse_jlopt_args(["--opaque-pointers=0"])
+    @test parse_jlopt_args(["--opaque-pointers=1"]).pipeline === nothing
+    @test_throws "unknown option -frobnicate" parse_jlopt_args(["-frobnicate"])
+    @test_throws "more than one input" parse_jlopt_args(["a.ll", "b.ll"])
+    @test_throws "missing value" parse_jlopt_args(["-o"])
+    @test_throws "invalid Julia version" parse_jlopt_args(["-julia=next"])
+    @test_throws JloptError jlopt(String[]; stdin=IOBuffer(""))
+end
+
+@testset "legacy pass manager" begin
+    opts = parse_jlopt_args(["-enable-new-pm=0", "-AllocOpt", "-LateLowerGCFrame", "-FinalLowerGC"])
+    @test opts.pipeline == "function(AllocOpt,LateLowerGCFrame),FinalLowerGC"
+    @test legacy_pipeline(["JuliaLICM"]) == "function(loop(JuliaLICM))"
+    @test legacy_pipeline(["LowerSIMDLoop", "JuliaLICM", "AllocOpt", "RemoveNI"]) ==
+          "function(loop(LowerSIMDLoop,JuliaLICM),AllocOpt),RemoveNI"
+    @test legacy_pipeline(["PropagateJuliaAddrspaces", "dce"]) ==
+          "function(PropagateJuliaAddrspaces,dce)"
+    @test_throws "require -enable-new-pm=0" parse_jlopt_args(["-AllocOpt"])
+    @test_throws "cannot be combined" parse_jlopt_args(["-enable-new-pm=0", "-AllocOpt", "-passes=foo"])
+end
+
+@testset "pass names" begin
+    mapping = Dict("AllocOpt" => "jl-alloc-opt", "GCInvariantVerifier" => "jl-gc-invariant-verifier")
+    @test map_pipeline("function(AllocOpt,LateLowerGCFrame),FinalLowerGC", mapping) ==
+          "function(jl-alloc-opt,LateLowerGCFrame),FinalLowerGC"
+    @test map_pipeline("function(GCInvariantVerifier<strong>,GCInvariantVerifier<no-strong>)", mapping) ==
+          "function(jl-gc-invariant-verifier<strong>,jl-gc-invariant-verifier<no-strong>)"
+    # only whole names
+    @test map_pipeline("AllocOptX,XAllocOpt,jl-alloc-opt", mapping) == "AllocOptX,XAllocOpt,jl-alloc-opt"
+    # every ported pass is mapped from the name of the C++ pass
+    @test JuliaIR.cpp_mapping()["RemoveNI"] == "jl-remove-ni"
+end
+
+ir = """
+    target datalayout = "e-i64:64-ni:10:11:12:13"
+    define void @f() {
+      ret void
+    }"""
+
+@testset "in-process" begin
+    out = sprint() do io
+        jlopt(["-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir), stdout=io)
+    end
+    @test occursin("target datalayout = \"e-i64:64\"\n", out)
+    @test occursin("; ModuleID = '<stdin>'", out)
+
+    # with the mapping disabled, Julia's C++ pass of that name runs instead of the port
+    mktemp() do ledger, io
+        close(io)
+        old = JuliaIR.LEDGER[]
+        JuliaIR.LEDGER[] = ledger
+        try
+            jlopt(["-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir), stdout=devnull)
+            @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
+            jlopt(["-map-julia-passes=0", "-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir),
+                  stdout=devnull)
+            @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
+        finally
+            JuliaIR.LEDGER[] = old
+        end
+    end
+
+    # input that does not verify
+    broken = """
+        define i32 @f() {
+          ret void
+        }"""
+    @test_throws JloptError jlopt(["-passes=jl-remove-ni", "-S"]; stdin=IOBuffer(broken), stdout=devnull)
+end
+
+@testset "fatal errors abort" begin
+    # a pass that reports invalid IR makes bin/jlopt die by a signal, like `opt` when an
+    # assertion fails, which `not --crash` checks for
+    script = """
+        using JuliaIR, LLVM
+        crash(ir, am, opts) = throw(JuliaIR.FatalPassError(ErrorException("invalid IR")))
+        JuliaIR.define_pass("jl-test-crash", :module, crash; required=true, cpp_name="")
+        exit(JuliaIR.jlopt_main(["-passes=jl-test-crash", "-S"]))
+        """
+    stderr = Pipe()
+    cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`
+    proc = run(pipeline(ignorestatus(cmd); stdin=IOBuffer(ir), stdout=devnull, stderr);
+               wait=false)
+    close(stderr.in)
+    output = read(stderr, String)
+    wait(proc)
+    if Sys.iswindows()
+        @test proc.exitcode == 3  # abort() on Windows
+    else
+        @test proc.termsignal == 6  # SIGABRT
+    end
+    @test occursin("invalid IR", output)
+
+    # other errors exit normally
+    script = """
+        using JuliaIR, LLVM
+        fail(ir, am, opts) = error("pass failed")
+        JuliaIR.define_pass("jl-test-fail", :module, fail; required=true, cpp_name="")
+        exit(JuliaIR.jlopt_main(["-passes=jl-test-fail", "-S"]))
+        """
+    cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`
+    proc = run(pipeline(ignorestatus(cmd); stdin=IOBuffer(ir), stdout=devnull, stderr=devnull))
+    @test proc.exitcode == 1 && proc.termsignal == 0
+end
+
+end

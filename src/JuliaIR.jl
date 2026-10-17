@@ -5,6 +5,7 @@ using LLVM: API
 
 include("dialect.jl")
 include("registration.jl")
+include("jlopt.jl")
 
 include("passes/remove_ni.jl")
 

@@ -1,0 +1,5 @@
+#!/usr/bin/env -S julia --startup-file=no
+# An `opt`-compatible driver for the passes of JuliaIR; see `jlopt --help`. Run it with
+# a Julia whose active project provides JuliaIR, e.g. `julia --project=... bin/jlopt`.
+using JuliaIR
+exit(JuliaIR.jlopt_main(ARGS))
