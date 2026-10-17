@@ -1,0 +1,63 @@
+name: Use a development version of LLVM.jl
+description: >
+  Develop LLVM.jl from a git ref into the package's environments, and build its LLVMExtra
+  library when the ref has changes that no LLVMExtra_jll release has yet. For testing
+  against unreleased LLVM.jl changes; remove its uses once they are released.
+
+inputs:
+  ref:
+    description: The LLVM.jl branch, tag or commit.
+    default: main
+  projects:
+    description: >
+      The environments to develop LLVM.jl into, besides the package's (e.g. `test` for a
+      job that runs `--project=test` on Julia 1.10 or 1.11, which have no workspaces; for
+      Pkg.test, the package's environment is enough).
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: JuliaLLVM/LLVM.jl
+        ref: ${{ inputs.ref }}
+        path: LLVM.jl
+        fetch-depth: 0  # build_ci.jl compares the git log with the JLL's releases
+
+    - name: Develop LLVM.jl
+      shell: julia --color=yes {0}
+      env:
+        PROJECTS: ${{ inputs.projects }}
+      run: |
+        using Pkg
+        Pkg.activate("LLVM.jl"); Pkg.instantiate()  # build_ci.jl reads its manifest
+        Pkg.activate("."); Pkg.develop(path="LLVM.jl")
+        # with workspaces, the other environments share the package's manifest
+        if VERSION < v"1.12"
+            for project in split(ENV["PROJECTS"])
+                # they also need the package, which is not registered
+                Pkg.activate(String(project))
+                Pkg.develop([PackageSpec(path="."), PackageSpec(path="LLVM.jl")])
+            end
+        end
+
+    - uses: msys2/setup-msys2@v2
+      if: runner.os == 'Windows'
+      with:
+        path-type: inherit
+        install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+    - name: Build LLVMExtra
+      if: runner.os != 'Windows'
+      shell: bash
+      run: julia --project=LLVM.jl/deps LLVM.jl/deps/build_ci.jl
+    - name: Build LLVMExtra (in msys2)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: julia --project=LLVM.jl/deps LLVM.jl/deps/build_ci.jl
+
+    # the build is selected through LLVM.jl's preferences, which are read from the active
+    # project: the package itself for Pkg.test, test/ and docs/ when run directly
+    - name: Use the LLVMExtra build
+      shell: bash
+      run: for dir in . test docs; do cp LLVM.jl/LocalPreferences.toml $dir/; done
