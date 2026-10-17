@@ -10,8 +10,17 @@ read it first, including its Log). This file says where things are and how to co
 | S0 skeleton, CI, docs | done | 7807051, 3a6e8d8 |
 | S1 dialect descriptor, registration | done | 5dbe95f, ee09d37, 0ccc23a |
 | S2 jlopt, lit suite, ledger, RemoveNI | done | 11db665, 335d996, e52f565, 83f7263 |
-| S3 upstream harness, manifest (mode A) | done | b97b57a, d1ece1d, + review fix |
-| S4 AllocOpt | in progress | see below |
+| S3 upstream harness, manifest (mode A) | done | b97b57a, e39a309, 3614dd5, 33ad510 |
+| S4 AllocOpt | port done; open: E1, S12, S13 | f728275, 5df7c8c |
+
+S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
+and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
+pin. Not done: `PromoteMemToReg` on the reference slots of split allocations (LLVM.jl has
+no wrapper; plan item E1). Until then `test/upstream/derived/{1.13,1.14}/alloc-opt-pass.ll.patch`
+weakens the one CHECK that depends on it; once E1 lands, call it in `finish_split!` and the
+harness will report those overrides as stale. The design choices (which historical
+behaviours are kept per Julia version, which fixes are applied to every version) are in
+the plan's Log entry for S4 and in `docs/src/index.md`.
 
 Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pushes.
 
@@ -55,6 +64,17 @@ Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pu
   `UpdateTestChecks/` from an LLVM source tree, write a wrapper with `jlopt_bindir(dir)`,
   run `python3 update_test_checks.py --opt-binary=dir/opt test.ll`.
 
+## Next steps
+
+1. E1 in LLVM.jl (worktree `~/Julia/pkg/LLVM-alloc-opt-api`, branch `tb/alloc-opt-api`,
+   `PR.md`, never push): `PromoteMemToReg(allocas, domtree)`; the other E1 items are
+   optional (alloca AS and allockind/retalign are read in Julia; intrinsic redeclaration
+   uses `LLVM.Function(mod, intr, ft)`, which exists).
+2. S5 (PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier), then S6.
+3. A differential check like the one used for S4 (C++ pass vs port, in-process, on every
+   pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found the
+   only real differences; S12 should formalize it with GPUCompiler's kernels.
+
 ## Traps
 
 - LLVM.jl 10 exports little: `using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis`
@@ -75,6 +95,18 @@ Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pu
 - Nightly moves daily; the harness warns (doesn't fail) when it differs from the pinned
   build. Refresh the master pin (manifest + CI `julia_ref`) when fixtures change.
 - `LLVM.clopts` options set by jlopt (`-verify-memoryssa`, ...) are process-wide.
+- LLVM.jl 10: `bb.successors`/`bb.predecessors` are properties (no exported functions);
+  `inst.prev`/`inst.next`; `call.called_function.intrinsic`; `LLVM.constant_offset(gep, dl)`
+  for one GEP; `DataLayout`, `storage_size`, `abi_size`, `intptr` are public, not exported.
+- C++ `IRBuilder<>(inst)` also takes `inst`'s debug location; `CallInst::Create(...)` and
+  `GetElementPtrInst::Create(...)` take none. Mirror this (`position_at!` in alloc_opt.jl)
+  or outputs differ in `!dbg`.
+- C++'s "prolog builder" keeps inserting before the *original* first instruction of the
+  entry block; re-reading `first(entry.instructions)` reverses the order of allocas.
+- LLVM's `NextPowerOf2(x)` is strictly greater than `x`.
+- A pass with `required=false` is skipped on `optnone` functions, so its callback (and the
+  ledger) doesn't see them.
+- Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
 
 ## Open questions for Tim
 
@@ -89,4 +121,5 @@ Nothing is pushed; there is no remote. Tim creates `JuliaLLVM/JuliaIR.jl` and pu
 ## Peer conversations (pegasus)
 
 - `llvm-middleend-passes-astra`: the design discussion behind the plan.
-- `llvm-middleend-passes-sol`: reviews of S0–S3 (and later items); `peer log` to read.
+- `llvm-middleend-passes-sol`: reviews of S0–S4; `peer log` to read. Verdicts: S0 one
+  minor, S1 three, S2 two, S3 three, S4 one finding, all fixed.
