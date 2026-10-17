@@ -12,6 +12,7 @@ function main()
         modules = [JuliaIR],
         pages = [
             "Home" => "index.md",
+            "Testing" => "testing.md",
             "API reference" => "api.md",
         ],
         doctest = true,

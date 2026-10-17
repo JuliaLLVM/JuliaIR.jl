@@ -5,3 +5,4 @@ LocalPreferences.toml
 /docs/build/
 /test/lit/Output/
 *.core
+__pycache__/

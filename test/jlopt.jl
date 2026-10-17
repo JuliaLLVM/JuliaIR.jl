@@ -24,6 +24,11 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
           ["-print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]
     @test_throws "unknown option" parse_jlopt_args(["-force-vector-width=two"])
     @test !parse_jlopt_args(["-map-julia-passes=0"]).map_passes
+    @test parse_jlopt_args(String[]).map_passes
+    withenv("JULIAIR_MAP_PASSES" => "0") do
+        @test !parse_jlopt_args(String[]).map_passes
+        @test parse_jlopt_args(["-map-julia-passes=1"]).map_passes
+    end
 
     # Julia's plugin is accepted, others are not
     @test parse_jlopt_args(["--load-pass-plugin=libjulia-codegen.so"]).pipeline === nothing

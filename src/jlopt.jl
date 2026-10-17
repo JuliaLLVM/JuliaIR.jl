@@ -111,7 +111,8 @@ const JLOPT_USAGE = """
       -mtriple=TRIPLE           override the module's target triple
       -julia=VERSION            the Julia dialect of the input for JuliaIR's passes
                                 (default: \$JULIAIR_JULIA, or the running Julia's version)
-      -map-julia-passes=0       don't replace Julia's C++ passes by the ports
+      -map-julia-passes=0       don't replace Julia's C++ passes by the ports (default:
+                                \$JULIAIR_MAP_PASSES, or 1)
       -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
       -print-after-all, -print-module-scope, -force-vector-width=N
                                 LLVM options, set for the whole process
@@ -128,6 +129,7 @@ function parse_jlopt_args(args::Vector{String})
     opts.julia = let v = get(ENV, "JULIAIR_JULIA", "")
         isempty(v) ? VERSION : parse_julia_version(v)
     end
+    opts.map_passes = get(ENV, "JULIAIR_MAP_PASSES", "1") != "0"
     i = 1
     # the next argument, as the value of option `arg`
     function value!(arg)

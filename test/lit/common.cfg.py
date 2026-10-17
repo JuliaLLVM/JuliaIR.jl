@@ -36,6 +36,7 @@ for var, value in os.environ.items():
 # JuliaIR's ledger is opted into per RUN line (`env JULIAIR_LEDGER=%t.ledger opt ...`)
 config.environment.pop('JULIAIR_LEDGER', None)
 config.environment.pop('JULIAIR_JULIA', None)
+config.environment.pop('JULIAIR_MAP_PASSES', None)
 
 if platform.machine() in ('x86_64', 'AMD64'):
     config.available_features.add('x86_64')

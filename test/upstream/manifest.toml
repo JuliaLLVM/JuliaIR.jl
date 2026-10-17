@@ -1,0 +1,434 @@
+# Coverage manifest for Julia's own pass tests (test/llvmpasses), run by run.jl.
+#
+# [pins.<minor>]: the JuliaLang/julia commit whose fixtures are used for a Julia minor
+# version, and the Julia build they are run with (mode A: the passes run on that Julia's
+# own LLVM). The development version is pinned to the commit of the nightly build it was
+# last checked against.
+#
+# [fixtures."<file>"]: every file in test/llvmpasses of any pin, with
+#   kind    = "port"     tests passes that this package ports (`ports`, Julia's names)
+#             "mixed"    tests ported passes together with Julia's CPU-only passes
+#             "frame"    tests LateLowerGCFrame's GC frame lowering (CPU-only; the GPU
+#                        cleanup part gets its own tests, S6)
+#             "cpu"      tests CPU-only passes that are not ported
+#             "emitter"  tests Julia's code generator, not a pass
+#             "infra"    not a test
+#   status  = "run"      run with the ports (Julia's names are mapped to them)
+#             "skip"     not yet: `missing` lists the passes whose ports don't exist yet
+#             "exclude"  not relevant to this package (`reason`)
+#             "override" run a derived copy: `patch` (relative to this file) is applied
+#                        to the fixture first; the run fails if the pristine fixture
+#                        passes too (the override is stale)
+#   reason  = why, for skip/exclude/override; `ref` = upstream reference, if any
+#   cpp     = why the fixture does not run with Julia's C++ passes (`run.jl --cpp`, which
+#             otherwise runs every fixture that does not test the code generator)
+#   ledger_empty = ports that a fixture runs, but on IR they don't apply to (so the ledger
+#             shows no run of them)
+# A table [fixtures."<file>".pins.<minor>] overrides these keys for one pin.
+#
+# Independently of the status, run.jl skips the RUN lines of a fixture that use typed
+# pointers (`--opaque-pointers=0`; decision S-D1), and translates legacy pass manager
+# lines (`-enable-new-pm=0`) when they use opaque pointers.
+
+[pins."1.10"]
+tag = "v1.10.12"
+commit = "d93beab124c850d5f600f290069853e81413f7ca"
+julia = "1.10.12"
+
+[pins."1.11"]
+tag = "v1.11.9"
+commit = "53a02c0720cdc5d7fc0f35447886dd14bb2491a6"
+julia = "1.11.9"
+
+[pins."1.12"]
+tag = "v1.12.7"
+commit = "6d172b025e4befc4d274d9fbc9339917a8a86b65"
+julia = "1.12.7"
+
+[pins."1.13"]
+tag = "v1.13.2"
+commit = "45b6d15e34bbd2003a31acce0b1847b63dad029c"
+julia = "1.13.2"
+
+[pins."1.14"]
+tag = "master"
+commit = "54d14c8eb9e43ce9080eaa6cce6a74f1ece3921a"
+julia = "1.14.0-DEV.3782"
+
+
+## ported passes
+
+[fixtures."alloc-opt-bits.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "skip"
+missing = ["AllocOpt"]
+
+[fixtures."alloc-opt-gcframe-addrspaces.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "skip"
+missing = ["AllocOpt"]
+
+[fixtures."alloc-opt-pass.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "skip"
+missing = ["AllocOpt"]
+
+[fixtures."alloc-opt-unsized.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "skip"
+missing = ["AllocOpt"]
+
+[fixtures."atomic-modify.ll"]
+kind = "port"
+ports = ["ExpandAtomicModify"]
+status = "skip"
+missing = ["ExpandAtomicModify"]
+
+[fixtures."float16.ll"]
+kind = "port"
+ports = ["DemoteFloat16"]
+status = "skip"
+missing = ["DemoteFloat16"]
+
+[fixtures."gc-invariant-verifier.ll"]
+kind = "port"
+ports = ["GCInvariantVerifier"]
+status = "skip"
+missing = ["GCInvariantVerifier"]
+
+[fixtures."gc-invariant-verifier-field-wb.ll"]
+kind = "port"
+ports = ["GCInvariantVerifier"]
+status = "skip"
+missing = ["GCInvariantVerifier"]
+
+[fixtures."julia-licm.ll"]
+kind = "port"
+ports = ["JuliaLICM"]
+status = "skip"
+missing = ["JuliaLICM"]
+
+[fixtures."julia-licm-fail.ll"]
+kind = "port"
+ports = ["JuliaLICM"]
+status = "skip"
+missing = ["JuliaLICM"]
+
+[fixtures."julia-licm-memoryssa.ll"]
+kind = "port"
+ports = ["JuliaLICM"]
+status = "skip"
+missing = ["JuliaLICM"]
+
+[fixtures."julia-licm-missed.ll"]
+kind = "port"
+ports = ["JuliaLICM"]
+status = "skip"
+missing = ["JuliaLICM"]
+
+[fixtures."julia-simdloop.ll"]
+kind = "port"
+ports = ["LowerSIMDLoop"]
+status = "skip"
+missing = ["LowerSIMDLoop"]
+
+[fixtures."julia-simdloop-memoryssa.ll"]
+kind = "port"
+ports = ["LowerSIMDLoop"]
+status = "skip"
+missing = ["LowerSIMDLoop"]
+
+[fixtures."loopinfo.jl"]
+kind = "port"
+ports = ["LowerSIMDLoop"]
+status = "skip"
+missing = ["LowerSIMDLoop"]
+
+[fixtures."propagate-addrspace.ll"]
+kind = "port"
+ports = ["PropagateJuliaAddrspaces"]
+status = "skip"
+missing = ["PropagateJuliaAddrspaces"]
+
+[fixtures."propagate-addrspace-non-zero.ll"]
+kind = "port"
+ports = ["PropagateJuliaAddrspaces"]
+status = "skip"
+missing = ["PropagateJuliaAddrspaces"]
+
+[fixtures."remove-addrspaces.ll"]
+kind = "port"
+ports = ["RemoveJuliaAddrspaces"]
+status = "skip"
+missing = ["RemoveJuliaAddrspaces"]
+
+
+## ported passes together with CPU-only ones
+
+[fixtures."alloc-opt-gcframe.ll"]
+kind = "mixed"
+ports = ["AllocOpt"]
+status = "skip"
+missing = ["AllocOpt"]
+reason = "AllocOpt followed by Julia's LateLowerGCFrame and FinalLowerGC (only on Julia's LLVM)"
+
+[fixtures."parsing.ll"]
+kind = "mixed"
+ports = ["RemoveNI", "AllocOpt", "DemoteFloat16", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+status = "run"
+reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
+
+[fixtures."parsing.ll".pins."1.10"]
+status = "override"
+patch = "derived/1.10/parsing.ll.patch"
+reason = "its only RUN line uses typed pointers; the derived copy parses into an opaque context instead, which does not change what is tested"
+
+
+## GC frame lowering (LateLowerGCFrame), CPU-only
+
+[fixtures."gc-writebarrier-volatile.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."gcroots.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."late-lower-gc.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."late-lower-gc-addrspaces.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."late-lower-gc-alloc-zeroing.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."late-lower-gc-dynamic-index.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."late-lower-gc-select-store.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."late-lower-gc-sret.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."multiversioning-abi.ll"]
+kind = "frame"
+status = "exclude"
+reason = "JuliaMultiVersioning and LateLowerGCFrame's frame lowering"
+
+[fixtures."refinements.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."returnstwicegc.ll"]
+kind = "frame"
+status = "exclude"
+reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."safepoint_stress.jl"]
+kind = "frame"
+status = "exclude"
+reason = "emits IR with Julia's code generator for LateLowerGCFrame's frame lowering and FinalLowerGC"
+
+[fixtures."safepoint_stress.jl".pins."1.10"]
+cpp = "its RUN lines rely on LLVM 15 parsing Julia 1.10's typed IR into a typed context; jlopt always uses opaque pointers"
+
+
+## CPU-only passes
+
+[fixtures."cancellation-lowering.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CancellationLowering is CPU-only"
+
+[fixtures."cpu-features.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CPUFeatures is CPU-only"
+
+[fixtures."cpu-features-riscv.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CPUFeatures is CPU-only"
+
+[fixtures."cpu-features-supports.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CPUFeatures is CPU-only"
+
+[fixtures."cpu-features-supports-aarch64.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CPUFeatures is CPU-only"
+
+[fixtures."final-lower-gc.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "FinalLowerGC is CPU-only"
+
+[fixtures."final-lower-gc-addrspaces.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "FinalLowerGC is CPU-only"
+
+[fixtures."lower-handlers.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "LowerExcHandlers is CPU-only"
+
+[fixtures."lower-handlers-addrspaces.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "LowerExcHandlers is CPU-only"
+
+[fixtures."muladd.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "CombineMulAdd is CPU-only"
+
+[fixtures."multiversioning-annotate-only.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "JuliaMultiVersioning is CPU-only"
+
+[fixtures."multiversioning-clone-only.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "JuliaMultiVersioning is CPU-only"
+
+[fixtures."multiversioning-x86.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "JuliaMultiVersioning and CPUFeatures are CPU-only"
+
+[fixtures."pipeline-prints.ll"]
+kind = "cpu"
+status = "exclude"
+reason = "Julia's own optimization pipeline (`julia`)"
+cpp = "run in a Julia process, the `julia` pipeline prints unnamed blocks (`21:`) where upstream's opt keeps their names; not investigated, since the pipeline is not ported"
+
+
+## Julia's code generator
+
+[fixtures."aliasscopes.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."alloc-opt-pipeline.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator and optimization pipeline"
+
+[fixtures."cancellation-lowering-codegen.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."codegen-alloc-zeroing.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."cpu-supports-macro.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."cpu-supports-macro-aarch64.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."fastmath.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."fmf.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."image-codegen.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."llvmcall.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."memoryref-addrspace.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."names.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."noinline.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator"
+
+[fixtures."pipeline-o0.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator and optimization pipeline"
+
+[fixtures."pipeline-o2.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator and optimization pipeline"
+
+[fixtures."pipeline-o2-allocs.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator and optimization pipeline"
+
+[fixtures."pipeline-o2-broadcast.jl"]
+kind = "emitter"
+status = "exclude"
+reason = "tests Julia's code generator and optimization pipeline"
+
+
+## not tests
+
+[fixtures."lit.cfg.py"]
+kind = "infra"
+status = "exclude"
+reason = "upstream's lit configuration; run.jl generates its own"
+
+[fixtures."Makefile"]
+kind = "infra"
+status = "exclude"
+reason = "upstream's test driver"
+
+[fixtures.".gitignore"]
+kind = "infra"
+status = "exclude"
+reason = "not a test"

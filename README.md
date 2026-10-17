@@ -57,3 +57,7 @@ are skipped with a warning if it is not, except on CI).
 `test/litsetup.jl`'s `jlopt_bindir(dir)` writes an `opt` wrapper for the current Julia and
 project). With such a wrapper, LLVM's `update_test_checks.py --opt-binary=DIR/opt` works on
 the tests.
+
+`test/upstream/run.jl` runs Julia's own pass tests (`test/llvmpasses`) at pinned commits,
+with the ports; `test/upstream/manifest.toml` records which apply. See the documentation's
+"Testing" page.
