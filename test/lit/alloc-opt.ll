@@ -8,7 +8,7 @@
 ; RUN: rm -f %t.ledger
 ; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='function(AllocOpt)' -S %s -o /dev/null
 ; RUN: FileCheck %s --check-prefix=LEDGER < %t.ledger
-; LEDGER-COUNT-10: pass jl-alloc-opt julia=
+; LEDGER-COUNT-11: pass jl-alloc-opt julia=
 ; LEDGER-NOT: pass
 
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
@@ -26,6 +26,7 @@ declare void @llvm.julia.gc_preserve_end(token)
 declare void @external(ptr addrspace(10))
 declare void @ccall_roots()
 declare void @error() noreturn
+declare void @llvm.memcpy.p0.p11.i64(ptr, ptr addrspace(11), i64, i1)
 
 ; dead: only stored to
 ; CHECK-LABEL: @dead(
@@ -210,4 +211,18 @@ define i64 @optnone(i64 %x) noinline optnone {
   store i64 %x, ptr addrspace(11) %d, align 8
   %l = load i64, ptr addrspace(11) %d, align 8
   ret i64 %l
+}
+
+; intrinsics that use the object are redeclared for the stack's address space; like Julia's
+; pass, their parameter attributes are dropped
+; CHECK-LABEL: @memcpy_out(
+; CHECK: %v = alloca [2 x i64], align 16
+; CHECK: call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %v, i64 16, i1 false)
+define void @memcpy_out(ptr %dst, i64 %x) {
+  %pgcstack = call ptr @julia.get_pgcstack()
+  %v = call noalias ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 16, ptr addrspace(10) @tag)
+  %d = addrspacecast ptr addrspace(10) %v to ptr addrspace(11)
+  store i64 %x, ptr addrspace(11) %d, align 8
+  call void @llvm.memcpy.p0.p11.i64(ptr align 8 %dst, ptr addrspace(11) align 8 %d, i64 16, i1 false)
+  ret void
 }

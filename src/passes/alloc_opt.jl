@@ -112,7 +112,9 @@ end
 
 function is_legal_integer(layout::String, bits::Integer)
     for spec in split(layout, '-')
-        startswith(spec, 'n') || continue
+        # the native integer widths (`n8:16:32:64`), not the non-integral address
+        # spaces (`ni:10:11`)
+        occursin(r"^n\d", spec) || continue
         return any(w -> parse(Int, w) == bits, split(spec[2:end], ':'))
     end
     return false

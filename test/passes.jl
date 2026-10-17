@@ -31,6 +31,8 @@ end
         @test JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 32)
         @test !JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 96)
         @test !JuliaIR.is_legal_integer("e-i64:64", 32)
+        @test !JuliaIR.is_legal_integer("e-ni:10:11:12:13", 32)
+        @test JuliaIR.is_legal_integer("e-ni:10:11:12:13-n8:16:32:64", 32)
     end
 
     @testset "fields" begin
