@@ -13,6 +13,7 @@ read it first, including its Log). This file says where things are and how to co
 | S3 upstream harness, manifest (mode A) | done | b97b57a, e39a309, 3614dd5, 33ad510 |
 | S4 AllocOpt | port done; open: S12, S13 | f728275, 5df7c8c, PR #2 |
 | E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
+| S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | ports done; open: CI, S12 | 48e29df, 6f09543, 1d0b5c9 (`tb/s5-small-passes`) |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -24,12 +25,21 @@ the plan's Log entry for S4 and in `docs/src/index.md`.
 On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. `main` (7c99736) is green on every OS
 and version. Open, stacked (gh stack #3): PR #1 `tb/llvm-dev-ci` (CI tests against LLVM.jl
 `main`, see `.github/actions/llvm-dev`), PR #2 `tb/promote-mem-to-reg` on top (the E1 use
-in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
+in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack. S5 is
+`tb/s5-small-passes` on top of PR #2 (it needs nothing unreleased; stacked to keep the
+hand-off linear).
+
+S5 details: one file per pass in `src/passes/`, shared pointer and metadata helpers in
+`src/irutils.jl`. Every upstream fixture of the three passes passes in mode A at every
+pin, without overrides. Deviations from the C++ (master semantics for every dialect, two
+C++ bugs in PropagateJuliaAddrspaces' memset handling, DemoteFloat16 policies and name
+keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md`.
 
 ## Layout
 
 - `src/dialect.jl`: `Dialect` (what each Julia version's IR looks like; passes branch on
-  its fields). `src/registration.jl`: option parsing (`jl-x<julia=1.12;fp16=demote>`),
+  its fields, and the `fp16`/`bf16`/`gc_barrier` policies). `src/irutils.jl`: helpers
+  shared by passes (metadata copy, pointer types by reference, alloca address space). `src/registration.jl`: option parsing (`jl-x<julia=1.12;fp16=demote>`),
   `PassDefinition`/`define_pass`, `custom_pass` (the LLVM.jl pass with defaults),
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
   `src/jlopt.jl`: the `opt`-compatible driver. `src/passes/<pass>.jl`: one file per pass,
@@ -57,11 +67,17 @@ in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
   then picks up (and, on 1.10, fails to merge with dev'd entries: "can not merge
   projects"). At most 3 suites at once on pegasus.
 - Against unreleased LLVM.jl: locally, add (never commit; 1.10 ignores it, CI uses the
-  action instead) `[sources] LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "main"}`
+  action instead; on 1.10 run `Pkg.add(url="https://github.com/JuliaLLVM/LLVM.jl",
+  rev="main")` into `Manifest-v1.10.toml`, and into the test environment before
+  `run.jl`) `[sources] LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "main"}`
   to the root and `test/` Project.toml, and put `[LLVM] libLLVMExtra = "<path>"` in a
   `LocalPreferences.toml` in the root and `test/` (gitignored), built by running LLVM.jl's
   `deps/build_local.jl` under the same Julia version (one build per LLVM major, in a shared
-  scratch dir).
+  scratch dir). Builds of LLVM.jl `main`'s LLVMExtra (tree a6a5e8ee534a) for LLVM 15, 16,
+  18, 20 and 23 are in `~/.julia/scratchspaces/929cbde3-209d-540e-8aea-75f648917ca0/builds/`
+  (build from a `git archive origin/main deps` export, not from `~/Julia/pkg/LLVM`). The
+  preference is one file for every Julia version: set it per run and test one version at
+  a time.
 - Iteration: `jld --test eval 'using Test, JuliaIR'` then `jld --test run test/<file>.jl`
   (Julia 1.13 daemon, test workspace). `jld --test restart` after adding files/includes.
 - Lit suite alone: `include("test/litsetup.jl")`, then `run_lit("test/lit"; python=find_python(),
@@ -84,12 +100,16 @@ in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S5 (PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier): needs nothing new
-   from LLVM.jl (IR editing, `FastMathFlags`, `function_attributes`, and
-   `LLVM.Function(mod, intr, ft)` to redeclare memory intrinsics are all in 10.2). Then S6.
-3. A differential check like the one used for S4 (C++ pass vs port, in-process, on every
-   pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found the
-   only real differences; S12 should formalize it with GPUCompiler's kernels.
+2. S5: watch the PR's CI (stacked on PR #2); then S6 (LateLowerGC cleanup). S6 needs a
+   TBAA helper (`createMutableTBAAAccessTag`) that LLVM.jl doesn't have; first decide
+   whether it can be a pure-Julia metadata rewrite.
+3. A differential check like the one used for S4 and S5 (C++ pass vs port, in-process, on
+   every pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found
+   the only real differences, including two C++ bugs; S12 should formalize it with
+   GPUCompiler's kernels. For a verifier-like pass that aborts, run the C++ side in a
+   `bin/jlopt` subprocess for the inputs the port rejects.
+4. Tim's call: report upstream that PropagateJuliaAddrspaces redeclares `llvm.memset`
+   with the value operand's type as the length overload (invalid call), on every version.
 
 ## Traps
 
@@ -128,6 +148,17 @@ in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
 - `IRBuilder` can't create an alloca in a block that isn't in a function (it needs the
   module's data layout; segfault).
+- LLVM.jl has no `eltype(::VectorType)` (use `.element_type`) and can't wrap scalable
+  vector types (`value_type` of a `<vscale x ...>` value throws): inspect types that may
+  be vectors through `API.LLVMTypeOf` refs (`src/irutils.jl`).
+- IRBuilder (C API) constant-folds: a placeholder operand must not be a constant, or a
+  "new" GEP/select comes back as a constant (PropagateJuliaAddrspaces uses a temporary
+  phi).
+- `call.called_function` is `nothing` when the call's function type differs from the
+  declaration's (like C++'s `getCalledFunction`); tests must declare matching types.
+- Printing differs between LLVM versions in CHECK lines: `half` constants are decimal on
+  LLVM 23 (`3.000000e+00`, `0xH4200` before), LLVM 15 omits the value type of
+  `atomicrmw xchg` of pointers.
 - Julia's libLLVM targets differ per platform (macOS arm64 has no X86, Linux x86 no
   AArch64): lit tests that need a target say `REQUIRES: <target>-registered-target`.
 
@@ -141,5 +172,7 @@ in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack.
 ## Peer conversations (pegasus)
 
 - `llvm-middleend-passes-astra`: the design discussion behind the plan.
-- `llvm-middleend-passes-sol`: reviews of S0–S4; `peer log` to read. Verdicts: S0 one
-  minor, S1 three, S2 two, S3 three, S4 one finding, all fixed.
+- `llvm-middleend-passes-sol`: reviews of S0–S5; `peer log` to read. Verdicts: S0 one
+  minor, S1 three, S2 two, S3 three, S4 one finding, S5 one (DemoteFloat16's `ppu`
+  triple), all fixed.
+- `llvm-middleend-passes-astra` turn 3: the S5 design (bf16 policy, verifier errors).
