@@ -22,7 +22,8 @@ harness will report those overrides as stale. The design choices (which historic
 behaviours are kept per Julia version, which fixes are applied to every version) are in
 the plan's Log entry for S4 and in `docs/src/index.md`.
 
-Pushed to https://github.com/JuliaLLVM/JuliaIR.jl (`main`).
+Pushed to https://github.com/JuliaLLVM/JuliaIR.jl (`main`); CI green on every OS and
+version as of a8bf3f2.
 
 ## Layout
 
@@ -110,6 +111,8 @@ Pushed to https://github.com/JuliaLLVM/JuliaIR.jl (`main`).
 - A pass with `required=false` is skipped on `optnone` functions, so its callback (and the
   ledger) doesn't see them.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
+- Julia's libLLVM targets differ per platform (macOS arm64 has no X86, Linux x86 no
+  AArch64): lit tests that need a target say `REQUIRES: <target>-registered-target`.
 
 ## Decisions (Tim, 2026-10-17)
 
