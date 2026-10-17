@@ -314,7 +314,8 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
     end
 
     pristine = read(path, String)
-    text = status == "override" ?
+    # with Julia's own passes, upstream's expectations hold as they are
+    text = status == "override" && !cpp ?
         apply_patch(pristine, read(joinpath(manifest_dir, entry["patch"]), String); name) :
         pristine
 

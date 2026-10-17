@@ -251,6 +251,10 @@ mktempdir() do dir
     code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "cpp|good")
     @test code == 0
     @test occursin("2 of 2 fixtures passed", out)
+    # the overrides describe the ports: Julia's passes run the pristine fixtures
+    code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "override")
+    @test code == 1
+    @test occursin("override.ll: FAIL", out)
     code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "forced")
     @test code == 1
     @test occursin("forced.ll: ports ran although Julia's passes were requested", out)
