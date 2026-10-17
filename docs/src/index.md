@@ -14,6 +14,7 @@ library supported by LLVM.jl. Only IR with opaque pointers is supported.
 | `jl-alloc-opt` | `AllocOpt` | no |
 | `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | no |
 | `jl-demote-float16` | `DemoteFloat16` | yes |
+| `jl-gc-invariant-verifier` | `GCInvariantVerifier` | yes |
 
 Differences with Julia's C++ passes:
 
@@ -34,3 +35,8 @@ Differences with Julia's C++ passes:
   operand to demote (the C++ pass recreates every instruction with a 16-bit result,
   dropping its name), names the replacement like the original, and runs on `optnone`
   functions (it changes their semantics, so it is a required pass).
+- GCInvariantVerifier throws a `JuliaIR.GCInvariantError` listing every violation
+  instead of printing them and aborting (`jlopt` prints the error and aborts, like
+  `opt`). It reads the address space of vectors of pointers from their elements on
+  every Julia version (the C++ pass of Julia 1.10 and 1.11 assumes scalar pointers in
+  address space casts), and names `ptrtoint` violations as Julia master does.

@@ -92,14 +92,12 @@ status = "run"
 [fixtures."gc-invariant-verifier.ll"]
 kind = "port"
 ports = ["GCInvariantVerifier"]
-status = "skip"
-missing = ["GCInvariantVerifier"]
+status = "run"
 
 [fixtures."gc-invariant-verifier-field-wb.ll"]
 kind = "port"
 ports = ["GCInvariantVerifier"]
-status = "skip"
-missing = ["GCInvariantVerifier"]
+status = "run"
 
 [fixtures."julia-licm.ll"]
 kind = "port"

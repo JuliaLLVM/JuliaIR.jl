@@ -52,6 +52,45 @@ end
     end
 end
 
+@testset "GCInvariantVerifier" begin
+    @test JuliaIR.GCInvariantVerifierPass().required
+    @test_throws "must be a Bool" JuliaIR.GCInvariantVerifierPass(; strong=1)
+    ir = """
+        define ptr addrspace(11) @f(ptr addrspace(10) %obj, ptr %p) {
+          %derived = addrspacecast ptr addrspace(10) %obj to ptr addrspace(11)
+          %gep = getelementptr i8, ptr addrspace(10) %obj, i64 8
+          store ptr addrspace(11) %derived, ptr %p
+          ret ptr addrspace(11) %derived
+        }"""
+    # every violation is reported, and the error outlives the module
+    err = @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        try
+            run!(JuliaIR.GCInvariantVerifierPass(; julia=v"1.12", strong=true), mod)
+            nothing
+        catch err
+            err
+        end
+    end
+    @test err isa PassException && err.ex isa JuliaIR.GCInvariantError
+    @test [v.message for v in err.ex.violations] ==
+          ["GC tracked values may not appear in GEP expressions. You may have to decay the value first",
+           "Illegal store of decayed value", "Only gc tracked values may be directly returned"]
+    @test occursin("store ptr addrspace(11) %derived, ptr %p", err.ex.violations[2].instruction)
+    msg = sprint(showerror, err.ex)
+    @test startswith(msg, "GCInvariantError: GC invariants are violated in function f\n")
+    @test occursin("Illegal store of decayed value\n\t  store ptr addrspace(11)", msg)
+
+    # without the strong check, GEPs of tracked pointers are fine
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        err = try
+            run!(JuliaIR.GCInvariantVerifierPass(; julia=v"1.12"), mod)
+        catch err
+            err
+        end
+        @test length(err.ex.violations) == 2
+    end
+end
+
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
 
