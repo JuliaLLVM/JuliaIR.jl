@@ -20,16 +20,6 @@ function string_attribute(f::LLVM.Function, kind::String)
     return nothing
 end
 
-# the architectures of LLVM's `Triple` that the C++ pass checks for, by the names
-# `Triple::parseArch` accepts
-const PPC_ARCHS = ("powerpc", "powerpcspe", "ppc", "ppc32", "powerpcle", "ppcle", "ppc32le",
-                   "powerpc64", "ppu", "ppc64", "powerpc64le", "ppc64le")
-const AARCH64_ARCHS = ("aarch64", "arm64", "arm64e", "arm64ec", "aarch64_be", "aarch64_32",
-                       "arm64_32")
-const X86_64_ARCHS = ("x86_64", "amd64", "x86_64h")
-
-triple_arch(triple::String) = first(split(triple, '-'))
-
 # whether a type is kept (`true`) or demoted, according to the policy or to the rule of
 # the Julia version
 function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect)
@@ -39,14 +29,14 @@ function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect)
         attr = string_attribute(f, "julia.hasfp16")
         attr === nothing || return attr == "true"
         # half uses excessive precision on PowerPC (llvm/llvm-project#97975)
-        return !(triple_arch(triple) in PPC_ARCHS)
+        return !LLVM.isppc(LLVM.Triple(triple))
     else
         features = something(string_attribute(f, "target-features"), "")
-        arch = triple_arch(triple)
-        if arch in AARCH64_ARCHS
+        tt = LLVM.Triple(triple)
+        if LLVM.isaarch64(tt)
             (occursin("+fp16fml", features) || occursin("+fullfp16", features)) &&
                 return true
-        elseif arch in X86_64_ARCHS
+        elseif tt.arch === :x86_64
             occursin("+avx512fp16", features) && return true
         end
         return string_attribute(f, "julia.hasfp16") !== nothing
