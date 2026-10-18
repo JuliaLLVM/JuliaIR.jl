@@ -519,7 +519,7 @@ function reprint_tools(bindir::String, newer_opt::String)
         for ((i = 0; i < \${#args[@]}; i++)); do
             case "\${args[i]}" in
                 -S) text=1;;
-                -o) out=\${args[i+1]};;
+                -o) i=\$((i + 1)); out=\${args[i]};;
                 -opaque-pointers*) ;;
                 -o*) out=\${args[i]#-o};;
             esac
@@ -531,7 +531,7 @@ function reprint_tools(bindir::String, newer_opt::String)
         if [ "\$out" = - ]; then
             { "\$jlopt" "\$@" > "\$tmp" 2>&3; } 3>&2 2>/dev/null
         else
-            { "\$jlopt" "\$@" 2>&3; } 3>&2 2>/dev/null && cp "\$out" "\$tmp"
+            { "\$jlopt" "\$@" 2>&3; } 3>&2 2>/dev/null && cp -- "\$out" "\$tmp"
         fi
         status=\$?
         if [ \$status -ne 0 ]; then
