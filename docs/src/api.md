@@ -30,6 +30,8 @@ JuliaIR.CancellationLoweringPass
 JuliaIR.CancellationLoweringError
 JuliaIR.RemoveJuliaAddrspacesPass
 JuliaIR.RemoveAddrspacesPass
+JuliaIR.LowerPTLSPass
+JuliaIR.LowerPTLSError
 ```
 
 
@@ -38,6 +40,7 @@ JuliaIR.RemoveAddrspacesPass
 ```@docs
 JuliaIR.Dialect
 JuliaIR.PassOptions
+JuliaIR.Optional
 JuliaIR.parse_options
 ```
 

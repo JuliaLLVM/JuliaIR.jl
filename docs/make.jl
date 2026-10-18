@@ -16,6 +16,7 @@ function main()
             "CancellationLowering" => "cancellation_lowering.md",
             "RemoveJuliaAddrspaces" => "remove_addrspaces.md",
             "FinalLowerGC" => "final_lower_gc.md",
+            "LowerPTLS" => "lower_ptls.md",
             "Runtime facts" => "runtime.md",
             "Type lowering" => "type_lowering.md",
             "Testing" => "testing.md",

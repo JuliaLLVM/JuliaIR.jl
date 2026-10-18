@@ -183,6 +183,38 @@ struct Dialect
     "Whether every function processed gets a declaration of `ijl_gc_small_alloc`
     (Julia 1.12 and later)."
     gc_declare_small_alloc::Bool
+    "The condition under which a GC state transition polls a safepoint: `:and` (when
+    leaving a GC-safe state for the unsafe one: `(old != 0) & (new == 0)`; Julia 1.10),
+    `:or` (`(old == 0) | (new == 0)`, always when entering the unsafe state; 1.11), or
+    `:ne` (whenever the state changes, `old != new`, with named values; 1.13 and later,
+    and 1.12, whose C++ inverts the comparison, see the docs)."
+    gc_state_condition::Symbol
+
+    # LowerPTLS
+    "The parameter attribute of a function's argument that holds the GC stack, which
+    LowerPTLS uses instead of a call of the getter: `:swiftself` (Julia 1.12 and older) or
+    `:gcstack` (a string attribute; 1.13 and later)."
+    ptls_stack_argument::Symbol
+    "Whether that argument takes the name of the getter call it replaces (Julia 1.11 and
+    later)."
+    ptls_argument_takes_name::Bool
+    "The runtime function that adopts a foreign thread for `julia.get_pgcstack_or_new`:
+    `ijl_adopt_thread` (Julia 1.11 and older) or `ijl_autoinit_and_adopt_thread`."
+    ptls_adopt_thread::String
+    "The image's variable for the TLS offset in imaging mode: `jl_tls_offset`, or
+    `jl_image_tls_offset` (Julia 1.14 and later)."
+    ptls_image_offset_slot::String
+    "How the JIT calls the GC stack getter when it can't read the thread pointer:
+    `:address` (the getter's address in the process, with its key on Darwin; Julia 1.13
+    and older), or `:resolved` (the symbol `jl_get_pgcstack_resolved`, and the
+    `tls_getters` option that always calls it; 1.14 and later)."
+    ptls_jit_getter::Symbol
+    "Whether the GEP that adds the TLS offset to the thread pointer is `inbounds`, and
+    RISC-V's thread pointer is supported (Julia 1.12 and later)."
+    ptls_tp_inbounds::Bool
+    "Whether the GC state restored at the returns of a C-callable function is followed
+    by a safepoint (Julia 1.12 and later)."
+    ptls_exit_safepoint::Bool
 
     # type lowering
     "How `Ptr{T}` is lowered: `:integer` (an integer of the pointer's size; Julia 1.10 and
@@ -262,6 +294,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                           minor == v"1.13" ? :image : :deferred
     gc_transition_lowering = minor <= v"1.11" ? :none :
                              minor == v"1.12" ? :pgcstack : :bundle
+    gc_state_condition = minor == v"1.10" ? :and : minor == v"1.11" ? :or : :ne
 
     fp16_rule = minor == v"1.10" ? :target_features :
                 minor == v"1.11" ? :target_features_bf16 : :attributes
@@ -306,6 +339,16 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.14" ? :monotonic_named :
                    minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
                    minor >= v"1.12",                      # gc_declare_small_alloc
+                   gc_state_condition,
+                   minor >= v"1.13" ? :gcstack : :swiftself, # ptls_stack_argument
+                   minor >= v"1.11",                      # ptls_argument_takes_name
+                   minor >= v"1.12" ? "ijl_autoinit_and_adopt_thread" :
+                                      "ijl_adopt_thread", # ptls_adopt_thread
+                   minor >= v"1.14" ? "jl_image_tls_offset" :
+                                      "jl_tls_offset",    # ptls_image_offset_slot
+                   minor >= v"1.14" ? :resolved : :address, # ptls_jit_getter
+                   minor >= v"1.12",                      # ptls_tp_inbounds
+                   minor >= v"1.12",                      # ptls_exit_safepoint
                    minor <= v"1.11" ? :integer : :pointer, # cpointer_type
                    minor <= v"1.11" ? :bottom :
                    minor >= v"1.14" ? :some_type : :typeofbottom_super, # bottom_aliases

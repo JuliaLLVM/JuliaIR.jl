@@ -79,6 +79,18 @@ end
     @test map(d -> d.gc_transition_lowering, (d11, d12, d13, dm)) ==
           (:none, :pgcstack, :bundle, :bundle)
     @test map(d -> d.gc_safepoint_load, (d12, d13, dm)) == (:plain, :monotonic, :monotonic_named)
+    @test map(d -> d.gc_state_condition, (d10, d11, d12, d13, dm)) == (:and, :or, :ne, :ne, :ne)
+
+    # LowerPTLS
+    @test map(d -> d.ptls_stack_argument, (d12, d13)) == (:swiftself, :gcstack)
+    @test !d10.ptls_argument_takes_name && d11.ptls_argument_takes_name
+    @test (d11.ptls_adopt_thread, d12.ptls_adopt_thread) ==
+          ("ijl_adopt_thread", "ijl_autoinit_and_adopt_thread")
+    @test (d13.ptls_image_offset_slot, dm.ptls_image_offset_slot) ==
+          ("jl_tls_offset", "jl_image_tls_offset")
+    @test (d13.ptls_jit_getter, dm.ptls_jit_getter) == (:address, :resolved)
+    @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
+    @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
 
     # type lowering

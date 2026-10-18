@@ -1,4 +1,5 @@
 using LLVM, LLVM.IR, LLVM.Passes
+using InteractiveUtils: InteractiveUtils
 
 @testset "passes" begin
 
@@ -552,6 +553,132 @@ end
     end
 end
 
+
+@testset "LowerPTLS" begin
+    @test JuliaIR.LowerPTLSPass().required
+    ir(body; triple="x86_64-unknown-linux-gnu") = """
+        $(isempty(triple) ? "" : "target triple = \"$triple\"")
+        declare ptr @julia.get_pgcstack()
+        declare ptr @julia.get_pgcstack_or_new()
+        declare void @use(ptr)
+        $body"""
+    get_ir = """
+        define void @f() {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          call void @use(ptr %pgcstack)
+          ret void
+        }"""
+    or_new_ir = """
+        define void @f() {
+          %pgcstack = call ptr @julia.get_pgcstack_or_new()
+          call void @use(ptr %pgcstack)
+          ret void
+        }"""
+    function lower(ir_str, options="")
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir_str) begin
+            opts = JuliaIR.parse_options(options; extra=JuliaIR.LOWER_PTLS.extra)
+            pa = JuliaIR.lower_ptls!(mod, nothing, opts)
+            verify(mod)
+            return pa, string(mod)
+        end
+    end
+
+    @testset "options" begin
+        opts = JuliaIR.parse_options("imaging;tls-elf-support=no;tls-offset=-1;pgcstack-getter=0x10;pgcstack-key=32";
+                                     extra=JuliaIR.LOWER_PTLS.extra)
+        @test opts.extra.imaging
+        @test !opts.extra.tls_getters
+        @test opts.extra.tls_offset == JuliaIR.Optional{Int}(-1)
+        @test opts.extra.pgcstack_getter == JuliaIR.Optional{UInt}(0x10)
+        @test opts.extra.pgcstack_key == JuliaIR.Optional{UInt}(32)
+        # unspecified facts are read from the running Julia, when needed
+        opts = JuliaIR.parse_options(""; extra=JuliaIR.LOWER_PTLS.extra)
+        @test opts.extra.tls_offset == JuliaIR.Optional{Int}()
+        @test_throws "requires an address" JuliaIR.parse_options("pgcstack-getter=-1";
+                                                                 extra=JuliaIR.LOWER_PTLS.extra)
+        @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
+                                    pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
+        if dialect.ptls_jit_getter === :resolved
+            _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8")
+            @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
+        else
+            @test_throws "only exists on Julia master" lower(ir(get_ir), "tls-getters")
+        end
+    end
+
+    @testset "preserved analyses" begin
+        # nothing to lower: nothing changes, and no fact is needed
+        pa, out = lower("""
+            target triple = "powerpc64le-unknown-linux-gnu"
+            declare void @use(ptr)""")
+        @test pa == PreservedAnalyses(AllAnalyses)
+        # the GC stack through the thread pointer, or the getter: the CFG is unchanged
+        pa, out = lower(ir(get_ir), "tls-offset=-8")
+        @test pa == PreservedAnalyses(CFGAnalyses)
+        @test occursin("movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
+        pa, out = lower(ir(get_ir), "imaging;tls-elf-support=no")
+        @test pa == PreservedAnalyses(CFGAnalyses)
+        # the ELF TLS fast path and thread adoption split blocks
+        pa, out = lower(ir(get_ir), "imaging;tls-elf-support=yes")
+        @test pa == PreservedAnalyses()
+        pa, out = lower(ir(or_new_ir), "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+        @test pa == PreservedAnalyses()
+        @test occursin("call ptr @$(dialect.ptls_adopt_thread)()", out)
+    end
+
+    @testset "errors" begin
+        # rejected before anything changes
+        bad = ir("""
+            $get_ir
+            define void @g(i1 %c) {
+            top:
+              br i1 %c, label %adopt, label %done
+            adopt:
+              %pgcstack = call ptr @julia.get_pgcstack_or_new()
+              call void @use(ptr %pgcstack)
+              br label %done
+            done:
+              ret void
+            }""")
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
+            before = string(mod)
+            opts = JuliaIR.parse_options("tls-offset=-8"; extra=JuliaIR.LOWER_PTLS.extra)
+            err = try
+                JuliaIR.lower_ptls!(mod, nothing, opts)
+                nothing
+            catch err
+                err
+            end
+            @test err isa JuliaIR.LowerPTLSError
+            @test occursin("doesn't dominate a return", sprint(showerror, err))
+            @test string(mod) == before
+        end
+        # targets without a known thread pointer need the getter
+        triple = "powerpc64le-unknown-linux-gnu"
+        @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8")
+        _, out = lower(ir(get_ir; triple), "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        @test !occursin("asm", out)
+        _, out = lower(ir(get_ir; triple), "imaging;tls-elf-support=no")
+        @test !occursin("asm", out)
+    end
+
+    # the thread pointer of the host, as Julia's own code reads it (in JIT mode)
+    @testset "host" begin
+        rt_offset = unsafe_load(cglobal(:jl_tls_offset, Int))
+        f() = (GC.safepoint(); nothing)
+        julia_ir = sprint(io -> InteractiveUtils.code_llvm(io, f, (); raw=true, dump_module=true))
+        m = match(r"asm \"([^\"]+)\", \"=r\"\(\)", julia_ir)
+        _, out = lower(ir(get_ir; triple=""))
+        if rt_offset == -1
+            @test m === nothing
+            @test occursin(r"call ptr inttoptr \(i64 \d+ to ptr\)\(", out)
+        else
+            @test m !== nothing
+            @test occursin("asm \"$(m[1])\", \"=r\"()", out)
+            @test occursin(r"getelementptr (inbounds )?i8, ptr %thread_ptr, i64 " * string(rt_offset), out)
+        end
+    end
+end
 
 @testset "ExpandAtomicModify" begin
     @test !JuliaIR.ExpandAtomicModifyPass().required
