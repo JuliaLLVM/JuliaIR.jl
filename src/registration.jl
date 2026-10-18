@@ -170,7 +170,8 @@ ledger_record(name::String, dialect::Dialect) =
 ## pass definitions
 
 # A pass of this package. `impl(ir, am, opts::PassOptions)` runs it on a module (module
-# pass) or function (function pass) and returns the preserved analyses. `cpp_name` is
+# pass), a function (function pass) or a loop (loop pass, with the loop pass manager's
+# `LoopAnalysisResults` as `am`), and returns the preserved analyses. `cpp_name` is
 # the name of Julia's C++ pass it ports, which `jlopt` maps to this pass.
 struct PassDefinition
     name::String
@@ -190,7 +191,7 @@ const PASSES = PassDefinition[]
 function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
                      cpp_name::String)
     startswith(name, "jl-") || error("pass names must start with jl-")
-    kind in (:module, :function) || error("invalid pass kind $kind")
+    kind in (:module, :function, :loop) || error("invalid pass kind $kind")
     def = PassDefinition(name, kind, required, impl, extra, cpp_name)
     filter!(p -> p.name != name, PASSES)
     push!(PASSES, def)
@@ -198,7 +199,7 @@ function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
 end
 
 function run_pass(def::PassDefinition, @nospecialize(ir), am, opts::PassOptions)
-    require_opaque(context(ir))
+    require_opaque(context(ir isa Loop ? ir.header : ir))
     ledger_record(def.name, opts.dialect)
     return def.impl(ir, am, opts)
 end
@@ -218,7 +219,8 @@ function custom_pass(def::PassDefinition; julia=VERSION, fp16::Symbol=:auto,
     parse_options(""; julia, fp16, bf16, gc_barrier, extra)
     parse = str -> parse_options(str; julia, fp16, bf16, gc_barrier, extra)
     callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
-    constructor = def.kind === :module ? ModulePass : FunctionPass
+    constructor = def.kind === :module ? ModulePass :
+                  def.kind === :function ? FunctionPass : LoopPass
     return constructor(def.name, callback; def.required, analyses=true,
                        parse_options=parse)
 end
