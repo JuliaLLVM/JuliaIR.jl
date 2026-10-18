@@ -12,7 +12,7 @@
 ; RUN: rm -f %t.ledger
 ; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='function(CancellationLowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=24;setjmp=__sigsetjmp>)' -S %s -o /dev/null
 ; RUN: grep -c 'pass	jl-cancellation-lowering	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
-; COUNT: 16
+; COUNT: 18
 
 declare i32 @julia.cancellation_point()
 declare ptr @julia.get_pgcstack()
@@ -21,6 +21,8 @@ declare void @unsafe_call()
 declare void @safe_call()
 declare ptr @julia.gc_alloc_obj(ptr, i64, ptr)
 declare void @julia.object_write_barrier(ptr addrspace(10), ptr addrspace(10))
+declare void @julia.field_write_barrier.p11(ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...)
+declare void @julia.field_write_barrier.p13(ptr addrspace(10), ptr addrspace(13), ptr addrspace(10), ...)
 declare ptr @julia.pointer_from_objref(ptr addrspace(11))
 declare ptr @julia.gc_loaded(ptr addrspace(10), ptr)
 declare void @julia.safepoint(ptr)
@@ -515,6 +517,117 @@ entry:
   call void @unsafe_call()
   ret void
 }
+
+; Allocations and write barriers may run with the region open: they don't close it, and
+; they are marked for FinalLowerGC, which lowers them to entry points that close and
+; reopen it themselves.
+define void @region_annotations(ptr addrspace(10) %obj, ptr addrspace(11) %fld, ptr addrspace(13) %ld) {
+; CHECK-LABEL: define void @region_annotations(
+; CHECK-SAME: ptr addrspace(10) [[OBJ:%.*]], ptr addrspace(11) [[FLD:%.*]], ptr addrspace(13) [[LD:%.*]]) {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    [[CANCEL_UCONTEXT:%.*]] = alloca [224 x i8], align 8
+; CHECK-NEXT:    [[PGCSTACK:%.*]] = call ptr @julia.get_pgcstack()
+; CHECK-NEXT:    [[CURRENT_TASK:%.*]] = getelementptr i8, ptr [[PGCSTACK]], i64 -192
+; CHECK-NEXT:    [[RESET_CTX_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 264
+; CHECK-NEXT:    [[PTLS_FIELD_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 208
+; CHECK-NEXT:    [[EH_FIELD_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 224
+; CHECK-NEXT:    [[RESET_CTX_PREV:%.*]] = load atomic volatile ptr, ptr [[RESET_CTX_PTR]] monotonic, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[REGION_LIVE:%.*]] = icmp eq ptr [[RESET_CTX_PREV]], [[CANCEL_UCONTEXT]]
+; CHECK-NEXT:    br i1 [[REGION_LIVE]], label %[[CANCEL_PT_CONT:.*]], label %[[CANCEL_ESTABLISH:.*]]
+; CHECK:       [[CANCEL_ESTABLISH]]:
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    [[PTLS:%.*]] = load ptr, ptr [[PTLS_FIELD_PTR]], align 8
+; CHECK-NEXT:    [[SAFEPOINT_ADDR:%.*]] = getelementptr inbounds i8, ptr [[PTLS]], i32 16
+; CHECK-NEXT:    [[SAFEPOINT:%.*]] = load atomic ptr, ptr [[SAFEPOINT_ADDR]] monotonic, align 8
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    call void @julia.safepoint(ptr [[SAFEPOINT]])
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    [[TMP0:%.*]] = ptrtoint ptr [[CANCEL_UCONTEXT]] to i64
+; CHECK-NEXT:    store atomic volatile i64 [[TMP0]], ptr [[CANCEL_UCONTEXT]] monotonic, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[SAVED_GCSTACK:%.*]] = load ptr, ptr [[PGCSTACK]], align 8
+; CHECK-NEXT:    [[CANCEL_GCSTACK_SLOT:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 8
+; CHECK-NEXT:    store volatile ptr [[SAVED_GCSTACK]], ptr [[CANCEL_GCSTACK_SLOT]], align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[SAVED_EH:%.*]] = load ptr, ptr [[EH_FIELD_PTR]], align 8
+; CHECK-NEXT:    [[CANCEL_EH_SLOT:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 16
+; CHECK-NEXT:    store volatile ptr [[SAVED_EH]], ptr [[CANCEL_EH_SLOT]], align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[CANCEL_MCTX:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 24
+; CHECK-NEXT:    [[TMP1:%.*]] = call i32 @__sigsetjmp(ptr [[CANCEL_MCTX]], i32 0) #[[ATTR7]]
+; CHECK-NEXT:    store atomic volatile ptr [[CANCEL_UCONTEXT]], ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    br label %[[CANCEL_PT_CONT]]
+; CHECK:       [[CANCEL_PT_CONT]]:
+; CHECK-NEXT:    [[X:%.*]] = call ptr @julia.gc_alloc_obj(ptr [[PGCSTACK]], i64 8, ptr null), !julia.reset_region [[META3]]
+; CHECK-NEXT:    call void @julia.object_write_barrier(ptr addrspace(10) [[OBJ]], ptr addrspace(10) [[OBJ]]), !julia.reset_region [[META3]]
+; CHECK-NEXT:    call void (ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...) @julia.field_write_barrier.p11(ptr addrspace(10) [[OBJ]], ptr addrspace(11) [[FLD]], ptr addrspace(10) [[OBJ]]), !julia.reset_region [[META3]]
+; CHECK-NEXT:    call void (ptr addrspace(10), ptr addrspace(13), ptr addrspace(10), ...) @julia.field_write_barrier.p13(ptr addrspace(10) [[OBJ]], ptr addrspace(13) [[LD]], ptr addrspace(10) [[OBJ]]), !julia.reset_region [[META3]]
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    ret void
+;
+entry:
+  %pgcstack = call ptr @julia.get_pgcstack()
+  %r = call i32 @julia.cancellation_point()
+  %x = call ptr @julia.gc_alloc_obj(ptr %pgcstack, i64 8, ptr null)
+  call void @julia.object_write_barrier(ptr addrspace(10) %obj, ptr addrspace(10) %obj)
+  call void (ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...) @julia.field_write_barrier.p11(ptr addrspace(10) %obj, ptr addrspace(11) %fld, ptr addrspace(10) %obj)
+  call void (ptr addrspace(10), ptr addrspace(13), ptr addrspace(10), ...) @julia.field_write_barrier.p13(ptr addrspace(10) %obj, ptr addrspace(13) %ld, ptr addrspace(10) %obj)
+  ret void
+}
+
+; A "julia.ipo_reset_safe" function with a point of its own is instrumented like any
+; function with points, everywhere (its caller's region may be open from the start):
+; its stores close the region too, and its returns tear it down.
+define void @ipo_reset_safe_with_point(ptr %p) "julia.ipo_reset_safe" {
+; CHECK-LABEL: define void @ipo_reset_safe_with_point(
+; CHECK-SAME: ptr [[P:%.*]]) #[[ATTR3]] {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    [[CANCEL_UCONTEXT:%.*]] = alloca [224 x i8], align 8
+; CHECK-NEXT:    [[PGCSTACK:%.*]] = call ptr @julia.get_pgcstack()
+; CHECK-NEXT:    [[CURRENT_TASK:%.*]] = getelementptr i8, ptr [[PGCSTACK]], i64 -192
+; CHECK-NEXT:    [[RESET_CTX_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 264
+; CHECK-NEXT:    [[PTLS_FIELD_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 208
+; CHECK-NEXT:    [[EH_FIELD_PTR:%.*]] = getelementptr i8, ptr [[CURRENT_TASK]], i64 224
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    store i64 1, ptr [[P]], align 4
+; CHECK-NEXT:    [[RESET_CTX_PREV:%.*]] = load atomic volatile ptr, ptr [[RESET_CTX_PTR]] monotonic, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[REGION_LIVE:%.*]] = icmp eq ptr [[RESET_CTX_PREV]], [[CANCEL_UCONTEXT]]
+; CHECK-NEXT:    br i1 [[REGION_LIVE]], label %[[CANCEL_PT_CONT:.*]], label %[[CANCEL_ESTABLISH:.*]]
+; CHECK:       [[CANCEL_ESTABLISH]]:
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    [[PTLS:%.*]] = load ptr, ptr [[PTLS_FIELD_PTR]], align 8
+; CHECK-NEXT:    [[SAFEPOINT_ADDR:%.*]] = getelementptr inbounds i8, ptr [[PTLS]], i32 16
+; CHECK-NEXT:    [[SAFEPOINT:%.*]] = load atomic ptr, ptr [[SAFEPOINT_ADDR]] monotonic, align 8
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    call void @julia.safepoint(ptr [[SAFEPOINT]])
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    [[TMP0:%.*]] = ptrtoint ptr [[CANCEL_UCONTEXT]] to i64
+; CHECK-NEXT:    store atomic volatile i64 [[TMP0]], ptr [[CANCEL_UCONTEXT]] monotonic, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[SAVED_GCSTACK:%.*]] = load ptr, ptr [[PGCSTACK]], align 8
+; CHECK-NEXT:    [[CANCEL_GCSTACK_SLOT:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 8
+; CHECK-NEXT:    store volatile ptr [[SAVED_GCSTACK]], ptr [[CANCEL_GCSTACK_SLOT]], align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[SAVED_EH:%.*]] = load ptr, ptr [[EH_FIELD_PTR]], align 8
+; CHECK-NEXT:    [[CANCEL_EH_SLOT:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 16
+; CHECK-NEXT:    store volatile ptr [[SAVED_EH]], ptr [[CANCEL_EH_SLOT]], align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    [[CANCEL_MCTX:%.*]] = getelementptr i8, ptr [[CANCEL_UCONTEXT]], i64 24
+; CHECK-NEXT:    [[TMP1:%.*]] = call i32 @__sigsetjmp(ptr [[CANCEL_MCTX]], i32 0) #[[ATTR7]]
+; CHECK-NEXT:    store atomic volatile ptr [[CANCEL_UCONTEXT]], ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    br label %[[CANCEL_PT_CONT]]
+; CHECK:       [[CANCEL_PT_CONT]]:
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
+; CHECK-NEXT:    store i64 2, ptr [[P]], align 4
+; CHECK-NEXT:    store atomic volatile ptr null, ptr [[RESET_CTX_PTR]] release, align 8, !julia.reset_safe [[META3]]
+; CHECK-NEXT:    ret void
+;
+entry:
+  %pgcstack = call ptr @julia.get_pgcstack()
+  store i64 1, ptr %p
+  %r = call i32 @julia.cancellation_point()
+  store i64 2, ptr %p
+  ret void
+}
+
 define ptr @no_points(i64 %v) {
 ; CHECK-LABEL: define ptr @no_points(
 ; CHECK-SAME: i64 [[V:%.*]]) {
