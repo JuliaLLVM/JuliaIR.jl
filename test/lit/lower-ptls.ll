@@ -101,6 +101,18 @@ top:
   ret ptr %pgcstack
 }
 
+; also when `setjmp` is called with another type than it is declared with (LLVM still
+; finds the attribute on the called function)
+; CHECK-LABEL: define ptr @returns_twice_cast(
+; CHECK-NEXT:  top:
+; CHECK-NEXT:    %tls_pgcstack = call ptr asm "movq %fs:0, $0;\0Aaddq $$-8, $0", "=r,~{dirflag},~{fpsr},~{flags}"()
+define ptr @returns_twice_cast(ptr %buf) {
+top:
+  %pgcstack = call ptr @julia.get_pgcstack()
+  %r = call i32 @sigsetjmp(ptr %buf)
+  ret ptr %pgcstack
+}
+
 ; CHECK-LABEL: define void @dead() {
 ; CHECK-NEXT:  top:
 ; CHECK-NEXT:    ret void

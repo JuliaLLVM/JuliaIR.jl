@@ -228,12 +228,13 @@ has_string_fn_attr(attrs, name::String) =
 has_enum_fn_attr(attrs, name::String) =
     any(a -> a isa EnumAttribute && attr_kind(a) == name, attrs)
 
-# `CallBase::hasFnAttr`: on the call, or on the function it calls
+# `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
+# function type differs from the function's (unlike `called_function`)
 function call_has_fn_attr(call::Instruction, name::String, string_attr::Bool)
     has = string_attr ? has_string_fn_attr : has_enum_fn_attr
     has(collect(call.function_attributes), name) && return true
-    callee = called_function(call)
-    return callee !== nothing && has(collect(callee.function_attributes), name)
+    callee = call.called_operand
+    return callee isa LLVM.Function && has(collect(callee.function_attributes), name)
 end
 
 can_return_twice(call::Instruction) = call_has_fn_attr(call, "returns_twice", false)
