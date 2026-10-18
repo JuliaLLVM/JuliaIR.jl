@@ -127,7 +127,8 @@ end
 # kind; the stack of frames leading to it says how the constant gets there. A frame records
 # a constant (the root, then the expressions and aggregates on the way), the use by which
 # it uses the previous frame's constant (none for the root), and, while the constant's bits
-# appear unchanged in it (`samebits`: aggregates, and pointer and bit casts), at which byte
+# appear unchanged in it (`samebits`: aggregates, and pointer and bit casts that keep the
+# size), at which byte
 # offset. The next use of every frame is read before the current one is handed out, so the
 # user may change or drop the current use before the walk continues.
 struct UseFrame
@@ -217,8 +218,13 @@ function forward!(walk::ConstantUses)
             push!(stack, UseFrame(use, user, frame.offset + Int(offset), true))
         elseif API.LLVMIsAConstantExpr(user) != C_NULL
             opcode = API.LLVMGetConstOpcode(user)
+            # Unlike Julia's walk, a cast to a narrower or wider type doesn't keep the bits
+            # (e.g., `ptrtoint` to `i32` of a 64-bit pointer): the image loader would write
+            # a full pointer there, over whatever follows.
             keeps_bits = opcode in (API.LLVMPtrToInt, API.LLVMIntToPtr,
-                                    API.LLVMAddrSpaceCast, API.LLVMBitCast)
+                                    API.LLVMAddrSpaceCast, API.LLVMBitCast) &&
+                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(user)) ==
+                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(frame.val))
             push!(stack, frame.samebits && keeps_bits ?
                          UseFrame(use, user, frame.offset, true) :
                          UseFrame(use, user, 0, false))

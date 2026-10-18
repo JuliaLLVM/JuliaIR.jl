@@ -11,6 +11,7 @@ using LLVM, LLVM.IR
             @a = global [2 x ptr] [ptr null, ptr @f]
             @g = global ptr getelementptr (i8, ptr @f, i64 8)
             @p = global i64 ptrtoint (ptr @f to i64)
+            @n = global i32 ptrtoint (ptr @f to i32)
 
             define void @f() {
               ret void
@@ -31,8 +32,9 @@ using LLVM, LLVM.IR
                           length(walk.stack)))
             JuliaIR.next!(walk)
         end
-        @test sort(users) == [("a", 8, true, 2), ("g", 0, false, 2), ("p", 0, true, 2),
-                              ("s", 8, true, 2)]
+        # a pointer cast to a narrower integer doesn't keep the pointer's bits
+        @test sort(users) == [("a", 8, true, 2), ("g", 0, false, 2), ("n", 0, false, 2),
+                              ("p", 0, true, 2), ("s", 8, true, 2)]
 
         users = []
         walk = JuliaIR.constant_uses(f, mod, Instruction)
@@ -53,7 +55,7 @@ using LLVM, LLVM.IR
             n += 1
             JuliaIR.next!(walk)
         end
-        @test n == 4
+        @test n == 5
         @test JuliaIR.isdone(JuliaIR.constant_uses(f, mod, GlobalValue))
         dispose(mod)
     end

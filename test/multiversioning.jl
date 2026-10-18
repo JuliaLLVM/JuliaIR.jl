@@ -731,6 +731,9 @@ end
     rejects("through a constant that changes its address",
             cloning_ir(f_ir() * "@gv = global i64 add (i64 ptrtoint (ptr @f to i64), i64 1)\n",
                        ["f"]))
+    rejects("through a constant that changes its address",
+            cloning_ir(f_ir() * "@gv = global { i32, i32 } { i32 ptrtoint (ptr @f to i32), i32 1 }\n",
+                       ["f"]))
     rejects("a constant global variable",
             cloning_ir(f_ir() * "@gv = constant ptr @f\n", ["f"]))
     rejects("used by llvm.compiler.used", cloning_ir(f_ir() *
