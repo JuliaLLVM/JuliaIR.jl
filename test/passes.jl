@@ -1324,8 +1324,10 @@ end
         @test fold(attributed) == (subtarget ? [x86, x86] : [true, true])
         @test !haskey(JuliaIR.NATIVE_FACTS, :jit_fma)
         if subtarget
-            # by default, the generic CPU, as by name; the JIT's target with options
-            @test fold(plain; triple) == [false, false]
+            # by default, the generic CPU, as by name (which has FMA on AArch64, but not
+            # on x86); the JIT's target with options
+            generic = LLVM.isaarch64(LLVM.Triple(triple))
+            @test fold(plain; triple) == [generic, generic]
             @test fold(plain; triple, target_cpu=jit.cpu, target_features=jit.features) ==
                   [have32(), have64()]
             # a module without a triple is for the JIT's when options give the target
