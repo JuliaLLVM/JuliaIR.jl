@@ -19,6 +19,7 @@ read it first, including its Log). This file says where things are and how to co
 | S17 LowerExcHandlers (`jl-lower-exc-handlers`), runtime profiles | done, branch `tb/s17-lower-exc-handlers` (on S18's PR #6) | 138ff79, e4b7864, 8e55cc4 |
 | S24c runtime facts from the running Julia, AllocOpt pointer size from the data layout | done, replaces S24b's tables in PR #9 (on S17) | 2ad92d5, 3772cd7 |
 | S8 LowerSIMDLoop (`jl-lower-simdloop`), loop passes, LLVM.jl branch | done, branch `tb/s8-lower-simdloop` (on S24c, PR #9) | 72da87e, bc882e2, 43b272e |
+| S6b LateLowerGCFrame (`jl-late-lower-gc-frame`) | port done, every dialect; branch `tb/s6b-late-lower-gc-frame` (on S8, PR #10) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -44,13 +45,23 @@ pin, without overrides. Deviations from the C++ (master semantics for every dial
 C++ bugs in PropagateJuliaAddrspaces' memset handling, DemoteFloat16 policies and name
 keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md`.
 
-S6 details: `src/passes/late_gc_cleanup.jl`, TBAA helpers (`mutable_tbaa_tag`,
-`tbaa_derives_from`) and `clone_call!` in `src/irutils.jl`. The input contract (what must
-be lowered before, what is rewritten, what is rejected with `UnsupportedInputError`) is
-`docs/src/late_gc_cleanup.md`. `cpp_name` is empty: `jlopt` keeps running Julia's
-`LateLowerGCFrame` for that name (frame fixtures and `alloc-opt-gcframe.ll` need it). The
-upstream harness has a new `derived` status (a patched fixture that tests a port, no
-stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
+S6/S6b details: `src/passes/late_lower_gc_frame.jl` is the full port of
+`LateLowerGCFrame` (`jl-late-lower-gc-frame`, `cpp_name = "LateLowerGCFrame"`, so `jlopt`
+runs it for Julia's name); its functions follow the C++ ones (`local_scan`,
+`compute_liveness!`, `color_roots`, `place_roots_and_update_calls!`, `cleanup_ir!`), and
+the differences between Julia versions are the `gc_*` fields of `Dialect`.
+`src/passes/late_gc_cleanup.jl` is `jl-late-gc-cleanup`: it checks the GPU input contract
+(`UnsupportedInputError`) and runs the same code (without declaring
+`ijl_gc_small_alloc`). The task and TLS offsets come from S24c's runtime facts
+(`runtime_layout(opts, mod)`, pass options `task-ptls` etc. via `runtime_options`), read
+only by the allocation and GC-transition lowerings; tests of other dialects than the
+running one give them as options. The GC constants are in the pass
+file. The docs page `docs/src/late_lower_gc_frame.md` has the per-version table,
+the contract and every deviation. All `late-lower-gc*.ll`, `gcroots.ll`,
+`refinements.ll`, `returnstwicegc.ll`, `gc-writebarrier-volatile.ll`,
+`alloc-opt-gcframe.ll`, `multiversioning-abi.ll` and `safepoint_stress.jl` run with the
+port in mode A at every pin (1.10's `safepoint_stress.jl` through an override: its CHECK
+line is typed). The harness's `derived` status (S6) is unused now.
 
 S18 details: `src/passes/combine_muladd.jl`, a faithful port of the 1.10/1.11 C++ pass
 (identical in both versions), remarks included. `Dialect.has_combine_muladd` says which
@@ -179,9 +190,9 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
-   (plan item S6b). Independent: S24 (S17, S18, S8 done); then E2 → S7, L5b → S9, E3 → S10, the CPU
-   passes S15–S21.
+2. S6b is done on `tb/s6b-late-lower-gc-frame` (on S8). Next: S15 (FinalLowerGC, which
+   the frame fixtures run behind the port), then E2 → S7, L5b → S9, E3 → S10 and the
+   other CPU passes.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
    to report it with a backtrace, `jl-late-gc-cleanup` throws `UnsupportedInputError`;
@@ -195,6 +206,20 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
    with the value operand's type as the length overload (invalid call), on every version.
 
 ## Traps
+
+- The scratchpad directory is shared by all subagents: keep files in a subdirectory
+  named after the item.
+- Julia's C++ LateLowerGCFrame orders the frame slots of allocas by their addresses
+  (a `DenseMap`), so its output differs between runs; a differential must retry or
+  tolerate slot permutations (the port uses the function's order).
+- The C++ recreates every call that CleanupIR reaches with the old call's name, so LLVM
+  appends a number to the new call's name before `takeName`, and the numbers LLVM gives
+  later clashing names shift. The port recreates them the same way to keep names equal.
+- LLVM's C API returns a single-constant metadata node (`!{i64 8}`) as the constant
+  itself (`ConstantAsMetadata`), not as an `MDNode`.
+- `jld eval` and shell heredocs inside complex commands are refused by the worktree
+  sandbox; run scripts from files (`jld run`, `python3 script.py`).
+- `julia +nightly` moves: the master pin's checks warn when the running nightly differs.
 
 - LLVM.jl 10 exports little: `using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis`
   and `using LLVM: API`; `LLVM.Target`/`LLVM.TargetMachine` are not exported anywhere.
