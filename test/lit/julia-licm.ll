@@ -8,11 +8,11 @@
 ; RUN: opt -passes='function(loop-mssa(JuliaLICM)),verify' -verify-memoryssa -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.11 %{LOADED%} %else %{NOLOADED%}
 ; RUN: opt -passes='function(loop-mssa(JuliaLICM),print<memoryssa>)' -S %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MSSA
 
-; the port runs once per loop (12), but not in the optnone function: it is not required
+; the port runs once per loop (13), but not in the optnone function: it is not required
 ; RUN: rm -f %t.ledger
 ; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=JuliaLICM -S %s -o /dev/null
 ; RUN: grep -c 'pass	jl-licm	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
-; COUNT: 12
+; COUNT: 13
 
 @tag = external addrspace(10) global {}, align 16
 
@@ -23,6 +23,7 @@ declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addr
 declare ptr @julia.pointer_from_objref(ptr addrspace(10)) readnone
 declare ptr addrspace(13) @julia.gc_loaded(ptr addrspace(10), ptr) readnone
 declare void @use(ptr addrspace(10))
+declare i32 @__CxxFrameHandler3(...)
 
 ; a begin of loop-invariant values is hoisted, its end sunk to the only exit
 ; CHECK-LABEL: @preserve(
@@ -208,6 +209,37 @@ top:
 loop:
   call void @llvm.julia.gc_preserve_end(token none)
   br i1 %c, label %exit, label %loop
+exit:
+  ret void
+}
+
+; an exit without an insertion point (a block with only a `catchswitch`) gets no end
+; (Julia's C++ pass crashes); the other exits get theirs
+; CHECK-LABEL: @preserve_catchswitch(
+; CHECK: top:
+; CHECK-NEXT: %token = call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %obj)
+; CHECK: loop:
+; CHECK-NEXT: invoke void @use
+; CHECK: dispatch:
+; CHECK-NEXT: %cs = catchswitch within none [label %handler] unwind to caller
+; CHECK: exit.loopexit:
+; CHECK-NEXT: call void @llvm.julia.gc_preserve_end(token %token)
+; CHECK-NOT: gc_preserve_end
+; CHECK: ret void
+define void @preserve_catchswitch(ptr addrspace(10) %obj, i1 %c) personality ptr @__CxxFrameHandler3 {
+top:
+  br label %loop
+loop:
+  %token = call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %obj)
+  call void @llvm.julia.gc_preserve_end(token %token)
+  invoke void @use(ptr addrspace(10) %obj) to label %latch unwind label %dispatch
+latch:
+  br i1 %c, label %exit, label %loop
+dispatch:
+  %cs = catchswitch within none [label %handler] unwind to caller
+handler:
+  %cp = catchpad within %cs [ptr null, i32 64, ptr null]
+  catchret from %cp to label %exit
 exit:
   ret void
 }
