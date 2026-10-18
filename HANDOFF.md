@@ -14,7 +14,7 @@ read it first, including its Log). This file says where things are and how to co
 | S4 AllocOpt | port done; open: S12, S13 | f728275, 5df7c8c, PR #2 |
 | E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
 | S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, merged); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
-| S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done, branch `tb/s6-late-lower-gc`, not pushed; S12 part open | e672c86, d11ee73 |
+| S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done as a subset, PR #5; generalized by S6b | e672c86, d11ee73 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -25,8 +25,13 @@ the plan's Log entry for S4 and in `docs/src/index.md`.
 
 On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. PRs #1 (CI against LLVM.jl `main`,
 `.github/actions/llvm-dev`), #2 (E1 use in AllocOpt) and #4 (S5) are merged; `main` is
-4255ff2. S6 is on the local branch `tb/s6-late-lower-gc` (off `main`), not pushed yet:
-push with `git push -u origin HEAD` and open the PR when Tim says so.
+4255ff2. S6 is PR #5 (`tb/s6-late-lower-gc`), the bottom of the JuliaIR.jl stack.
+
+Scope and workflow changed on 2026-10-18 (plan decisions S-D12–S-D14, "Operating mode"): all of Julia's
+passes get faithful, general ports (CPU paths included), for dialects D ≤ the running Julia and on every
+LLVM from the dialect's own on. A coordinator session (kick-off prompt
+`~/Julia/plans/llvm-middleend/PROMPT.coordinator.md`) delegates items to subagents, stacks PRs with
+`gh stack`, and may push `tb/*` branches and open PRs on JuliaIR.jl and LLVM.jl.
 
 S5 details: one file per pass in `src/passes/`, shared pointer and metadata helpers in
 `src/irutils.jl`. Every upstream fixture of the three passes passes in mode A at every
@@ -107,8 +112,9 @@ stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. Push S6 and open its PR (Tim's call), then S7 (RemoveJuliaAddrspaces, needs E2 in
-   LLVM.jl) or the loop-pass work (L5a, then S8).
+2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
+   (plan item S6b). Independent: S17, S18, S24; then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
+   passes S15–S21.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
    to report it with a backtrace, `jl-late-gc-cleanup` throws `UnsupportedInputError`;
