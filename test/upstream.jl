@@ -3,7 +3,9 @@
 
 include(joinpath(@__DIR__, "upstream", "run.jl"))
 using .UpstreamHarness: HarnessError, RunLine, run_lines, shell_words, opt_invocations,
-                        classify_run, apply_patch, disable_runs, find_python
+                        classify_run, apply_patch, disable_runs, find_python, lit_params,
+                        reprint_tools, JULIA_CPP_PASSES, ported_passes, LLVM,
+                        LLVM_utils_unified_jll
 
 @testset "upstream harness" begin
 
@@ -63,6 +65,62 @@ end
 
     # what jlopt cannot run is an error
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
+
+    # mode B: lines that need Julia's C++ passes are skipped, those of the ports run
+    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
+    @test st == :skip && why == "no port of Julia's julia"
+    for name in setdiff(JULIA_CPP_PASSES, ported_passes())
+        @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
+    end
+    st, _, pipelines = classify_run(run("opt -passes='module(RemoveNI)' -S %s"); mode="B")
+    @test st == :run && pipelines == ["module(jl-remove-ni)"]
+    # names no LLVM knows are not skipped, but fail when the line runs
+    @test classify_run(run("opt -passes=frobnicate -S %s"); mode="B")[1] == :run
+
+    # patches are reported with `/`, as the manifest names them, also on Windows
+    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), raw"derived-B\llvm18\1.12\x.ll.patch"), pwd()) ==
+          "derived-B/llvm18/1.12/x.ll.patch"
+    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), "derived-B", "llvm18", "1.12"), pwd()) ==
+          "derived-B/llvm18/1.12"
+end
+
+if !Sys.iswindows()
+@testset "re-printing" begin
+    mktempdir() do dir
+        # the upgrade oracle's opt runs jlopt, here a stand-in, and re-prints its textual
+        # output with the other opt (here, one that marks what it re-printed)
+        write(joinpath(dir, "jlopt"), raw"""
+            #!/bin/bash
+            [ "$1" = crash ] && kill -ABRT $$
+            out=-
+            while [ $# -gt 0 ]; do
+                [ "$1" = -o ] && out=$2
+                shift
+            done
+            if [ "$out" = - ]; then echo "jlopt output"; else echo "jlopt output" > "$out"; fi
+            """)
+        write(joinpath(dir, "newer-opt"), raw"""
+            #!/bin/bash
+            in=$2; out=$4
+            if [ "$out" = - ]; then echo "re-printed: $(cat "$in")"; else echo "re-printed: $(cat "$in")" > "$out.new"; mv "$out.new" "$out"; fi
+            """)
+        chmod(joinpath(dir, "jlopt"), 0o755)
+        chmod(joinpath(dir, "newer-opt"), 0o755)
+        reprint_tools(dir, joinpath(dir, "newer-opt"))
+        opt = joinpath(dir, "opt")
+        @test readchomp(`$opt -passes=x -S in.ll`) == "re-printed: jlopt output"
+        @test readchomp(`$opt -passes=x -S in.ll -o -`) == "re-printed: jlopt output"
+        file = joinpath(dir, "out.ll")
+        run(`$opt -passes=x -S in.ll -o $file`)
+        @test readchomp(file) == "re-printed: jlopt output"
+        # bitcode, and output that is thrown away, aren't re-printed
+        @test readchomp(`$opt -passes=x in.ll`) == "jlopt output"
+        @test readchomp(`$opt -passes=x -S in.ll -o /dev/null`) == ""
+        # a crash is passed on
+        proc = run(pipeline(ignorestatus(`$opt crash -S`); stdout=devnull))
+        @test proc.termsignal == 6  # SIGABRT
+    end
+end
 end
 
 @testset "patches" begin
@@ -326,6 +384,117 @@ mktempdir() do dir
     @test code == 0
     @test occursin("| good.ll | port | run | 1 run, 1 skipped | `jl-remove-ni` |", out)
     @test occursin("| excluded.ll | cpu | exclude |", out)
+
+    # Mode B, on the library that LLVM.jl uses: the mode-B patch layer of its LLVM comes
+    # after the mode-A patches, and each layer must be needed
+    layer = joinpath(dir, "derived-B", "llvm$(LLVM.version().major)", minor)
+    function with_layer(f, patches...)
+        mkpath(layer)
+        for (name, text) in patches
+            write(joinpath(layer, name), text)
+        end
+        try
+            f()
+        finally
+            rm(joinpath(dir, "derived-B"); recursive=true)
+        end
+    end
+    fixed = read(patch, String)    # override.ll's fix, as a layer patch
+    noop = read(stale_patch, String)
+    noop_after_a = """
+        --- a/override.ll
+        +++ b/override.ll
+        @@ -2,1 +2,1 @@
+        -target datalayout = "e-i64:64-ni:10:11:12:13"
+        +target datalayout = "e-i64:64-ni:10:11:12:13"
+        """
+    as_run = replace(override, "status = \"override\"" => "status = \"run\"")
+
+    # without a layer, as mode A
+    code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    @test code == 0
+    @test occursin("mode B on Julia's own LLVM", out)
+    @test occursin("2 of 2 fixtures passed", out)
+
+    # a layer patch makes a fixture pass, and must be needed
+    code, out = harness(write_manifest(good * as_run * excluded_cpp), "--mode", "B")
+    @test code == 1
+    with_layer("override.ll.patch" => fixed) do
+        code, out = harness(write_manifest(good * as_run * excluded_cpp), "--mode", "B")
+        @test code == 0
+        @test occursin("patched: override.ll: derived-B/", out)
+    end
+    with_layer("good.ll.patch" => noop) do
+        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        @test code == 1
+        @test occursin("good.ll: the mode-B patch is stale, the fixture passes without it", out)
+    end
+    # mode A ignores the layers
+    with_layer("good.ll.patch" => noop) do
+        code, _ = harness(write_manifest(good * override * excluded_cpp))
+        @test code == 0
+    end
+
+    # a fixture with a mode-A patch gets the layer's after-A variant, on top of it; the
+    # plain variant must not make the mode-A patch redundant
+    with_layer("override.ll.after-A.patch" => noop_after_a) do
+        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        @test code == 1
+        @test occursin("override.ll: the mode-B patch is stale", out)
+    end
+    with_layer("override.ll.patch" => fixed) do
+        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        @test code == 1
+        @test occursin("override.ll: the override is stale, the fixture passes with the mode-B patch alone", out)
+    end
+
+    # a layer's patches must belong to fixtures of the pin
+    with_layer("nosuch.ll.patch" => noop) do
+        @test_throws "no fixture nosuch.ll at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    end
+    with_layer("good.ll.after-A.patch" => noop) do
+        @test_throws "good.ll has no mode-A patch at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    end
+
+    # Julia's C++ passes are skipped in mode B
+    manifest = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
+    cpponly = mkpath(joinpath(dir, "cpponly", "test", "llvmpasses"))
+    write(joinpath(cpponly, "good.ll"), """
+        ; RUN: opt -passes='julia<level=2>' -S %s | FileCheck %s
+        """)
+    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+                                     cpp=false, mode="B", manifest_dir=dir)
+    @test !f.included
+    @test f.reason == "every RUN line skipped: no port of Julia's julia"
+
+    # The upgrade oracle: Julia's passes, their output re-printed by another LLVM's opt
+    # (here, the same LLVM's), checked against the fixtures with that LLVM's layer
+    if !Sys.iswindows()
+        tools = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools")
+        newer = mkpath(joinpath(dir, "newer"))
+        libpath = "$(lit_params(; exec_root=dir, bindir=dir)["libpath_env"])=" *
+                  join(LLVM_utils_unified_jll.LIBPATH_list, ':')
+        for tool in ("opt", "FileCheck")
+            write(joinpath(newer, tool), "#!/bin/sh\nexec env $libpath $(joinpath(tools, tool)) \"\$@\"\n")
+            chmod(joinpath(newer, tool), 0o755)
+        end
+        reprint = ["--cpp", "--reprint", joinpath(newer, "opt")]
+        with_layer("override.ll.patch" => fixed) do
+            code, out = harness(write_manifest(good * override * excluded_cpp), reprint...,
+                                "--filter", "good|override")
+            @test code == 0
+            @test occursin("the upgrade oracle", out)
+            @test occursin("2 of 2 fixtures passed", out)
+        end
+        with_layer("good.ll.patch" => noop) do
+            code, out = harness(write_manifest(good * override * excluded_cpp), reprint...,
+                                "--filter", "good")
+            @test code == 1
+            @test occursin("good.ll: the mode-B patch is stale", out)
+        end
+        @test_throws "--reprint requires --cpp" harness(write_manifest(good * override * excluded_cpp), reprint[2:3]...)
+        @test_throws "mode B doesn't have" harness(write_manifest(good * override * excluded_cpp), "--cpp", "--mode", "B")
+    end
 end
 end
 

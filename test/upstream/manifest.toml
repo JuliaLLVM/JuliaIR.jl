@@ -4,7 +4,9 @@
 # version, and the Julia build they are run with (mode A: the passes run on that Julia's
 # own LLVM). The development version has no commit: its fixtures are those of the commit
 # the running nightly build was built from (`Base.GIT_VERSION_INFO.commit`), and its
-# entries below apply to whatever master is then.
+# entries below apply to whatever master is then. `llvm` is the major version of the LLVM
+# that the pin's Julia uses: mode B and the upgrade oracle check it, and derive.jl
+# generates the mode-B patch layer of a newer LLVM for the pins with an older one.
 #
 # [fixtures."<file>"]: every file in test/llvmpasses of any pin, with
 #   kind    = "port"     tests passes that this package ports (`ports`, Julia's names)
@@ -31,30 +33,37 @@
 #
 # Independently of the status, run.jl skips the RUN lines of a fixture that use typed
 # pointers (`--opaque-pointers=0`; decision S-D1), and translates legacy pass manager
-# lines (`-enable-new-pm=0`) when they use opaque pointers.
+# lines (`-enable-new-pm=0`) when they use opaque pointers. In mode B, it also skips the
+# RUN lines that name Julia's C++ passes without a port, and applies the patches of
+# derived-B/llvm<major>/<minor> after the mode-A patch (see derive.jl).
 
 [pins."1.10"]
 tag = "v1.10.12"
 commit = "d93beab124c850d5f600f290069853e81413f7ca"
 julia = "1.10.12"
+llvm = 15
 
 [pins."1.11"]
 tag = "v1.11.9"
 commit = "53a02c0720cdc5d7fc0f35447886dd14bb2491a6"
 julia = "1.11.9"
+llvm = 16
 
 [pins."1.12"]
 tag = "v1.12.7"
 commit = "6d172b025e4befc4d274d9fbc9339917a8a86b65"
 julia = "1.12.7"
+llvm = 18
 
 [pins."1.13"]
 tag = "v1.13.2"
 commit = "45b6d15e34bbd2003a31acce0b1847b63dad029c"
 julia = "1.13.2"
+llvm = 20
 
 [pins."1.14"]
 tag = "master"
+llvm = 23
 
 
 ## ported passes
