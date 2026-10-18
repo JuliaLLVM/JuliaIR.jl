@@ -17,9 +17,10 @@ For a loop with a preheader, in reverse postorder of its blocks:
   where they are.
 - **`llvm.julia.gc_preserve_end`** of a hoisted begin is sunk to the exits of the loop:
   moved to the first exit and cloned, without operand bundles or metadata, into the
-  others. A loop without exits loses the end. The exits are those of the loop that
-  defines the token (the innermost loop of its begin): an end is never sunk out of a
-  loop its token is defined in, as LCSSA has no phis of tokens.
+  others. A loop without exits loses the end. Only the exits of the loop being
+  processed that are inside the loop that defines the token (the innermost loop of its
+  begin) get an end: an end is never sunk out of a loop its token is defined in, as LCSSA
+  has no phis of tokens. When the begin is in no loop, every exit gets one.
 - **Write barriers** are hoisted to the preheader when their parent and children are,
   or can be made, loop invariant. Instructions that compute them are hoisted first if
   they are safe to speculate and don't read memory, losing metadata other than debug
@@ -73,8 +74,8 @@ The port follows Julia master on every version where the C++ differs or fails:
 
 | | C++ | port |
 |-|-----|------|
-| D1 | before Julia 1.13, an allocation whose address is the value operand of an atomic store or `atomicrmw` is hoisted (the escape analysis took it for a store into the object) | master's escape analysis on every version: it stays in the loop |
-| D2 | before Julia 1.12.8, an end is sunk to the exits of the outermost loop being processed, so a token can be used outside the loop that defines it (invalid IR once the loop is cloned) | master's rule (JuliaLang/julia#63036) on every version |
+| D1 | before Julia 1.13, an allocation whose address is the value operand of a `cmpxchg` or `atomicrmw` is hoisted (the escape analysis took it for a store into the object) | master's escape analysis on every version: it stays in the loop |
+| D2 | before Julia 1.12.8, an end is sunk to every exit of the loop being processed, also out of the loop that defines its token, which is then used outside that loop (invalid IR once the loop is cloned) | master's rule (JuliaLang/julia#63036) on every version |
 | D3 | an end whose token isn't an instruction (`token none`) is cast to one, which crashes the pass on Julia master | the end stays where it is |
 | D4 | a field barrier is demoted to a call of a `julia.object_write_barrier` that the module declares with another type, which is invalid IR | an `ArgumentError` when the barrier is demoted: the barrier stays as it was, what was hoisted before it (its operands, earlier calls of the loop) stays hoisted |
 | D5 | an exit block without an insertion point (a `catchswitch`) crashes the pass | that exit is skipped; Julia doesn't emit funclets |
