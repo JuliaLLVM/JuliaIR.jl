@@ -538,31 +538,27 @@ const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
 # with an array of constants (which rules out a zero initializer, like the C++ pass).
 function has_table(mod::LLVM.Module, name::String)
     gv = get(mod.globals, name, nothing)
-    gv === nothing && return false
-    API.LLVMGetInitializer(gv) != C_NULL || return false
-    return API.LLVMIsAConstantArray(API.LLVMGetInitializer(gv)) != C_NULL
+    return gv !== nothing && gv.initializer isa ConstantArray
 end
 
 function check_table(mod::LLVM.Module, name::String, external::Bool, functions::Bool)
     err(what) = throw(MultiVersioningError("the table $name $what"))
     gv = get(mod.globals, name, nothing)
     gv === nothing && err("is missing")
-    init = API.LLVMGetInitializer(gv)
-    init == C_NULL && err("has no initializer")
-    API.LLVMGetTypeKind(API.LLVMTypeOf(init)) == API.LLVMArrayTypeKind ||
-        err("is not an array")
-    API.LLVMGetFirstUse(gv) == C_NULL || err("is used")
-    if API.LLVMIsAConstantArray(init) == C_NULL
-        API.LLVMIsNull(init) != 0 || err("is not an array of constants")
-        API.LLVMGetArrayLength(API.LLVMTypeOf(init)) == 0 ||
+    init = gv.initializer
+    init === nothing && err("has no initializer")
+    init.value_type isa LLVM.ArrayType || err("is not an array")
+    isempty(gv.uses) || err("is used")
+    if !(init isa ConstantArray)
+        isnull(init) || err("is not an array of constants")
+        init.value_type.length == 0 ||
             err("is zero-initialized, so it has entries that are not functions")
         return
     end
     functions || return
-    for i in 0:API.LLVMGetNumOperands(init)-1
-        val = Value(API.LLVMExtraStripPointerCasts(API.LLVMGetOperand(init, i)))
-        val isa LLVM.Function || external ||
-            err("has an entry that is not a function (entry $i)")
+    for (i, entry) in enumerate(init.operands)
+        strip_pointer_casts(entry) isa LLVM.Function || external ||
+            err("has an entry that is not a function (entry $(i-1))")
     end
 end
 
@@ -758,12 +754,11 @@ end
 # test cases (the C++ pass drops every entry after the first such one; S-D22(5)).
 function table_elements(gv::GlobalVariable, external::Bool)
     init = gv.initializer
-    n = init.value_type.length
-    API.LLVMIsNull(init) != 0 &&
-        return Constant[null(init.value_type.element_type) for _ in 1:n]
+    isnull(init) &&
+        return Constant[null(init.value_type.element_type) for _ in 1:init.value_type.length]
     elements = Constant[]
-    for i in 0:n-1
-        val = Value(API.LLVMExtraStripPointerCasts(API.LLVMGetOperand(init, i)))::Constant
+    for entry in init.operands
+        val = strip_pointer_casts(entry)::Constant
         external && !(val isa LLVM.Function && !isdeclaration(val)) && continue
         push!(elements, val)
     end
@@ -774,9 +769,7 @@ end
 function consume_table!(gv::GlobalVariable)
     init = gv.initializer
     erase!(gv)
-    if API.LLVMIsNull(init) == 0 && API.LLVMGetFirstUse(init) == C_NULL
-        API.LLVMDestroyConstant(init)
-    end
+    !isnull(init) && isempty(init.uses) && LLVM.unsafe_destroy!(init)
     return
 end
 
@@ -976,17 +969,15 @@ end
 ## uses of the cloned functions
 
 # a constant expression or aggregate like `val`, with other operands
-function rebuild_constant(val::API.LLVMValueRef, args::Vector{API.LLVMValueRef})
-    if API.LLVMIsAConstantExpr(val) != C_NULL
-        return API.LLVMExtraConstantExprGetWithOperands(val, args, length(args), C_NULL,
-                                                        C_NULL)
-    elseif API.LLVMIsAConstantArray(val) != C_NULL
-        return API.LLVMConstArray(API.LLVMGetElementType(API.LLVMTypeOf(val)), args,
-                                  length(args))
-    elseif API.LLVMIsAConstantStruct(val) != C_NULL
-        return API.LLVMConstNamedStruct(API.LLVMTypeOf(val), args, length(args))
+function rebuild_constant(@nospecialize(val::Constant), args::Vector{Constant})
+    if val isa ConstantExpr
+        return LLVM.with_operands(val, args)
+    elseif val isa ConstantArray
+        return ConstantArray(val.value_type.element_type, args)
+    elseif val isa ConstantStruct
+        return ConstantStruct(val.value_type, args)
     else
-        return API.LLVMConstVector(args, length(args))
+        return ConstantVector(args)
     end
 end
 
@@ -994,15 +985,14 @@ end
 # function (`rewrite_gv_init`): that puts the global in a writable section, and the image
 # loader writes the address of the right version there.
 function rewrite_gv_init(stack::Vector{UseFrame})
-    res = API.LLVMConstPointerNull(API.LLVMTypeOf(stack[1].val))
+    res = null(Value(stack[1].val).value_type)
     for frame in @view stack[2:end]
-        idx = API.LLVMExtraGetOperandNo(frame.use)
-        n = API.LLVMGetNumOperands(frame.val)
-        args = API.LLVMValueRef[i == idx ? res : API.LLVMGetOperand(frame.val, i)
-                                for i in 0:n-1]
-        res = rebuild_constant(frame.val, args)
+        val = Value(frame.val)::Constant
+        idx = Use(frame.use).operand_index
+        args = Constant[i == idx ? res : op for (i, op) in enumerate(val.operands)]
+        res = rebuild_constant(val, args)
     end
-    return Value(res)::Constant
+    return res
 end
 
 # replace an alias of a function by a trampoline that calls it through its relocation slot
@@ -1065,10 +1055,10 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
                           pos::LLVM.InsertionPoint)
     builder = ctx.builder
     for frame in @view stack[2:end]
-        val = Value(frame.val)
-        idx = Int(API.LLVMExtraGetOperandNo(frame.use))
+        val = Value(frame.val)::Constant
+        idx = Use(frame.use).operand_index
         if val isa ConstantExpr
-            old = Value(API.LLVMGetOperand(frame.val, idx))
+            old = val.operands[idx]
             inst = Instruction(pos, val)
             ops = inst.operands
             for i in 1:length(ops)
@@ -1077,17 +1067,15 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
             replace = inst
             continue
         end
-        n = API.LLVMGetNumOperands(frame.val)
-        args = API.LLVMValueRef[
-            i == idx ? API.LLVMGetUndef(API.LLVMTypeOf(API.LLVMGetOperand(frame.val, i))) :
-                       API.LLVMGetOperand(frame.val, i) for i in 0:n-1]
-        agg = Value(rebuild_constant(frame.val, args))
+        args = Constant[i == idx ? UndefValue(op.value_type) : op
+                        for (i, op) in enumerate(val.operands)]
+        agg = rebuild_constant(val, args)
         position!(builder, pos)
         builder.debug_location = nothing
         replace = if val isa ConstantVector
-            insert_element!(builder, agg, replace, ConstantInt(ctx.T_size, idx))
+            insert_element!(builder, agg, replace, ConstantInt(ctx.T_size, idx - 1))
         else
-            insert_value!(builder, agg, replace, idx)
+            insert_value!(builder, agg, replace, idx - 1)
         end
     end
     return replace
@@ -1112,13 +1100,12 @@ function replace_uses_with_load!(ctx::CloneCtx, f::LLVM.Function, slot_of)
             user = info.user::Instruction
             slot = slot_of(user)
             if slot !== nothing
-                opno = API.LLVMExtraGetOperandNo(info.use)
-                pos = LLVM.before(load_position(user, Use(info.use)))
+                use = Use(info.use)
+                pos = LLVM.before(load_position(user, use))
                 position!(builder, pos)
                 builder.debug_location = nothing
                 ptr = load_slot!(ctx, f.value_type, slot)
-                new = rewrite_inst_use(ctx, walk.stack, ptr, pos)
-                API.LLVMSetOperand(user, opno, new)
+                user.operands[use.operand_index] = rewrite_inst_use(ctx, walk.stack, ptr, pos)
                 changed = true
             end
             next!(walk)
