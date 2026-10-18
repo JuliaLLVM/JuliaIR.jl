@@ -139,9 +139,10 @@ function collect_jobs(opts)
     return jobs, skipped
 end
 
-diff_name(job::Job) =
+# the base name of the files with a job's outputs and their diff
+output_name(job::Job) =
     replace(join([job.spec.name, job.input.id, job.prefix, job.prepare, job.variant], "."),
-            r"[^A-Za-z0-9_.+-]" => "_", r"\.+" => ".") * ".diff"
+            r"[^A-Za-z0-9_.+-]" => "_", r"\.+" => ".")
 
 
 ## running the passes (worker)
@@ -165,10 +166,12 @@ function normalized(mod::LLVM.Module)
 end
 
 # Attribute groups are numbered in the order LLVM meets them, so a declaration that one
-# side adds renumbers the others: refer to each group by its contents instead.
+# side adds renumbers the others: refer to each group by its contents instead (which
+# makes the `; Function Attrs:` comments redundant).
 function inline_attribute_groups(text::String)
     groups = Dict(m[1] => m[2] for m in eachmatch(r"^attributes #(\d+) = \{ (.*) \}$"m, text))
-    lines = filter(l -> !startswith(l, "attributes #"), split(text, '\n'))
+    lines = filter(l -> !startswith(l, "attributes #") && !startswith(l, "; Function Attrs:"),
+                   split(text, '\n'))
     return replace(join(lines, '\n'), r"(?<= )#(\d+)(?=[ ,]|$)"m => function (ref)
         group = get(groups, ref[2:end], nothing)
         group === nothing ? ref : "#{ $group }"
@@ -305,9 +308,11 @@ function record!(paths::Paths, job::Job, status::Symbol; changed::Bool=false,
             status = :identical
         else
             status = :different
-            file = diff_name(job)
+            file = output_name(job)
             mkpath(paths.diffs)
-            write(joinpath(paths.diffs, file), unified_diff(cpp, port))
+            write(joinpath(paths.diffs, file * ".cpp.txt"), cpp)
+            write(joinpath(paths.diffs, file * ".port.txt"), port)
+            write(joinpath(paths.diffs, file * ".diff"), unified_diff(cpp, port))
         end
     end
     open(paths.results, "a") do io
@@ -436,7 +441,10 @@ struct Recorded
     input::Regex
     julia::Vector{String}
     prefix::String
+    side::String
     lines::Regex
+    action::Symbol      # :delete, :replace or :accept
+    replacement::String
     reason::String
     decision::String
 end
@@ -447,16 +455,27 @@ function load_exceptions(file)
     isfile(file) || return Recorded[]
     exceptions = Recorded[]
     for (pass, entries) in TOML.parsefile(file), e in entries
+        where = "an entry of $pass in $file"
         for k in keys(e)
-            k in ("input", "julia", "prefix", "lines", "reason", "decision") ||
-                error("exceptions.toml: unknown key $k in an entry of $pass")
+            k in ("input", "julia", "prefix", "side", "lines", "replace", "accept", "reason",
+                  "decision") || error("unknown key $k in $where")
         end
-        haskey(e, "lines") && haskey(e, "reason") && haskey(e, "decision") ||
-            error("exceptions.toml: an entry of $pass lacks lines, reason or decision")
+        all(k -> haskey(e, k), ("side", "reason", "decision")) ||
+            error("$where lacks side, reason or decision")
+        e["side"] in ("cpp", "port", "both") || error("$where: side must be cpp, port or both")
+        haskey(e, "lines") + haskey(e, "accept") == 1 ||
+            error("$where needs either lines or accept")
+        if haskey(e, "accept")
+            e["side"] == "both" && error("$where: accept needs side cpp or port")
+            action, pattern, replacement = :accept, e["accept"], ""
+        else
+            action = haskey(e, "replace") ? :replace : :delete
+            pattern, replacement = e["lines"], get(e, "replace", "")
+        end
         glob = get(e, "input", "*")
-        push!(exceptions, Recorded(pass, glob, glob_regex(glob),
-                                     get(e, "julia", String[]), get(e, "prefix", ""),
-                                     Regex(e["lines"]), e["reason"], e["decision"]))
+        push!(exceptions, Recorded(pass, glob, glob_regex(glob), get(e, "julia", String[]),
+                                   get(e, "prefix", ""), e["side"], Regex(pattern), action,
+                                   replacement, e["reason"], e["decision"]))
     end
     return exceptions
 end
@@ -467,11 +486,52 @@ applies(e::Recorded, job::Job) = e.pass == job.spec.name &&
     occursin(e.input, job.input.id) && (isempty(e.julia) || minor() in e.julia) &&
     (isempty(e.prefix) || e.prefix == job.prefix)
 
-# the changed lines of a diff
-changed_lines(diff) = [l[2:end] for l in split(diff, '\n')
-                       if (startswith(l, '+') || startswith(l, '-')) &&
-                          !startswith(l, "+++") && !startswith(l, "---") &&
-                          !isempty(strip(l[2:end]))]
+# The lines of an output that are compared (blank lines carry nothing), after the rewrites
+# of `exceptions` for that side. Returns them and the indices of the exceptions that
+# changed a line.
+function rewritten(text, side, exceptions)
+    lines = filter(l -> !isempty(strip(l)), split(text, '\n'))
+    used = Int[]
+    for (i, e) in enumerate(exceptions)
+        e.action === :accept && continue
+        e.side == side || e.side == "both" || continue
+        out = String[]
+        for line in lines
+            if occursin(e.lines, line)
+                push!(used, i)
+                e.action === :delete && continue
+                line = replace(line, e.lines => SubstitutionString(e.replacement))
+            end
+            push!(out, line)
+        end
+        lines = out
+    end
+    return lines, used
+end
+
+# Whether the recorded deviations explain the difference of two outputs, which exceptions
+# that took, and the diff that remains if they don't.
+#
+# An exception either rewrites the lines it matches in one side's output (deletes them, or
+# replaces the matched text), after which both outputs must be identical, so that it only
+# ever allows the deviation it describes; or, for an output that can't be compared because
+# the C++ produced something broken (invalid IR), accepts the difference when a line of
+# that side matches, as long as the other side's output verifies.
+function explain(cpp, port, exceptions)
+    sides = Dict("cpp" => cpp, "port" => port)
+    for (i, e) in enumerate(exceptions)
+        e.action === :accept || continue
+        other = sides[e.side == "cpp" ? "port" : "cpp"]
+        if any(l -> occursin(e.lines, l), split(sides[e.side], '\n')) &&
+           !startswith(other, "! ") && !occursin("\n! invalid IR", other)
+            return true, [i], ""
+        end
+    end
+    cpp_lines, cpp_used = rewritten(cpp, "cpp", exceptions)
+    port_lines, port_used = rewritten(port, "port", exceptions)
+    cpp_lines == port_lines && return true, union(cpp_used, port_used), ""
+    return false, Int[], unified_diff(join(cpp_lines, '\n'), join(port_lines, '\n'))
+end
 
 function report(opts::Options, jobs, skipped)
     paths = Paths(opts.out)
@@ -483,27 +543,22 @@ function report(opts::Options, jobs, skipped)
         results[fields[1]] = fields
     end
     counts = Dict{String,Dict{Symbol,Int}}()
-    findings = Tuple{Job,String}[]
+    findings = Tuple{Job,String,String}[]
     for job in jobs
         fields = results[job.key]
         status = Symbol(fields[2])
         c = get!(counts, job.spec.name, Dict{Symbol,Int}())
         if status === :different
-            diff = read(joinpath(paths.diffs, fields[4]), String)
+            base = joinpath(paths.diffs, fields[4])
             candidates = [i for i in eachindex(exceptions) if applies(exceptions[i], job)]
-            explained = true
-            for l in changed_lines(diff)
-                i = findfirst(i -> occursin(exceptions[i].lines, l), candidates)
-                if i === nothing
-                    explained = false
-                else
-                    used[candidates[i]] = true
-                end
-            end
+            explained, took, remaining = explain(read(base * ".cpp.txt", String),
+                                                 read(base * ".port.txt", String),
+                                                 exceptions[candidates])
             if explained
                 status = :excepted
+                used[candidates[took]] .= true
             else
-                push!(findings, (job, joinpath(paths.diffs, fields[4])))
+                push!(findings, (job, base * ".diff", remaining))
             end
         end
         c[status] = get(c, status, 0) + 1
@@ -529,14 +584,16 @@ function report(opts::Options, jobs, skipped)
     for (i, e) in enumerate(exceptions)
         used[i] && continue
         any(job -> applies(e, job), jobs) || continue
-        println("unused exception for $(e.pass): input $(e.glob), lines '$(e.lines.pattern)'")
+        println("unused exception for $(e.pass): input $(e.glob), ",
+                e.action === :accept ? "accept" : "lines", " '$(e.lines.pattern)'")
     end
     if !isempty(findings)
         println("\n$(length(findings)) unexplained difference(s):")
-        for (job, file) in findings
+        for (job, file, remaining) in findings
             println("\n=== ", job.key, " (", file, ")")
             opts.quiet && continue
-            lines = split(read(file, String), '\n')
+            # what remains after the rewrites of the exceptions that apply
+            lines = split(remaining, '\n')
             println(join(first(lines, 80), '\n'))
             length(lines) > 80 && println("[... $(length(lines) - 80) more lines]")
         end

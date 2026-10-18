@@ -5,25 +5,35 @@
 #   input = "llvmpasses/*.ll"   # glob over input names (default: every input)
 #   julia = ["1.10", "1.11"]    # Julia versions it applies to (default: all)
 #   prefix = "raw"              # the prefix pipeline it applies to (default: all)
-#   lines = '...'               # a regex; every changed line of a diff must match one
+#   side = "cpp"                # whose output it rewrites: "cpp", "port" or "both"
+#   lines = '...'               # a regex over the lines of that output
+#   replace = '...'             # what the matched text becomes (\1 etc. for groups);
+#                               # without it, matching lines are deleted
 #   reason = "..."              # what differs and why
 #   decision = "S-D3"           # the plan decision (or Log entry) that settled it
 #
-# A difference is explained only if each of its changed lines (a `-` line of the C++
-# output or a `+` line of the port's, including the `! ...` status lines for errors,
-# crashes and invalid IR) matches an exception that applies to the input, so an exception
-# can't hide a new difference elsewhere in the same module.
+# The outputs are compared line by line (blank lines ignored) after the rewrites of every
+# exception that applies, and the difference is excepted only if they are then identical:
+# an exception allows exactly the change it describes, anywhere else the outputs must
+# agree. Errors, crashes and invalid IR are status lines of the output, starting with `! `.
+#
+# For outputs of the C++ that can't be compared because they are broken (invalid IR), an
+# exception can instead have `accept = '...'` (a regex) in place of `lines`: the
+# difference is excepted when a line of that side's output matches and the other side's
+# output verifies.
 
 [[AllocOpt]]
 input = "llvmpasses/late-lower-gc-addrspaces.ll"
 julia = ["1.10", "1.11"]
-lines = '^(  %\d+ = bitcast ptr addrspace\(5\) %\d+ to ptr|  %\d+ = (call ptr @julia\.get_pgcstack\(\)|bitcast ptr %\d+ to ptr|getelementptr inbounds ptr, ptr %\d+, i64 -12|load i64, ptr (addrspace\(5\) )?%\d+, align 8)|  call void @llvm\.lifetime\.start\.p5\(i64 8, ptr (addrspace\(5\) )?%\d+\)|  store i64 %\d+, ptr (addrspace\(5\) )?%\d+, align 8|! invalid IR: .*Invalid bitcast.*)$'
+side = "cpp"
+accept = '^! invalid IR: LLVM error: Invalid bitcast \| %\d+ = bitcast ptr addrspace\(5\) %\d+ to ptr \|'
 reason = "for an alloca in a non-zero address space, the C++ of 1.10 and 1.11 casts it to address space 0 with a bitcast (invalid IR); the port uses the alloca as is"
 decision = "S-D3 (Log, S4, exception 4)"
 
 [[AllocOpt]]
 input = "llvmpasses/gc-writebarrier-volatile.ll"
 julia = ["1.12", "1.13"]
+side = "port"
 lines = '^  call void @julia\.write_barrier\(ptr addrspace\(10\) %\d+, ptr addrspace\(10\) null\)$'
 reason = "a write barrier whose child is a removed allocation keeps its other operands, as on Julia master (the C++ of earlier versions erases the barrier)"
 decision = "S-D3 (Log, S4, exception 1)"
@@ -31,49 +41,82 @@ decision = "S-D3 (Log, S4, exception 1)"
 [[GCInvariantVerifier]]
 input = "inputs/gc-ptrtoint.ll"
 julia = ["1.10", "1.11", "1.12", "1.13"]
-lines = '^! rejected \| Illegal (inttoptr|ptrtoint) \| %\w+ = ptrtoint .*$'
+side = "cpp"
+lines = '^! rejected \| Illegal inttoptr \| (%\w+ = ptrtoint ptr addrspace\(1[0-3]\) .*)$'
+replace = '! rejected | Illegal ptrtoint | \1'
 reason = "a ptrtoint of a tracked pointer is reported as \"Illegal ptrtoint\", as on Julia master (earlier versions say \"Illegal inttoptr\")"
 decision = "S-D3 (Log, S5 GCInvariantVerifier)"
 
 [[LateLowerGCFrame]]
 input = "llvmpasses/alloc-opt-gcframe.ll"
-lines = '^  call void %\d+\(ptr (nonnull )?%\d+\)( \[ "(unknown_bundle|jl_not_jl_roots)"\(.*\) \])?$'
+side = "port"
+lines = '^(  call void %\d+\(ptr (nonnull )?%\d+\)) \[ "(unknown_bundle|jl_not_jl_roots)"\(.*\) \]$'
+replace = '\1'
 reason = "operand bundles that are not Julia's are kept (the C++ removes every bundle of the calls it rewrites)"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateLowerGCFrame]]
 julia = ["1.12", "1.13"]
-lines = '^  (%\d+ = load atomic i8, ptr %\d+ monotonic|store atomic i8 (%\d+|\d+), ptr %\d+ release), align (1|8)(, !dbg !\d+)?$'
+side = "cpp"
+lines = '^(  (%\d+ = load atomic i8, ptr %\d+ monotonic|store atomic i8 (%\d+|\d+), ptr %\d+ release)), align 8\b'
+replace = '\1, align 1'
 reason = "the GC state byte is accessed with an alignment it has (the C++ of 1.12 and 1.13 claims that of a pointer)"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+# The frame slots of allocas: the next three entries hide, in these inputs only, which
+# slot each alloca gets (and so the operands that select between slots).
+[[LateLowerGCFrame]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "both"
+lines = '^(  %\d+ = call ptr @julia\.get_gc_frame_slot\(ptr %\d+, i32 )\d+\)$'
+replace = '\1?)'
+reason = "the frame slots of allocas are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateLowerGCFrame]]
 input = "llvmpasses/late-lower-gc-s*.ll"
-lines = '^  %\d+ = (select i1 %\d+, ptr %\d+, ptr %\d+|phi ptr \[ %\d+, %\d+ \], \[ %\d+, %\d+ \]|call ptr @julia\.get_gc_frame_slot\(ptr %\d+, i32 \d+\))$'
-reason = "the frame slots of allocas are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
+side = "both"
+lines = '^(  %\d+ = select i1 %\d+, ptr )%\d+, ptr %\d+$'
+replace = '\1%?, ptr %?'
+reason = "as above: the slots that a select of frame slots chooses from"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[[LateLowerGCFrame]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "both"
+lines = '^(  %\d+ = phi ptr \[ )%\d+(, %\d+ \], \[ )%\d+(, %\d+ \])$'
+replace = '\1%?\2%?\3'
+reason = "as above: the slots that a phi of frame slots merges"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]
 julia = ["1.12", "1.13", "1.14"]
-lines = '^(; Function Attrs: nounwind willreturn allockind\("alloc"\) allocsize\(\d\) memory\(argmem: read, inaccessiblemem: readwrite\)|declare noalias nonnull ptr addrspace\(10\) @ijl_gc_small_alloc\(.*)$'
+side = "cpp"
+lines = '^declare noalias nonnull ptr addrspace\(10\) @ijl_gc_small_alloc\(ptr, i32, i32, i64\) #\{ nounwind willreturn allockind\("alloc"\) allocsize\(2\) memory\(argmem: read, inaccessiblemem: readwrite\) \}$'
 reason = "no declaration of ijl_gc_small_alloc (the C++ of 1.12 and later declares it in every module)"
 decision = "S6 contract (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]
 input = "llvmpasses/alloc-opt-gcframe.ll"
-lines = '^  call void %\d+\(ptr (nonnull )?%\d+\)( \[ "(unknown_bundle|jl_not_jl_roots)"\(.*\) \])?$'
+side = "port"
+lines = '^(  call void %\d+\(ptr (nonnull )?%\d+\)) \[ "(unknown_bundle|jl_not_jl_roots)"\(.*\) \]$'
+replace = '\1'
 reason = "operand bundles that are not Julia's are kept (the C++ removes every bundle of the calls it rewrites)"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]
 input = "corpus/gc_safe_call*"
 julia = ["1.12", "1.13", "1.14"]
-lines = '^(! ok|! error: UnsupportedInputError: .* \| gc-transition operand bundle: GC state transitions need Julia.s runtime.*)$'
+side = "port"
+lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| gc-transition operand bundle: GC state transitions need Julia.s runtime( \(at [^()|]*\))? \| [^|]+)+$'
+replace = '! ok'
 reason = "GC state transitions are outside the input contract of jl-late-gc-cleanup (GPU code has none)"
 decision = "S6 contract (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]
 input = "llvmpasses/final-lower-gc*.ll"
-lines = '^(! ok|! error: UnsupportedInputError: .* \| julia\.new_gc_frame: GC frames and allocations of Julia.s runtime are lowered by FinalLowerGC.*)$'
+side = "port"
+lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| julia\.\w+: GC frames and allocations of Julia.s runtime are lowered by FinalLowerGC( \(at [^()|]*\))? \| [^|]+)+$'
+replace = '! ok'
 reason = "IR with GC frames (the output of LateLowerGCFrame) is outside the input contract of jl-late-gc-cleanup"
 decision = "S6 contract (docs/src/late_lower_gc_frame.md)"

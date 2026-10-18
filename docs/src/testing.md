@@ -136,11 +136,15 @@ Each comparison is one of:
 - *identical*;
 - *excepted*: the outputs differ only in ways recorded in
   `test/differential/exceptions.toml`. An entry there names the pass, optionally the
-  inputs (a glob), Julia versions and prefix it applies to, a regex, the reason and the
-  plan decision behind it. A difference is excepted only if every changed line (of the
-  C++ output or the port's, including the status lines for errors and invalid IR)
-  matches an entry that applies to the input, so a recorded difference can't hide a new
-  one in the same module;
+  inputs (a glob), Julia versions and prefix it applies to, the reason and the plan
+  decision behind it, and a rewrite of one side's output: a regex over its lines (the
+  status lines for errors and invalid IR included) and what the matched text becomes,
+  or nothing to delete those lines. A difference is excepted only if the outputs are
+  identical after the rewrites of the entries that apply, so an entry allows exactly the
+  change it describes and the rest of the module is still compared. For the few inputs
+  on which the C++ pass produces invalid IR, which can't be compared at all, an entry
+  can instead accept the difference outright when a line of the C++ output matches
+  (e.g. the verifier's message) and the port's output verifies;
 - *different*: a finding, reported with the diff, which makes the run fail.
 
 Inputs that don't parse or verify, and inputs in which (after the prefix) nothing names
@@ -174,8 +178,9 @@ julia +1.12 --project=test/differential test/differential/run.jl --out results \
     julia-src/test/llvmpasses corpus gpu test/differential/inputs
 ```
 
-`run.jl --pass AllocOpt` restricts the run to one pass (Julia's name), and the diffs of
-all differences, excepted or not, are in `results/diffs`; `run.jl --report --out results
+`run.jl --pass AllocOpt` restricts the run to one pass (Julia's name). Both outputs and
+their diff of every difference, excepted or not, are in `results/diffs` (the report shows
+what remains of an unexplained one after the exceptions' rewrites); `run.jl --report --out results
 ...` reports an earlier run again, e.g. after editing `exceptions.toml`. On Julia 1.10 and 1.11, which
 have no workspaces, develop the package into the environment first
 (`Pkg.develop(path=".")`, and LLVM.jl from the package's `[sources]`).
