@@ -147,10 +147,12 @@ Each comparison is one of:
   (e.g. the verifier's message) and the port's output verifies;
 - *different*: a finding, reported with the diff, which makes the run fail.
 
-Inputs that don't parse or verify, and inputs in which (after the prefix) nothing names
-what the pass works on, are counted but not compared. The report also counts how often
-the C++ pass changed the module at all, and lists entries of `exceptions.toml` that
-matched nothing.
+Inputs that don't parse or verify, inputs on which the prefix pipeline fails (listed with
+the error), and, for passes that return early without them, inputs in which (after the
+prefix) nothing names what the pass works on, are counted but not compared. A pass that
+was compared on no input at all fails the run. The report also counts how often the C++
+pass changed the module at all, and lists entries of `exceptions.toml` that matched
+nothing.
 
 The inputs are `.ll` files or directories of them:
 
@@ -164,26 +166,34 @@ The inputs are `.ll` files or directories of them:
   without debug information;
 - `test/differential/gpucompiler/corpus.jl` writes GPUCompiler's modules for PTX, GCN,
   SPIR-V, Metal and native code without the Julia runtime, before optimization
-  (`GPUCompiler.compile(:llvm, job)` with `optimize=false`), the IR on which GPUCompiler
-  runs Julia's passes. It has its own environment, `test/differential/gpucompiler`, as
-  GPUCompiler brings its own LLVM.jl; only the IR text crosses over;
+  (`GPUCompiler.compile(:llvm, job)` with `optimize=false, cleanup=false`): the IR on
+  which GPUCompiler runs Julia's passes, except that the target's final IR fixups
+  (`finish_ir!`), which follow the optimizer, have run too. Kernels that GPUCompiler
+  can't compile for a target are skipped (all.sh reports the number of modules per
+  target), and since GPUCompiler can crash for one target (GCN on Julia 1.10 and 1.11),
+  each target is best generated in its own process. The script has its own environment,
+  `test/differential/gpucompiler`, as GPUCompiler brings its own LLVM.jl; only the IR
+  text crosses over;
 - `test/differential/inputs`: hand-written modules for what the generated IR lacks, like
   GC invariant violations for GCInvariantVerifier.
 
 ```
 julia +1.12 --project=test/differential test/differential/corpus.jl corpus
 julia +1.12 --project=test/differential/gpucompiler -e 'using Pkg; Pkg.instantiate()'
-julia +1.12 --project=test/differential/gpucompiler test/differential/gpucompiler/corpus.jl gpu
+for t in ptx gcn spirv metal native; do
+    julia +1.12 --project=test/differential/gpucompiler test/differential/gpucompiler/corpus.jl gpu $t
+done
 julia +1.12 --project=test/differential test/differential/run.jl --out results \
     julia-src/test/llvmpasses corpus gpu test/differential/inputs
 ```
 
-`run.jl --pass AllocOpt` restricts the run to one pass (Julia's name). Both outputs and
-their diff of every difference, excepted or not, are in `results/diffs` (the report shows
-what remains of an unexplained one after the exceptions' rewrites); `run.jl --report --out results
-...` reports an earlier run again, e.g. after editing `exceptions.toml`. On Julia 1.10 and 1.11, which
-have no workspaces, develop the package into the environment first
-(`Pkg.develop(path=".")`, and LLVM.jl from the package's `[sources]`).
+`run.jl --pass AllocOpt` restricts the run to one pass (Julia's name). Both outputs of
+every difference, excepted or not, and their diff are in `results/diffs` (the report
+shows what remains of an unexplained one after the exceptions' rewrites); `run.jl
+--report --out results ...` reports an earlier run again, e.g. after editing
+`exceptions.toml`. On Julia 1.10 and 1.11, which have no workspaces, develop the package
+into the environment first (`Pkg.develop(path=".")`, and LLVM.jl from the package's
+`[sources]`).
 
 `test/differential/all.sh WORKDIR` does all of this for every Julia version (juliaup
 channels 1.10 to nightly, or those given): it checks out the fixtures, sets up the
@@ -193,7 +203,10 @@ LLVM.jl, `LLVMEXTRA_BUILDS` names a directory of `libLLVMExtra` builds per LLVM 
 which it sets as the preference for each run.
 
 To compare another port, add a `PassSpec` to `test/differential/passes.jl`: Julia's name
-of the pass, a regex that finds what the pass works on in a module, the prefixes to run
-it behind, and, if needed, a preparation of the inputs (e.g. the GPU-like inputs of
-`jl-late-gc-cleanup`), the names of its remarks, or that the C++ pass aborts on rejected
-input.
+of the pass, whether it is a module, function or loop pass, the prefixes to run it
+behind, and, if needed, a regex that finds what the pass works on in a module (only for
+a pass whose C++ returns early without it), a preparation of the inputs (e.g. the
+GPU-like inputs of `jl-late-gc-cleanup`), the names of its remarks, or that the C++ pass
+aborts on rejected input. A pass with options is compared in each configuration by a
+`PassSpec` per configuration, each with its own name (the key of its exceptions) and the
+pipeline elements of both sides with the options, like `GCInvariantVerifier<strong>`.
