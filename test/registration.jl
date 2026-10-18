@@ -58,6 +58,8 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         opts = parse_options("strong"; extra=(; target="x86", strong=false),
                              keyword_only=(:target,))
         @test opts.extra == (; target="x86", strong=true)
+        # they have no text form
+        @test options_string(opts; keyword_only=(:target,)) == "strong"
     end
 
     # round trip
@@ -156,6 +158,14 @@ test_ir = """
             add!(pb, "jl-test<target=x86>")
             @test_throws PassException run!(pb, mod)
         end
+
+        # a definition's check validates them when the pass is created
+        checked_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
+                                              (; target=nothing), "",
+                                              extra -> extra.target isa Union{Nothing,Symbol} ||
+                                                  throw(ArgumentError("target must be a Symbol")))
+        @test !JuliaIR.custom_pass(checked_pass; target=:x86).required
+        @test_throws "target must be a Symbol" JuliaIR.custom_pass(checked_pass; target="x86")
     end
 end
 
