@@ -24,8 +24,11 @@ For `julia.get_pgcstack_or_new`, the code then checks whether the thread has a G
 (the branch weights make it likely), and if not, calls the runtime to adopt the thread
 (`ijl_adopt_thread`, or `ijl_autoinit_and_adopt_thread` from 1.12 on, which also starts
 the runtime). A thread that had a GC stack switches to the GC-unsafe state, with a
-safepoint if it was GC-safe. Every return then restores the GC state the thread had on
-entry, GC-safe for an adopted thread (followed by a safepoint from 1.12 on).
+safepoint if it was GC-safe (on 1.11 always). Unless the function returns tracked
+pointers, every return then restores the GC state the thread had on entry, GC-safe for an
+adopted thread (followed by a safepoint from 1.12 on). None of this happens for a call
+whose result is unused (it is removed) or in a function that receives the GC stack as an
+argument.
 
 `jl-lower-ptls` (`JuliaIR.LowerPTLSPass`) ports the pass for the IR of every Julia
 version from 1.10 on, and `jlopt` runs it for Julia's name of the pass (`LowerPTLSPass`,
@@ -86,10 +89,13 @@ The differences between versions are fields of `JuliaIR.Dialect`:
 - A getter used other than as the function of a `call` (as a value, or by an `invoke`),
   which crashes the C++ or makes it emit invalid IR, is rejected before anything changes,
   and so is a `julia.get_pgcstack_or_new` call that doesn't dominate every return of its
-  function (the code to restore the GC state needs it; Julia's code generator always
-  calls it in the entry block).
+  function where the GC state is restored there (functions that don't return tracked
+  pointers; the code to restore the state needs it; Julia's code generator always calls
+  it in the entry block).
 - In imaging mode, a module that declares the image's variables already uses those
   declarations (the C++ adds new ones with suffixed names, which the loader doesn't
-  fill in); a declaration of another type or kind is an error. New declarations are in
+  fill in); a declaration of another type or kind (a function, an alias, a thread-local
+  variable) is an error, as is a declaration of the function that adopts threads with
+  another type than the getter's. New declarations are in
   the data layout's address space for globals, like the C++'s.
 - `tls-getters` is rejected before master, which doesn't have it.

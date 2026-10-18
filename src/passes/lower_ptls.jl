@@ -460,7 +460,8 @@ const LOWER_PTLS = define_pass("jl-lower-ptls", :module,
 Julia's lowering of the GC stack getters (`jl-lower-ptls` in a pipeline, `LowerPTLSPass`
 in Julia's pipelines): calls of `julia.get_pgcstack` and `julia.get_pgcstack_or_new`
 become the code that finds the current task's GC stack, and C-callable functions (those
-that call `julia.get_pgcstack_or_new`) adopt foreign threads and switch the GC state.
+that call `julia.get_pgcstack_or_new`) adopt foreign threads and switch the GC state (on
+entry, and back at the returns unless the function returns tracked pointers).
 
 In JIT mode (the default), the code reads the GC stack through the thread pointer, at the
 running process's `jl_tls_offset`, or calls the runtime's getter (at its address in the
