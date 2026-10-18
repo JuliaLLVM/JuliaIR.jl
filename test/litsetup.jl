@@ -51,6 +51,7 @@ function lit_params(; exec_root::String, bindir::String)
         "common_cfg" => joinpath(JULIAIR_DIR, "test", "lit", "common.cfg.py"),
         # the library's targets differ per platform (macOS lacks X86, for one)
         "targets" => join(lowercase.(string.(LLVM.backends())), ","),
+        "llvm_major" => string(LLVM.version().major),
         # for lit's internal shell on Windows, with forward slashes (which Windows accepts,
         # and lit's lexer does not take for escapes)
         "jlopt_cmd" => join(map(arg -> "\"" * replace(arg, '\\' => '/') * "\"",

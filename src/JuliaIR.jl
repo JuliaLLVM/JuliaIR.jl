@@ -22,6 +22,7 @@ include("passes/late_gc_cleanup.jl")
 include("passes/combine_muladd.jl")
 include("passes/lower_exc_handlers.jl")
 include("passes/lower_simdloop.jl")
+include("passes/expand_atomic_modify.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

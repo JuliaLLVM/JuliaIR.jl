@@ -49,4 +49,8 @@ config.environment['JULIA_OBJCACHE'] = '0'
 # LLVM's names for the targets of the library, for `REQUIRES: x86-registered-target`
 for target in params['targets'].split(','):
     if target:
-        config.available_features.add(target + '-registered-target') 
+        config.available_features.add(target + '-registered-target')
+
+# the version of LLVM, for `REQUIRES: llvm-ge-20` (at least LLVM 20)
+for major in range(15, int(params['llvm_major']) + 1):
+    config.available_features.add('llvm-ge-%d' % major)

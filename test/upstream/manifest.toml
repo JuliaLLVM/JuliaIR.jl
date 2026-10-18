@@ -83,8 +83,7 @@ status = "run"
 [fixtures."atomic-modify.ll"]
 kind = "port"
 ports = ["ExpandAtomicModify"]
-status = "skip"
-missing = ["ExpandAtomicModify"]
+status = "run"
 
 [fixtures."float16.ll"]
 kind = "port"
