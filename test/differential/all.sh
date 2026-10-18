@@ -120,7 +120,7 @@ for ch in "${CHANNELS[@]}"; do
 
     jl "$ch" --project="$DIFF" "$DIFF/run.jl" --quiet --out "$dir/out" "${inputs[@]}" \
         > "$dir/report.txt" 2>&1 || status=1
-    sed -n '/^Julia /,/^`changed`/p;/^unused exception/p;/^no comparisons/p;/^prefix .* failed on/p;/unexplained difference/p' "$dir/report.txt"
-    sed -n '/^Julia /,/^`changed`/p' "$dir/report.txt" >> "$WORK/summary.txt"
+    sed -n '/^Julia /,/^`accepted`/p;/^unused exception/p;/^no comparisons/p;/^prefix .* failed on/p;/unexplained difference/p' "$dir/report.txt"
+    sed -n '/^Julia /,/^`accepted`/p' "$dir/report.txt" >> "$WORK/summary.txt"
 done
 exit $status

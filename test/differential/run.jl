@@ -600,16 +600,18 @@ function canonical_frame_slots(lines)
 end
 CANONICALIZATIONS["frame slots"] = canonical_frame_slots
 
-# Whether the recorded deviations explain the difference of two outputs, which exceptions
-# that took, and the diff that remains if they don't.
+# Whether the recorded deviations explain the difference of two outputs (`:excepted`),
+# accept it without a comparison (`:accepted`) or not (`:different`), which exceptions
+# took, and the diff that remains.
 #
 # An exception either rewrites the lines it matches in one side's output (deletes them, or
 # replaces the matched text), after which both outputs must be identical, so that it only
 # ever allows the deviation it describes; or, for a deviation that changes too much to be
 # rewritten away (invalid IR from the C++, a different analysis), accepts the difference
 # when a line of that side matches, as long as the other side's output is a module that
-# verifies (no error, crash or invalid IR). A few deviations that a regex can't describe
-# have a canonicalization of both outputs instead (`CANONICALIZATIONS`).
+# verifies (no error, crash or invalid IR): the outputs are then not compared at all. A
+# few deviations that a regex can't describe have a canonicalization of both outputs
+# instead (`CANONICALIZATIONS`).
 function explain(cpp, port, exceptions)
     sides = Dict("cpp" => cpp, "port" => port)
     for (i, e) in enumerate(exceptions)
@@ -617,13 +619,13 @@ function explain(cpp, port, exceptions)
         other = sides[e.side == "cpp" ? "port" : "cpp"]
         if any(l -> occursin(e.lines, l), split(sides[e.side], '\n')) &&
            !startswith(other, "! ") && !occursin("\n! invalid IR", other)
-            return true, [i], ""
+            return :accepted, [i], ""
         end
     end
     cpp_lines, cpp_used = rewritten(cpp, "cpp", exceptions)
     port_lines, port_used = rewritten(port, "port", exceptions)
-    cpp_lines == port_lines && return true, union(cpp_used, port_used), ""
-    return false, Int[], unified_diff(join(cpp_lines, '\n'), join(port_lines, '\n'))
+    cpp_lines == port_lines && return :excepted, union(cpp_used, port_used), ""
+    return :different, Int[], unified_diff(join(cpp_lines, '\n'), join(port_lines, '\n'))
 end
 
 function report(opts::Options, jobs, skipped)
@@ -649,23 +651,21 @@ function report(opts::Options, jobs, skipped)
         if status === :different
             base = joinpath(paths.diffs, fields[4])
             candidates = [i for i in eachindex(exceptions) if applies(exceptions[i], job)]
-            explained, took, remaining = explain(read(base * ".cpp.txt", String),
-                                                 read(base * ".port.txt", String),
-                                                 exceptions[candidates])
-            if explained
-                status = :excepted
-                used[candidates[took]] .= true
-            else
+            status, took, remaining = explain(read(base * ".cpp.txt", String),
+                                              read(base * ".port.txt", String),
+                                              exceptions[candidates])
+            used[candidates[took]] .= true
+            if status === :different
                 push!(findings, (job, base * ".diff", remaining))
             end
         end
         c[status] = get(c, status, 0) + 1
-        status in (:identical, :excepted, :different) && fields[3] == "changed" &&
+        status in (:identical, :excepted, :accepted, :different) && fields[3] == "changed" &&
             (c[:changed] = get(c, :changed, 0) + 1)
     end
 
-    columns = [:identical, :excepted, :different, :changed, :no_input, :unparsable,
-               :invalid_input, :prefix_failed]
+    columns = [:identical, :excepted, :accepted, :different, :changed, :no_input,
+               :unparsable, :invalid_input, :prefix_failed]
     println("Julia $VERSION, LLVM $(LLVM.version())")
     println(rpad("pass", 26), join(lpad.(string.(columns), 14)))
     summary = IOBuffer()
@@ -677,7 +677,8 @@ function report(opts::Options, jobs, skipped)
     end
     write(joinpath(paths.out, "summary.tsv"), take!(summary))
     isempty(skipped) || println("not in this Julia: ", join(skipped, ", "))
-    println("`changed`: the C++ pass changed the module (of identical, excepted and different)")
+    println("`accepted`: a recorded deviation, not compared; `changed`: the C++ pass ",
+            "changed the module (of the four before)")
 
     # a pass that was compared on nothing is a broken test, not a passing one
     uncompared = [name for (name, c) in counts

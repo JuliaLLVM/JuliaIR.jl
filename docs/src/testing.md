@@ -141,14 +141,14 @@ Each comparison is one of:
   status lines for errors and invalid IR included) and what the matched text becomes,
   or nothing to delete those lines. A difference is excepted only if the outputs are
   identical after the rewrites of the entries that apply, so an entry allows exactly the
-  change it describes and the rest of the module is still compared. For the few inputs
-  where a deviation changes too much to be rewritten away (the C++ pass produces invalid
-  IR, or the port's analysis differs by decision), an entry can instead accept the
-  difference outright for the inputs it names when a line of the C++ output matches
-  (e.g. the verifier's message, or the allocation the C++ keeps) and the port's output
-  is a module that verifies; and a
-  deviation that a regex can't describe, like the order of GC frame slots, can have a
-  named canonicalization of both outputs (`CANONICALIZATIONS` in `run.jl`);
+  change it describes and the rest of the module is still compared. A deviation that a
+  regex can't describe, like the order of GC frame slots, can have a named
+  canonicalization of both outputs instead (`CANONICALIZATIONS` in `run.jl`);
+- *accepted*: not compared, for the few inputs where a recorded deviation changes too
+  much to be rewritten away (the C++ pass produces invalid IR, or the port's analysis
+  differs by decision). Such an entry names its inputs and accepts the difference when a
+  line of the C++ output matches (e.g. the verifier's message, or the allocation the C++
+  keeps) and the port's output is a module that verifies;
 - *different*: a finding, reported with the diff, which makes the run fail.
 
 Inputs that don't parse or verify, inputs on which the prefix pipeline fails (listed with
