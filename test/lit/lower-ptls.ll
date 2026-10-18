@@ -43,11 +43,15 @@
 ; RUN: not opt -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/conflict.ll 2>&1 | FileCheck %t/conflict.ll
 
 ; `julia.get_pgcstack_or_new`: adopting the thread, entering and leaving the GC-unsafe
-; state (1.12 has 1.13's fix of the entry safepoint)
-; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V110 -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
-; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V111 -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
-; RUN: %if julia-1.12 || julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
-; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW -DTASK=-192 -DPTLS=208 -DSTATE=128 %}
+; state (1.12 has 1.13's fix of the entry safepoint); the safepoint page is loaded
+; atomically from 1.13 on, through an address named on master
+; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V110,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
+; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V111,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
+; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,PLAINSP,V112 -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
+; RUN: %if julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,ATOMICSP -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
+; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,NAMEDSP,ATOMICSP -DTASK=-192 -DPTLS=208 -DSTATE=128 %}
+; in imaging mode, the GC stack found through the image's variables
+; RUN: opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new-imaging.ll | FileCheck %t/or-new-imaging.ll
 
 ; uses that the pass can't lower are rejected before it changes anything
 ; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/errors.ll 2>&1 | FileCheck %t/errors.ll --check-prefix=NONCALL
@@ -322,7 +326,7 @@ top:
 ;--- conflict.ll
 target triple = "x86_64-unknown-linux-gnu"
 
-; CHECK: LowerPTLSError: @jl_pgcstack_key_slot is declared in the module, but not as an external variable of type i64: @jl_pgcstack_key_slot = external global i32
+; CHECK: LowerPTLSError: @jl_pgcstack_key_slot is declared in the module, but not as an external, not thread-local variable of type i64: @jl_pgcstack_key_slot = external global i32
 @jl_pgcstack_key_slot = external global i32
 
 declare ptr @julia.get_pgcstack()
@@ -342,6 +346,7 @@ target triple = "x86_64-unknown-linux-gnu"
 declare ptr @julia.get_pgcstack()
 declare ptr @julia.get_pgcstack_or_new()
 declare void @use(ptr)
+declare ptr addrspace(10) @box(ptr)
 
 ; CHECK-LABEL: define i64 @cfunction(
 ; CHECK-NEXT:  top:
@@ -385,8 +390,10 @@ declare void @use(ptr)
 ; CHECK-NEXT:    %[[PTLS2:ptls_load[0-9]+]] = load ptr, ptr %[[FIELD2]], align 8, !tbaa ![[GCFRAME]]
 ; CHECK-NEXT:    %[[STATE2:gc_state[0-9]+]] = getelementptr inbounds i8, ptr %[[PTLS2]], i32 [[STATE]]
 ; CHECK-NEXT:    store atomic i8 %[[LAST]], ptr %[[STATE2]] release, align 1
-; NEW-NEXT:      %[[ADDR2:[0-9a-z_]+]] = getelementptr inbounds i8, ptr %[[PTLS2]], i32 16
-; NEW-NEXT:      %[[PAGE2:safepoint[0-9]+]] = load {{(atomic )?}}ptr, ptr %[[ADDR2]]{{( monotonic)?}}, align 8, !tbaa ![[GCFRAME]]
+; UNNAMEDSP-NEXT: %[[ADDR2:[0-9]+]] = getelementptr inbounds i8, ptr %[[PTLS2]], i32 16
+; NAMEDSP-NEXT:  %[[ADDR2:safepoint_addr[0-9]+]] = getelementptr inbounds i8, ptr %[[PTLS2]], i32 16
+; V112-NEXT:     %[[PAGE2:safepoint[0-9]+]] = load ptr, ptr %[[ADDR2]], align 8, !tbaa ![[GCFRAME]]
+; ATOMICSP-NEXT: %[[PAGE2:safepoint[0-9]+]] = load atomic ptr, ptr %[[ADDR2]] monotonic, align 8, !tbaa ![[GCFRAME]]
 ; NEW-NEXT:      fence syncscope("singlethread") seq_cst
 ; NEW-NEXT:      load volatile i64, ptr %[[PAGE2]], align 8
 ; NEW-NEXT:      fence syncscope("singlethread") seq_cst
@@ -394,8 +401,10 @@ declare void @use(ptr)
 ; CHECK-EMPTY:
 ; CHECK-NEXT:  safepoint:
 ; LEGACY-NEXT:   %[[ADDR:[0-9]+]] = getelementptr inbounds ptr, ptr %ptls_load, i64 2
-; NEW-NEXT:      %[[ADDR:[0-9a-z_]+]] = getelementptr inbounds i8, ptr %ptls_load, i32 16
-; CHECK-NEXT:    %[[PAGE:safepoint[0-9]+]] = load {{(atomic )?}}ptr, ptr %[[ADDR]]{{( monotonic)?}}, align 8, !tbaa ![[CONST:[0-9]+]], !invariant.load
+; UNNAMEDSP-NEXT: %[[ADDR:[0-9]+]] = getelementptr inbounds i8, ptr %ptls_load, i32 16
+; NAMEDSP-NEXT:  %[[ADDR:safepoint_addr]] = getelementptr inbounds i8, ptr %ptls_load, i32 16
+; PLAINSP-NEXT:  %[[PAGE:safepoint[0-9]+]] = load ptr, ptr %[[ADDR]], align 8, !tbaa ![[CONST:[0-9]+]], !invariant.load
+; ATOMICSP-NEXT: %[[PAGE:safepoint[0-9]+]] = load atomic ptr, ptr %[[ADDR]] monotonic, align 8, !tbaa ![[CONST:[0-9]+]], !invariant.load
 ; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
 ; CHECK-NEXT:    load volatile i64, ptr %[[PAGE]], align 8
 ; CHECK-NEXT:    fence syncscope("singlethread") seq_cst
@@ -459,6 +468,35 @@ top:
   ret void
 }
 
+; a function that returns tracked pointers doesn't restore the GC state at its returns
+; (which is up to its caller), so the call needn't dominate them
+; CHECK-LABEL: define ptr addrspace(10) @boxed() {
+; CHECK-NOT:     phi i8
+; CHECK:         %[[STACK:pgcstack[0-9]+]] = phi ptr
+; CHECK-NEXT:    %b = call ptr addrspace(10) @box(ptr %[[STACK]])
+; CHECK-NEXT:    ret ptr addrspace(10) %b
+define ptr addrspace(10) @boxed() {
+top:
+  %pgcstack = call ptr @julia.get_pgcstack_or_new()
+  %b = call ptr addrspace(10) @box(ptr %pgcstack)
+  ret ptr addrspace(10) %b
+}
+
+; CHECK-LABEL: define { ptr addrspace(10), i64 } @aggregate(i1 %c) {
+; CHECK-NOT:     phi i8
+; CHECK:       {{^}}done:
+; CHECK-NEXT:    ret { ptr addrspace(10), i64 } zeroinitializer
+define { ptr addrspace(10), i64 } @aggregate(i1 %c) {
+top:
+  br i1 %c, label %adopt, label %done
+adopt:
+  %pgcstack = call ptr @julia.get_pgcstack_or_new()
+  call void @use(ptr %pgcstack)
+  br label %done
+done:
+  ret { ptr addrspace(10), i64 } zeroinitializer
+}
+
 ; LEGACY: declare ptr @ijl_adopt_thread()
 ; NEW:    declare ptr @ijl_autoinit_and_adopt_thread()
 ; CHECK:  ![[WEIGHTS]] = !{!"branch_weights", i32 9, i32 1}
@@ -466,6 +504,28 @@ top:
 ; CHECK:  ![[GCFRAME_T]] = !{!"jtbaa_gcframe"
 ; CHECK:  ![[CONST]] = !{![[CONST_T:[0-9]+]], ![[CONST_T]], i64 0, i64 1}
 ; CHECK:  ![[CONST_T]] = !{!"jtbaa_const"
+
+;--- or-new-imaging.ll
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+declare ptr @julia.get_pgcstack_or_new()
+declare void @use(ptr)
+
+; the GC stack from the thread pointer or the image's getter is the one that is checked
+; for a thread to adopt
+; CHECK-LABEL: define void @cfunction() {
+; CHECK:         load i64, ptr @jl_{{(image_)?}}tls_offset
+; CHECK:         %[[STACK:pgcstack[0-9]+]] = phi ptr [ %tls_pgcstack, %{{[0-9]+}} ], [ %pgcstack, %{{[0-9]+}} ]
+; CHECK-NEXT:    %{{[0-9]+}} = icmp ne ptr %[[STACK]], null
+; CHECK:         call ptr @{{ijl_adopt_thread|ijl_autoinit_and_adopt_thread}}()
+; CHECK:         phi ptr [ %{{[0-9]+}}, %{{[0-9]+}} ], [ %[[STACK]], %after_safepoint ]
+define void @cfunction() {
+top:
+  %pgcstack = call ptr @julia.get_pgcstack_or_new()
+  call void @use(ptr %pgcstack)
+  ret void
+}
 
 ;--- errors.ll
 target triple = "x86_64-unknown-linux-gnu"
