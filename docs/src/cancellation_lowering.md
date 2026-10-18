@@ -48,10 +48,12 @@ For each function, in this order:
 
 A function with the `"julia.ipo_reset_safe"` attribute (its own effects are reset-safe,
 so its callers may keep their region open across a call to it) may run inside its
-caller's region, everywhere: its calls get step 4 (but not its stores and loads, which
-the caller's contract covers), its allocations and write barriers step 6, and its
-returns no teardown (the region is the caller's). The addresses of step 2 are only
-computed if a call needs them.
+caller's region, so a region may be open anywhere in it, not only where its own points
+reach. If it has points of its own, it is otherwise lowered like any other function. If
+it has none, only its calls get step 4 (not its stores and loads, which the caller's
+contract covers), its allocations and write barriers step 6, and its returns no teardown
+(the region is the caller's); the addresses of step 2 are then only computed if a call
+needs them.
 
 Under ThreadSanitizer (`sanitize_thread`), whose instrumentation runs later and would turn
 the region's bookkeeping into runtime calls, a point is only a GC safepoint, and the pass
@@ -63,7 +65,8 @@ The offsets of `gcstack`, `ptls`, `eh` and `reset_ctx` in the task, of the safep
 in the thread-local state, the size and alignment of `jl_reset_ctx_t` and the offsets of
 its `gcstack`, `eh` and `mctx` fields, and the name of the runtime's `setjmp` are
 [runtime facts](runtime.md), taken from the running Julia when a function needs them
-(only functions with points, or `"julia.ipo_reset_safe"` functions with runtime calls).
+(only functions with points, or `"julia.ipo_reset_safe"` functions with calls that close
+the region).
 The pass options `task-gcstack`, `task-ptls`, `task-eh`, `task-reset-ctx`,
 `tls-safepoint`, `reset-ctx-size`, `reset-ctx-align`, `reset-ctx-gcstack`,
 `reset-ctx-eh`, `reset-ctx-mctx` and `setjmp` give them explicitly. As in Julia's pass,
@@ -77,7 +80,9 @@ not. The `setjmp` name is the running Julia's whatever the triple.
   reports it as preserved, which keeps a dominator tree computed before it without the
   new blocks; LateLowerGCFrame (Julia's and the port) then takes blocks missing from the
   tree for unreachable, and doesn't root an object that `GC.@preserve` keeps alive across
-  a call after a cancellation point.
+  a call after a cancellation point. In Julia's own pipeline no tree survives to the
+  pass (RemoveNI, which runs just before, drops all cached function analyses when it
+  rewrites the data layout), so this shows in other pipelines only.
 - A cancellation point in a function without a GC stack in its entry block, and an
   `invoke` of `julia.cancellation_point`, are rejected with a
   `JuliaIR.CancellationLoweringError` before the function is changed. Julia's pass emits
