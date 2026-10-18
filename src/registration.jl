@@ -22,6 +22,53 @@ const POLICY_KEYS = ("fp16", "bf16", "gc-barrier")
 option_key(name::Symbol) = replace(string(name), '_' => '-')
 
 """
+    JuliaIR.Optional{T}(value=nothing)
+
+The value of a pass option that may be left unspecified (`nothing`), and its type `T`: a
+signed integer like an offset (`T = Int`, e.g. `tls-offset=-8` in a pipeline), or an
+address (`T = UInt`, written as `pgcstack-getter=0x4011c0`). A pass's default for such an
+option is `Optional{T}()`; its constructor's keyword takes a `T` or `nothing`.
+"""
+struct Optional{T<:Integer}
+    value::Union{Nothing,T}
+    # (an inner constructor, so that there is no `Optional(nothing)` without a `T`)
+    Optional{T}(value=nothing) where {T<:Integer} = new{T}(value)
+end
+
+# the value of an option, `nothing` for an unspecified `Optional`
+option_value(x) = x
+option_value(x::Optional) = x.value
+
+function parse_optional(::Type{Optional{T}}, key, value) where {T}
+    n = tryparse(T, value)
+    n === nothing &&
+        throw(ArgumentError(T <: Unsigned ? "option $key requires an address (a non-negative integer)" :
+                                            "option $key requires an integer"))
+    return Optional{T}(n)
+end
+
+# the value of an option given as a keyword argument, for a pass whose default is `default`
+function option_argument(default::Optional{T}, @nospecialize(v), key) where {T}
+    v isa Optional{T} && return v
+    v === nothing && return Optional{T}()
+    if v isa Integer || (T <: Unsigned && v isa Ptr)
+        n = tryparse_convert(T, v)
+        n === nothing || return Optional{T}(n)
+    end
+    throw(ArgumentError("option $key must be $(T <: Unsigned ? "an address" : "an integer") or `nothing`"))
+end
+function option_argument(default, @nospecialize(v), key)
+    v isa typeof(default) || throw(ArgumentError("option $key must be a $(typeof(default))"))
+    return v
+end
+
+tryparse_convert(::Type{T}, v::Ptr) where {T} = T(UInt(v))
+function tryparse_convert(::Type{T}, v::Integer) where {T}
+    typemin(T) <= v <= typemax(T) || return nothing
+    return T(v)
+end
+
+"""
     JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, extra=(;))
 
 Parse the option text of a pass in a pipeline (the part between `<` and `>`, e.g.
@@ -29,8 +76,10 @@ Parse the option text of a pass in a pipeline (the part between `<` and `>`, e.g
 Julia's. Options are separated by `;`. The keyword arguments are the defaults for
 options that are not given. `extra`
 holds the defaults of the pass-specific options, which determine how they are parsed:
-a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`.
-Unknown and repeated options are rejected.
+a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`, an
+`Int` option a non-negative integer, a `String` option any text, and a
+[`JuliaIR.Optional`](@ref) option a signed integer or an address. Unknown and repeated
+options are rejected.
 """
 function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
                        gc_barrier::Symbol=:stock, extra::NamedTuple=(;))
@@ -84,6 +133,10 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
                 (value === nothing || negated) &&
                     throw(ArgumentError("option $key requires a value"))
                 extra_values[name] = value
+            elseif default isa Optional
+                (value === nothing || negated) &&
+                    throw(ArgumentError("option $key requires a value"))
+                extra_values[name] = parse_optional(typeof(default), key, value)
             else
                 error("unsupported type of option $key: $(typeof(default))")
             end
@@ -102,9 +155,11 @@ function options_string(opts::PassOptions)
     policies = options_string(opts.dialect)
     parts = isempty(policies) ? String[] : [policies]
     for (k, v) in pairs(opts.extra)
+        v isa Optional && v.value === nothing && continue
         push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
                      v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
-                     "$(option_key(k))=$v")
+                     v isa Optional{<:Unsigned} ? "$(option_key(k))=0x$(string(v.value; base=16))" :
+                     "$(option_key(k))=$(option_value(v))")
     end
     return join(parts, ";")
 end
@@ -219,13 +274,12 @@ end
 # pipeline
 function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
                      gc_barrier::Symbol=:stock, kwargs...)
-    for (k, v) in pairs(kwargs)
+    given = map(collect(pairs(kwargs))) do (k, v)
         haskey(def.extra, k) ||
             throw(ArgumentError("unknown option $k for pass $(def.name)"))
-        v isa typeof(def.extra[k]) ||
-            throw(ArgumentError("option $k of pass $(def.name) must be a $(typeof(def.extra[k]))"))
+        k => option_argument(def.extra[k], v, "$k of pass $(def.name)")
     end
-    extra = merge(def.extra, values(kwargs))
+    extra = merge(def.extra, (; given...))
     # validate the defaults now, rather than when the pass is first used
     parse_options(""; fp16, bf16, gc_barrier, extra)
     parse = str -> parse_options(str; fp16, bf16, gc_barrier, extra)
