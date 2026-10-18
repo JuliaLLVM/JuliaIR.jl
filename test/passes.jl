@@ -91,6 +91,81 @@ end
     end
 end
 
+@testset "LateGCCleanup" begin
+    @test JuliaIR.LateGCCleanupPass().required
+    ir = """
+        declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
+        declare ptr @julia.pointer_from_objref(ptr addrspace(10))
+
+        define ptr @f(ptr addrspace(10) %obj, ptr addrspace(11) %p) {
+          %v = load i64, ptr addrspace(11) %p, !invariant.load !0
+          %ptr = call ptr @julia.pointer_from_objref(ptr addrspace(10) %obj)
+          %t = call ptr addrspace(10) @julia.typeof(ptr addrspace(10) %obj)
+          ret ptr %ptr
+        }
+
+        !0 = !{}"""
+    # unsupported constructs are all reported, before anything is changed
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        before = string(mod)
+        err = try
+            run!(JuliaIR.LateGCCleanupPass(; julia=v"1.12"), mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException && err.ex isa JuliaIR.UnsupportedInputError
+        @test length(err.ex.constructs) == 1
+        @test startswith(err.ex.constructs[1].message, "julia.typeof: ")
+        @test startswith(sprint(showerror, err.ex),
+                         "UnsupportedInputError: function f contains constructs")
+        @test string(mod) == before
+    end
+
+    # TBAA tags in the format Julia emits (old: access types named by a string) and in
+    # the new format (where the immutability flag is the fifth operand)
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            define void @f(ptr %p) {
+              store i8 0, ptr %p, !tbaa !0
+              store i8 0, ptr %p, !tbaa !4
+              store i8 0, ptr %p, !tbaa !5
+              store i8 0, ptr %p, !tbaa !7
+              store i8 0, ptr %p, !tbaa !9
+              ret void
+            }
+
+            !0 = !{!1, !1, i32 0, i32 1}
+            !1 = !{!"jtbaa_memoryptr", !2, i64 0}
+            !2 = !{!"jtbaa_array", !3, i64 0}
+            !3 = !{!"jtbaa"}
+            !4 = !{!1, !1, i64 0, i64 0}
+            !5 = !{!6, !6, i64 0}
+            !6 = !{!"jtbaa_data", !3, i64 0}
+            !7 = !{!8, !8, i64 0, i64 8, i64 1}
+            !8 = !{!3, i64 8, !"long"}
+            !9 = !{!8, !8, i64 0, i64 8}
+            """) begin
+        tags = [inst.metadata[LLVM.MD_tbaa]
+                for inst in first(first(mod.functions).blocks).instructions
+                if inst isa LLVM.StoreInst]
+        @test JuliaIR.tbaa_derives_from(tags[1], ["jtbaa_array"])
+        @test JuliaIR.tbaa_derives_from(tags[1], ["jtbaa_memoryptr"])
+        @test !JuliaIR.tbaa_derives_from(tags[1], ["jtbaa_const"])
+        @test !JuliaIR.tbaa_derives_from(tags[4], ["long"])
+
+        # the offset becomes an i64, like LLVM builds it
+        mutable = JuliaIR.mutable_tbaa_tag(tags[1])
+        @test mutable != tags[1]
+        @test collect(mutable.operands)[1:2] == collect(tags[1].operands)[1:2]
+        @test length(mutable.operands) == 3
+        @test Value(mutable.operands[3]) == ConstantInt(Int64(0))
+        @test JuliaIR.mutable_tbaa_tag(tags[2]) == tags[2]
+        @test JuliaIR.mutable_tbaa_tag(tags[3]) == tags[3]
+        @test JuliaIR.mutable_tbaa_tag(tags[4]) == tags[5]
+        @test JuliaIR.mutable_tbaa_tag(tags[5]) == tags[5]
+    end
+end
+
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
 

@@ -15,6 +15,7 @@ library supported by LLVM.jl. Only IR with opaque pointers is supported.
 | `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | no |
 | `jl-demote-float16` | `DemoteFloat16` | yes |
 | `jl-gc-invariant-verifier` | `GCInvariantVerifier` | yes |
+| `jl-late-gc-cleanup` | `LateLowerGCFrame` (the cleanup, for functions without a GC frame) | yes |
 
 Differences with Julia's C++ passes:
 
@@ -40,3 +41,7 @@ Differences with Julia's C++ passes:
   `opt`). It reads the address space of vectors of pointers from their elements on
   every Julia version (the C++ pass of Julia 1.10 and 1.11 assumes scalar pointers in
   address space casts), and names `ptrtoint` violations as Julia master does.
+- LateGCCleanup only ports the part of `LateLowerGCFrame` that applies to functions
+  without a GC frame, and rejects the others; see [LateLowerGC cleanup](@ref) for its
+  input contract and its other differences. Unlike the other ports, `jlopt` does not map
+  Julia's pass name to it.

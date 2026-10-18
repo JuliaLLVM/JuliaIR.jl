@@ -883,7 +883,7 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                         push!(bundles, bundle)
                     end
                 end
-                new_call = clone_call!(opt, user, bundles)
+                new_call = clone_call!(opt.builder, user, bundles)
                 take_name!(new_call, user)
                 replace_uses!(user, new_call)
                 erase_inst!(opt, user)
@@ -916,28 +916,6 @@ function finish_split!(opt::AllocOpt, slots)
     for slot in slots
         slot.isref && promote_mem_to_reg!(slot.slot, domtree(opt))
     end
-end
-
-# like C++'s `CallInst::Create(call, bundles)`: the same call with other operand bundles
-function clone_call!(opt::AllocOpt, call::Instruction, bundles::Vector{OperandBundle})
-    builder = opt.builder
-    position!(builder, LLVM.before(call))
-    builder.debug_location = nothing
-    new_call = call!(builder, call.called_type, call.called_operand,
-                     collect(call.arguments), bundles)
-    new_call.tailcall_kind = call.tailcall_kind
-    new_call.callconv = call.callconv
-    for attr in collect(call.function_attributes)
-        push!(new_call.function_attributes, attr)
-    end
-    for attr in collect(call.return_attributes)
-        push!(new_call.return_attributes, attr)
-    end
-    for i in 1:length(call.arguments), attr in collect(call.argument_attributes[i])
-        push!(new_call.argument_attributes[i], attr)
-    end
-    new_call.debug_location = call.debug_location
-    return new_call
 end
 
 function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOptions)

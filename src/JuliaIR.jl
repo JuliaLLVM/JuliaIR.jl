@@ -1,7 +1,7 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
-using LLVM: API, DataLayout, storage_size, abi_size, intptr
+using LLVM: API, DataLayout, storage_size, abi_size, abi_alignment, intptr
 
 include("dialect.jl")
 include("registration.jl")
@@ -15,6 +15,7 @@ include("passes/alloc_opt.jl")
 include("passes/propagate_addrspaces.jl")
 include("passes/demote_float16.jl")
 include("passes/gc_invariant_verifier.jl")
+include("passes/late_gc_cleanup.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

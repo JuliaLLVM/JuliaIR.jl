@@ -19,6 +19,10 @@
 #             "override" run a derived copy: `patch` (relative to this file) is applied
 #                        to the fixture first; the run fails if the pristine fixture
 #                        passes too (the override is stale)
+#             "derived"  run a copy that tests a port instead of what the fixture
+#                        tests: `patch` is applied to the fixture first (e.g., the
+#                        functions of a frame fixture that concern the GPU cleanup, with
+#                        the pipeline naming the port); the copy must run a port
 #   reason  = why, for skip/exclude/override; `ref` = upstream reference, if any
 #   cpp     = why the fixture does not run with Julia's C++ passes (`run.jl --cpp`, which
 #             otherwise runs every fixture that does not test the code generator)
@@ -204,6 +208,11 @@ reason = "LateLowerGCFrame's frame lowering"
 kind = "frame"
 status = "exclude"
 reason = "LateLowerGCFrame's frame lowering"
+
+[fixtures."late-lower-gc-alloc-zeroing.ll".pins."1.14"]
+status = "derived"
+patch = "derived/1.14/late-lower-gc-alloc-zeroing.ll.patch"
+reason = "the zeroinit_indirect tests concern the cleanup (jl-late-gc-cleanup); the derived copy runs them with the port and drops the julia.gc_alloc_obj tests, which need frame lowering"
 
 [fixtures."late-lower-gc-dynamic-index.ll"]
 kind = "frame"

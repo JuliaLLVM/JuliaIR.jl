@@ -14,6 +14,9 @@ JuliaIR.DemoteFloat16Pass
 JuliaIR.GCInvariantVerifierPass
 JuliaIR.GCInvariantError
 JuliaIR.GCInvariantViolation
+JuliaIR.LateGCCleanupPass
+JuliaIR.UnsupportedInputError
+JuliaIR.UnsupportedConstruct
 ```
 
 ## Dialects and options
