@@ -13,7 +13,9 @@ struct PassSpec
     port::String
     # :module, :function or :loop; a loop pass runs under `loop(...)` and `loop-mssa(...)`
     kind::Symbol
-    # modules that don't match (after the prefix) contain nothing for the pass to do
+    # modules that don't match (after the prefix) contain nothing for the pass to do; only
+    # for passes that provably do nothing without it (an early return in the C++), as
+    # the others are compared on every module
     inputs::Regex
     # names of the C++ pipelines (`prefix_pipeline`) that run before the pass
     prefixes::Vector{String}
@@ -31,7 +33,7 @@ struct PassSpec
     aborts::Bool
 end
 
-function PassSpec(name; cpp=name, port=nothing, kind=:function, inputs, prefixes=["raw"],
+function PassSpec(name; cpp=name, port=nothing, kind=:function, inputs=r"", prefixes=["raw"],
                   prepare=Pair{String,Any}["" => identity], remarks=String[], cpp_runs=1,
                   aborts=false)
     port === nothing && (port = JuliaIR.cpp_mapping()[name])
@@ -156,8 +158,6 @@ end
 
 ## the passes
 
-const GC_INPUTS = r"julia\.(get_pgcstack|gc_alloc_obj|write_barrier|object_write_barrier|field_write_barrier|typeof|call|pointer_from_objref|gc_loaded|gcroot_flush|blackbox|gc_alloc_zeroinit)|gc_preserve|gc-transition|jl_roots|gcstack"
-
 const PASS_SPECS = [
     PassSpec("RemoveNI"; kind=:module, inputs=r"^target datalayout = \".*ni:"m),
     PassSpec("AllocOpt"; inputs=r"julia\.gc_alloc_obj", prefixes=["raw", "early"]),
@@ -165,16 +165,15 @@ const PASS_SPECS = [
              inputs=r"addrspace\(1[0-3]\)", prefixes=["raw", "simplified"]),
     PassSpec("DemoteFloat16"; inputs=r"\b(half|bfloat)\b", prefixes=["raw", "simplified"],
              prepare=Pair{String,Any}["" => identity, "powerpc" => powerpc!]),
-    PassSpec("GCInvariantVerifier"; inputs=r"addrspace\(1[0-3]\)",
-             prefixes=["raw", "optimized"], aborts=true),
+    # the GC passes also check or rewrite IR that names nothing of Julia's (e.g.
+    # `julia.call` arguments, aggregates built with `insertvalue`), so they see everything
+    PassSpec("GCInvariantVerifier"; prefixes=["raw", "optimized"], aborts=true),
     # Julia's C++ orders the frame slots of allocas by their addresses (a pointer-keyed
     # map), so its output can differ between runs
-    PassSpec("LateLowerGCFrame"; inputs=GC_INPUTS, prefixes=["raw", "optimized"],
-             cpp_runs=8),
+    PassSpec("LateLowerGCFrame"; prefixes=["raw", "optimized"], cpp_runs=8),
     PassSpec("LateGCCleanup"; cpp="LateLowerGCFrame", port="jl-late-gc-cleanup",
-             inputs=r"addrspace\(1[0-3]\)|julia\.|gc_preserve",
              prefixes=["raw", "optimized"], prepare=Pair{String,Any}["gpu" => gpu_like!]),
-    PassSpec("CombineMulAdd"; inputs=r"\bcontract\b", prefixes=["raw", "simd"],
+    PassSpec("CombineMulAdd"; inputs=r"\b(contract|fast)\b", prefixes=["raw", "simd"],
              remarks=["combine-muladd"]),
     PassSpec("LowerExcHandlers"; inputs=r"julia\.except_enter",
              prefixes=["raw", "simplified"]),
