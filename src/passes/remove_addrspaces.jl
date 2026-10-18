@@ -217,10 +217,8 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             end
         end
         for gv in globals, (kind, md) in gv.metadata
-            kind == MD_dbg || continue
-            API.LLVMGetMetadataKind(md) == API.LLVMDIGlobalVariableExpressionMetadataKind ||
-                continue
-            var = md.operands[1]
+            kind == MD_dbg && md isa DIGlobalVariableExpression || continue
+            var = md.variable
             var === nothing || (vmap.metadata[var] = var)
         end
 
