@@ -62,6 +62,15 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         @test options_string(opts; keyword_only=(:target,)) == "strong"
     end
 
+    # vector-valued options can't be written in a pipeline
+    let extra = (; names=String[], strong=false)
+        @test parse_options("strong"; extra).extra == (; names=String[], strong=true)
+        @test parse_options(""; extra=(; names=["a"])).extra == (; names=["a"])
+        @test_throws "can't be given in a pipeline" parse_options("names=a"; extra)
+        @test_throws "can't be given in a pipeline" parse_options("names"; extra)
+        @test options_string(parse_options(""; extra)) == "no-strong"
+    end
+
     # round trip
     for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
                 "gc-barrier=snapshot-field-precise"]
@@ -166,6 +175,15 @@ test_ir = """
                                                   throw(ArgumentError("target must be a Symbol")))
         @test !JuliaIR.custom_pass(checked_pass; target=:x86).required
         @test_throws "target must be a Symbol" JuliaIR.custom_pass(checked_pass; target="x86")
+
+        # vector-valued options are set by keyword arguments only
+        vector_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
+                                             (; names=String[]))
+        empty!(calls)
+        run!(JuliaIR.custom_pass(vector_pass; names=Any["a", "b"]), mod)
+        @test calls == [("test", PassOptions(Dialect(VERSION), (; names=["a", "b"])))]
+        @test_throws "must be a vector of String" JuliaIR.custom_pass(vector_pass; names=[1])
+        @test_throws "must be a vector of String" JuliaIR.custom_pass(vector_pass; names="a")
     end
 end
 

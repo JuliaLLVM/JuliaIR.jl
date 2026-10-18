@@ -40,6 +40,10 @@ end
     @test !d12.has_atomicmodify && d13.has_atomicmodify && dm.has_atomicmodify
     @test d10.has_combine_muladd && d11.has_combine_muladd && !d12.has_combine_muladd
     @test !d13.has_cancellation_lowering && dm.has_cancellation_lowering
+    @test d13.mv_spec_flags === :target && dm.mv_spec_flags === :packed
+    @test !d10.mv_bf16 && d11.mv_bf16
+    @test d10.mv_tables === :offsets && d11.mv_tables === :pointers
+    @test !d11.mv_autoinit && d12.mv_autoinit
     @test (d10.except_enter, d11.except_enter, d12.except_enter, d13.except_enter,
            dm.except_enter) == (:no_task, :task, :task_buffer, :none, :none)
     @test (d10.cpu_features_rule, d13.cpu_features_rule, dm.cpu_features_rule) ==

@@ -57,6 +57,11 @@ function option_argument(default::Optional{T}, @nospecialize(v), key) where {T}
     end
     throw(ArgumentError("option $key must be $(T <: Unsigned ? "an address" : "an integer") or `nothing`"))
 end
+function option_argument(default::AbstractVector, @nospecialize(v), key)
+    v isa AbstractVector && all(x -> x isa eltype(default), v) ||
+        throw(ArgumentError("option $key must be a vector of $(eltype(default))"))
+    return convert(typeof(default), collect(v))
+end
 # keyword-only options (default `nothing`) take any value, which the definition's
 # `check` validates
 option_argument(::Nothing, @nospecialize(v), key) = v
@@ -81,10 +86,10 @@ options that are not given. `extra`
 holds the defaults of the pass-specific options, which determine how they are parsed:
 a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`, an
 `Int` option a non-negative integer, a `String` option any text, and a
-[`JuliaIR.Optional`](@ref) option a signed integer or an address. The options named in
-`keyword_only` can't be given in the text, only as keyword arguments of the pass's
-constructor (e.g. feature lists, which contain `,`, LLVM's separator of pipeline
-elements). Unknown and repeated options are rejected.
+[`JuliaIR.Optional`](@ref) option a signed integer or an address. Options whose values
+are vectors, and the options named in `keyword_only`, can't be given in the text, only as
+keyword arguments of the pass's constructor (e.g. feature lists, which contain `,`,
+LLVM's separator of pipeline elements). Unknown and repeated options are rejected.
 """
 function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
                        gc_barrier::Symbol=:stock, extra::NamedTuple=(;),
@@ -145,6 +150,8 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
                 (value === nothing || negated) &&
                     throw(ArgumentError("option $key requires a value"))
                 extra_values[name] = parse_optional(typeof(default), key, value)
+            elseif default isa AbstractVector
+                throw(ArgumentError("option $key can't be given in a pipeline; pass it as the `$name` keyword argument of the pass's constructor"))
             else
                 error("unsupported type of option $key: $(typeof(default))")
             end
@@ -158,14 +165,15 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
     return PassOptions(dialect, values)
 end
 
-# the options as text, the inverse of `parse_options` (without the keyword-only options,
-# which have no text form)
+# the options as text, the inverse of `parse_options` (without the vector-valued and
+# keyword-only options, which have no text form)
 function options_string(opts::PassOptions; keyword_only=())
     policies = options_string(opts.dialect)
     parts = isempty(policies) ? String[] : [policies]
     for (k, v) in pairs(opts.extra)
         v isa Optional && v.value === nothing && continue
         k in keyword_only && continue
+        v isa AbstractVector && continue
         push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
                      v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
                      v isa Optional{<:Unsigned} ? "$(option_key(k))=0x$(string(v.value; base=16))" :
@@ -288,7 +296,9 @@ function run_pass(def::PassDefinition, @nospecialize(ir), am, opts::PassOptions)
 end
 
 # The LLVM.jl pass for a definition, with the defaults for options not given in the
-# pipeline. Options whose default in the definition is `nothing` can only be given here
+# pipeline: the policies, and the pass-specific options (keyword arguments named like the
+# entries of `def.extra`, with values of the same type). Vector-valued options can only be
+# set this way, and so can options whose default in the definition is `nothing`
 # (keyword-only, see `parse_options`), of any type: the definition's `check` validates
 # them.
 function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
