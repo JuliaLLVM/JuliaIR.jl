@@ -20,11 +20,14 @@ const FP16_POLICIES = (:auto, :keep, :demote)
 
 The IR dialect emitted by Julia version `julia`, which every pass of this package takes
 as its `julia` option. Every Julia version from 1.10 up to the development version this
-package knows about is supported; a prerelease like `v"1.13.0-DEV.123"` has the dialect
+package knows about has one; a prerelease like `v"1.13.0-DEV.123"` has the dialect
 of the release it precedes, and the development version has the dialect of the Julia
 master commit this package is tested against. Newer versions get the development
 version's dialect: a new minor version starts out emitting the same IR as its
 predecessor, and only diverges as changes land on master.
+
+The passes process the IR of the running Julia, whose dialect is the default; the
+dialects of other Julia versions exist for testing the passes on any Julia.
 
 The dialect only describes Julia's IR. What depends on the version of LLVM (e.g., the
 signature of the lifetime intrinsics) is determined by the library the passes run on,

@@ -3,10 +3,21 @@
 Julia implementations of the LLVM passes that operate on Julia's LLVM IR dialect.
 
 The passes are ports of the C++ passes in Julia's `src/llvm-*.cpp`, written against
-[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API. They take the Julia
-version whose IR they process as an option (`julia`, defaulting to the running Julia's
-version), so that they can process the IR of any Julia version from 1.10 on, on any LLVM
-library supported by LLVM.jl. Only IR with opaque pointers is supported.
+[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API.
+
+What is supported:
+
+- The passes process the IR that the running Julia generates: a Julia version handles
+  its own version's IR, not that of an older or newer Julia. Julia 1.10 up to the current
+  development version are supported.
+- They work with LLVM.jl on the LLVM library that Julia bundles, and on newer LLVM
+  versions (e.g. a separately built library like libLLVMGPU).
+- Only IR with opaque pointers is supported.
+
+Every pass has a `julia` option, the Julia version whose IR it processes. It defaults to
+the running Julia's version and exists for testing: the package's tests run the passes on
+the IR of every Julia version, on any Julia. Facts about Julia's runtime that some passes
+need (see below) are taken from the running Julia; IR for GPUs doesn't need them.
 
 | Pass | Julia's name | Required |
 |------|--------------|----------|
