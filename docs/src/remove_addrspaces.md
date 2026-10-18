@@ -67,6 +67,12 @@ manager.
 - The types of all type attributes of functions are mapped: Julia's pass only maps the
   first of `byval`, `sret` and `byref`, leaving `inalloca` and `preallocated` with the
   old struct.
+- The metadata of all global variables is mapped after all initializers. Like Julia, the
+  ports map it without mapping types or rebuilding constant expressions, and Julia's pass
+  maps it right after the initializer of each global variable: a constant expression in
+  the metadata of one global variable (`!{ptr addrspace(11) addrspacecast (...)}`) is
+  then reused, with its old type, for the initializer of a later one, which the verifier
+  rejects.
 - Indirect functions (`ifunc`) are recreated with the mapped type and resolver, like
   aliases. Julia's pass leaves them referring to the resolver it deletes.
 

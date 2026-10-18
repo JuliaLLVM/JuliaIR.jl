@@ -193,6 +193,18 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             vmap[gi] = new
         end
 
+        # initializers and comdats of the global variables, before any metadata: metadata
+        # is mapped without the type mapper and materializer (like Julia does), and would
+        # leave the map with constant expressions of the old types for the initializers to
+        # reuse
+        for gv in globals
+            isdeclaration(gv) && continue
+            new = vmap[gv]
+            new.initializer = map_constant(gv.initializer)
+            copy_comdat!(new, gv)
+            gv.initializer = nothing
+        end
+
         # Keep the compile units: from LLVM 20 on, cloning a function only keeps those it
         # visits, so the named metadata would get a copy of one that only inlined
         # subprograms refer to (Julia 1.13 added this; it depends on the LLVM, not the
@@ -212,17 +224,10 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             var === nothing || (vmap.metadata[var] = var)
         end
 
-        # initializers, metadata and comdats of the global variables
-        for gv in globals
-            new = vmap[gv]
-            # unlike Julia, keep the metadata of declarations too
-            for (kind, md) in gv.metadata
-                add_metadata!(new, kind, map_metadata(md, vmap))
-            end
-            isdeclaration(gv) && continue
-            new.initializer = map_constant(gv.initializer)
-            copy_comdat!(new, gv)
-            gv.initializer = nothing
+        # metadata of the global variables, unlike Julia also of declarations, and of the
+        # indirect functions
+        for gv in globals, (kind, md) in gv.metadata
+            add_metadata!(vmap[gv], kind, map_metadata(md, vmap))
         end
         for gi in ifuncs, (kind, md) in gi.metadata
             add_metadata!(vmap[gi], kind, map_metadata(md, vmap))
