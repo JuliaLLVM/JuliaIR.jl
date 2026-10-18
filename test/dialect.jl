@@ -70,6 +70,9 @@ end
     @test Dialect(v"1.12").gc_barrier === :stock
     @test Dialect(v"1.12"; gc_barrier=:snapshot).gc_barrier === :snapshot
     @test_throws "invalid fp16 policy" Dialect(v"1.12"; fp16=:sometimes)
+    @test Dialect(v"1.12").bf16 === :auto
+    @test Dialect(v"1.12"; bf16=:keep).bf16 === :keep
+    @test_throws "invalid bf16 policy" Dialect(v"1.12"; bf16=:sometimes)
     @test_throws "invalid GC barrier" Dialect(v"1.12"; gc_barrier=:none)
 end
 
@@ -78,9 +81,13 @@ end
     @test hash(Dialect(v"1.12.0")) == hash(Dialect(v"1.12.7"))
     @test Dialect(v"1.12") != Dialect(v"1.13")
     @test Dialect(v"1.12") != Dialect(v"1.12"; fp16=:keep)
+    @test Dialect(v"1.12") != Dialect(v"1.12"; bf16=:keep)
+    @test hash(Dialect(v"1.12")) != hash(Dialect(v"1.12"; bf16=:keep))
     @test repr(Dialect(v"1.12.7")) == "JuliaIR.Dialect(v\"1.12.7\")"
     @test repr(Dialect(v"1.12.7"; fp16=:keep, gc_barrier=:snapshot)) ==
           "JuliaIR.Dialect(v\"1.12.7\"; fp16=:keep, gc_barrier=:snapshot)"
+    @test repr(Dialect(v"1.12.7"; bf16=:demote, gc_barrier=:snapshot)) ==
+          "JuliaIR.Dialect(v\"1.12.7\"; bf16=:demote, gc_barrier=:snapshot)"
 end
 
 end

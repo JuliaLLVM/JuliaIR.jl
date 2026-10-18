@@ -10,11 +10,12 @@ const DEVELOPMENT_MINOR = last(KNOWN_MINORS)
 # in Julia's `src/options.h`); stock Julia builds use neither.
 const GC_BARRIER_CONFIGS = (:stock, :snapshot, :field_precise, :snapshot_field_precise)
 
-# How DemoteFloat16 decides which functions to demote, see `fp16_rule`.
+# How DemoteFloat16 decides which functions to demote, for `half` (`fp16`) and `bfloat`
+# (`bf16`) separately, see `fp16_rule`.
 const FP16_POLICIES = (:auto, :keep, :demote)
 
 """
-    JuliaIR.Dialect(julia::VersionNumber; fp16=:auto, gc_barrier=:stock)
+    JuliaIR.Dialect(julia::VersionNumber; fp16=:auto, bf16=:auto, gc_barrier=:stock)
     JuliaIR.Dialect(julia::AbstractString; ...)
 
 The IR dialect emitted by Julia version `julia`, which every pass of this package takes
@@ -32,7 +33,9 @@ see [`JuliaIR.library_facts`](@ref).
 The keyword arguments are policies, which are not determined by the Julia version:
 
 - `fp16`: whether DemoteFloat16 demotes `half` arithmetic to `float`. `:auto` follows
-  the rule of the Julia version (`fp16_rule`), `:keep` and `:demote` override it.
+  the rule of the Julia version (`fp16_rule`), `:keep` and `:demote` override it,
+  including the function attributes that rule reads.
+- `bf16`: the same for `bfloat` arithmetic.
 - `gc_barrier`: the GC write-barrier configuration Julia was built with (`:stock`,
   `:snapshot`, `:field_precise` or `:snapshot_field_precise`).
 """
@@ -92,10 +95,13 @@ struct Dialect
     verifier_vector_pointers::Bool
 
     # DemoteFloat16
-    "How the Julia version decides to demote `half`: `:target_features` (from the
-    function's target features; Julia 1.10), `:target_features_bf16` (same, and always
-    demote `bfloat`; 1.11), or `:attributes` (`julia.hasfp16`/`julia.hasbf16` function
-    attributes, and always on PowerPC; 1.12 and later)."
+    "How the Julia version decides to demote `half` and `bfloat` (under the `:auto`
+    policies): `:target_features` (`half` unless the function's target features or a
+    `julia.hasfp16` attribute say it is supported, never `bfloat`; Julia 1.10),
+    `:target_features_bf16` (same, and `bfloat` unless there is a `julia.hasbf16`
+    attribute; 1.11), or `:attributes` (when the value of `julia.hasfp16`/`julia.hasbf16`
+    is not `true`; without these attributes, `half` on PowerPC only and never `bfloat`;
+    1.12 and later)."
     fp16_rule::Symbol
 
     # PropagateJuliaAddrspaces
@@ -105,16 +111,20 @@ struct Dialect
     propagate_addrspaces_target::Symbol
 
     # policies
-    "DemoteFloat16 policy, see [`JuliaIR.Dialect`](@ref)."
+    "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
     fp16::Symbol
+    bf16::Symbol
     "GC write-barrier configuration, see [`JuliaIR.Dialect`](@ref)."
     gc_barrier::Symbol
 end
 
-function Dialect(julia::VersionNumber; fp16::Symbol=:auto, gc_barrier::Symbol=:stock)
+function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
+                 gc_barrier::Symbol=:stock)
     minor = dialect_minor(julia)
     fp16 in FP16_POLICIES ||
         throw(ArgumentError("invalid fp16 policy :$fp16; expected one of $(join(FP16_POLICIES, ", "))"))
+    bf16 in FP16_POLICIES ||
+        throw(ArgumentError("invalid bf16 policy :$bf16; expected one of $(join(FP16_POLICIES, ", "))"))
     gc_barrier in GC_BARRIER_CONFIGS ||
         throw(ArgumentError("invalid GC barrier configuration :$gc_barrier; expected one of $(join(GC_BARRIER_CONFIGS, ", "))"))
 
@@ -155,7 +165,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, gc_barrier::Symbol=:s
                    minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
                    :common_leaf,
-                   fp16, gc_barrier)
+                   fp16, bf16, gc_barrier)
 end
 
 Dialect(julia::AbstractString; kwargs...) = Dialect(parse_julia_version(julia); kwargs...)
@@ -176,14 +186,18 @@ end
 
 # dialects are compared by what they describe, not by the version they were requested with
 function Base.:(==)(a::Dialect, b::Dialect)
-    a.minor == b.minor && a.fp16 == b.fp16 && a.gc_barrier == b.gc_barrier
+    a.minor == b.minor && a.fp16 == b.fp16 && a.bf16 == b.bf16 && a.gc_barrier == b.gc_barrier
 end
-Base.hash(d::Dialect, h::UInt) = hash(d.minor, hash(d.fp16, hash(d.gc_barrier, hash(Dialect, h))))
+Base.hash(d::Dialect, h::UInt) =
+    hash(d.minor, hash(d.fp16, hash(d.bf16, hash(d.gc_barrier, hash(Dialect, h)))))
 
 function Base.show(io::IO, d::Dialect)
     print(io, "JuliaIR.Dialect(v\"", d.julia, "\"")
-    d.fp16 === :auto || print(io, "; fp16=:", d.fp16)
-    d.gc_barrier === :stock || print(io, d.fp16 === :auto ? "; " : ", ", "gc_barrier=:", d.gc_barrier)
+    kwargs = String[]
+    d.fp16 === :auto || push!(kwargs, "fp16=:$(d.fp16)")
+    d.bf16 === :auto || push!(kwargs, "bf16=:$(d.bf16)")
+    d.gc_barrier === :stock || push!(kwargs, "gc_barrier=:$(d.gc_barrier)")
+    isempty(kwargs) || print(io, "; ", join(kwargs, ", "))
     print(io, ")")
 end
 
@@ -191,6 +205,7 @@ end
 function options_string(d::Dialect)
     str = "julia=$(d.julia)"
     d.fp16 === :auto || (str *= ";fp16=$(d.fp16)")
+    d.bf16 === :auto || (str *= ";bf16=$(d.bf16)")
     d.gc_barrier === :stock || (str *= ";gc-barrier=$(replace(string(d.gc_barrier), '_' => '-'))")
     return str
 end

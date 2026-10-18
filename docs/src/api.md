@@ -9,6 +9,11 @@ JuliaIR.register!
 JuliaIR.passes
 JuliaIR.RemoveNIPass
 JuliaIR.AllocOptPass
+JuliaIR.PropagateAddrspacesPass
+JuliaIR.DemoteFloat16Pass
+JuliaIR.GCInvariantVerifierPass
+JuliaIR.GCInvariantError
+JuliaIR.GCInvariantViolation
 ```
 
 ## Dialects and options

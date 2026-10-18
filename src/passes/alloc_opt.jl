@@ -3,10 +3,6 @@
 # `src/llvm-alloc-opt.cpp` (master), with the representation choices of older Julia
 # versions where their tests check them (see `alloc_layout` and `alloc_initialization`
 # in `Dialect`).
-#
-# Not ported yet: promoting the reference slots of split allocations to registers
-# (`PromoteMemToReg`, which LLVM.jl does not wrap yet); SROA, which follows AllocOpt in
-# Julia's pipelines, promotes them instead.
 
 # the alignment of Julia's small GC allocations (`JL_SMALL_BYTE_ALIGNMENT`)
 const JL_SMALL_BYTE_ALIGNMENT = 16
@@ -92,23 +88,7 @@ function replace_uses_of!(user::Instruction, from::Value, to::Value)
     end
 end
 
-function copy_metadata!(dst::Instruction, src::Instruction)
-    for (kind, md) in src.metadata
-        dst.metadata[kind] = md
-    end
-    dst.debug_location = src.debug_location
-    return dst
-end
-
 ## data layout queries
-
-function alloca_addrspace(layout::String)
-    for spec in split(layout, '-')
-        m = match(r"^A(\d+)$", spec)
-        m === nothing || return parse(Int, m[1])
-    end
-    return 0
-end
 
 function is_legal_integer(layout::String, bits::Integer)
     for spec in split(layout, '-')
@@ -930,9 +910,13 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
     end
 end
 
-# C++ promotes the reference slots to registers here (`PromoteMemToReg`), which LLVM.jl
-# doesn't support yet; SROA does it later in Julia's pipelines.
-finish_split!(opt::AllocOpt, slots) = nothing
+# promote the reference slots to registers, one at a time like C++, so that GC frame
+# lowering doesn't see them as stack slots holding references
+function finish_split!(opt::AllocOpt, slots)
+    for slot in slots
+        slot.isref && promote_mem_to_reg!(slot.slot, domtree(opt))
+    end
+end
 
 # like C++'s `CallInst::Create(call, bundles)`: the same call with other operand bundles
 function clone_call!(opt::AllocOpt, call::Instruction, bundles::Vector{OperandBundle})

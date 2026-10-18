@@ -307,8 +307,8 @@ function jlopt_main(args::Vector{String})
             return 1
         end
         ex = err isa PassException ? err.ex : err
-        if ex isa FatalPassError
-            showerror(Base.stderr, ex.ex)
+        if ex isa FatalPassError || ex isa GCInvariantError
+            showerror(Base.stderr, ex isa FatalPassError ? ex.ex : ex)
             println(Base.stderr)
             flush(Base.stderr)
             ccall(:abort, Cvoid, ())

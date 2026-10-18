@@ -30,6 +30,8 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
+      # until the LLVM.jl changes JuliaIR uses are released
+      - uses: ./.github/actions/llvm-dev
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
@@ -73,6 +75,10 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
+      # until the LLVM.jl changes JuliaIR uses are released
+      - uses: ./.github/actions/llvm-dev
+        with:
+          projects: test
       - name: Install dependencies
         # Julia 1.10 and 1.11 don't support workspaces
         run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
@@ -93,6 +99,8 @@ jobs:
         with:
           version: '1.12'
       - uses: julia-actions/cache@v3
+      # until the LLVM.jl changes JuliaIR uses are released
+      - uses: ./.github/actions/llvm-dev
       - name: Install dependencies
         run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
       - name: Build and deploy
