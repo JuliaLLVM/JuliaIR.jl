@@ -362,18 +362,22 @@ caller's `target-features`, else in the JIT's string), `:subtarget` on master (L
 options; `julia.cpu.supports.*` only there, `Dialect.has_cpu_supports`). The target is
 given by the keyword-only options `target_cpu`, `target_features`, `target_machine`
 (`jlopt -mcpu/-mattr`): a pass option whose default in `define_pass` is `nothing` is
-keyword-only (rejected in pipeline text, of any type, checked by the pass), and
+keyword-only (rejected in pipeline text, left out by `options_string`, of any type,
+checked by the definition's `check` when the pass is created; to be merged with S16's
+`Optional` by the consolidation item), and
 `register!(pb; options=Dict(name => (; ...)))` sets such defaults per pass. Defaults:
 1.10-1.13 read the JIT's two answers from `code_llvm` of `Core.Intrinsics.have_fma`
 (probe `:jit_fma`, used only for modules of the JIT's architecture family); master by
-name = the generic CPU, and `JuliaIR.jit_target()` (probe `:jit_target`:
+name = the generic CPU; with options and an empty module triple, everything (also
+`have_fma`) is decided for the target machine's or the JIT's triple (recorded deviation:
+the C++ keeps the empty triple for `have_fma`); `JuliaIR.jit_target()` (probe `:jit_target`:
 `jl_get_llvm_target`, `JLJITGetTripleString`) gives what Julia's pipeline uses. Non-call
 uses, arguments, `invoke` and non-integer results throw `CPUFeaturesError` before any
 change. Upstream `cpu-features*.ll` run at every pin (the AArch64/RISC-V ones are
 unsupported on x86 hosts), `multiversioning-x86.ll` as mixed (Julia's JuliaMultiVersioning
 first), `parsing.ll` maps `CPUFeatures`. Lit: `cpu-features.ll` (all versions),
 `cpu-features-tokens.ll` (up to 1.13), `cpu-features-subtarget.ll` (master, X86
-registered). `always_have_fma` is for S21.
+registered), `cpu-features-targets.ll` (master, AArch64/RISC-V registered or not). `always_have_fma` is for S21.
 
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
