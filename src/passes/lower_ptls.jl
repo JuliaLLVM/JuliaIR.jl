@@ -162,6 +162,11 @@ function declare_like!(p::LowerPTLS, name::String, getter::LLVM.Function)
     return f
 end
 
+# whether the GC state is restored at the returns of a function that adopts threads: the
+# C++ only does so when the function returns no tracked pointers
+restores_gc_state(f::LLVM.Function) =
+    CountTrackedPointers(Base.unsafe_convert(TypeRef, LLVM.return_type(f.function_type))).count == 0
+
 # Lower one call of a getter (`fix_pgcstack_use`).
 function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Function, or_new::Bool)
     builder = p.builder
@@ -198,18 +203,16 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         move!(adopt, LLVM.before(slow_term))
         push!(phi.incoming, (adopt, slow_term.parent))
 
-        fast_bb = fast_term.parent
-        remove!(fast_term)
-        position!(builder, LLVM.at_end(fast_bb))
+        # (the debug location stays the split point's, which `fast_term` has too)
+        position!(builder, LLVM.before(fast_term))
         ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, call), tbaa_gcframe())
         prior = emit_gc_unsafe_enter!(gc, ptls)
-        # like C++'s `IRBuilder::Insert`, which also gives it the builder's debug location
-        API.LLVMInsertIntoBuilder(builder, fast_term)
+        # the safepoint ends the block in a branch; the fast path continues after it
+        move!(fast_term, LLVM.at_end(builder.insert_block))
         push!(phi.incoming, (call, fast_term.parent))
 
         f = LLVM.parent(call.parent)
-        return_type = API.LLVMGetReturnType(API.LLVMGlobalGetValueType(f))
-        if CountTrackedPointers(return_type).count == 0
+        if restores_gc_state(f)
             position_before!(builder, phi; debug=false)
             last_gc_state = phi!(builder, LLVM.Int8Type())
             # a thread adopted here leaves in the GC-safe state
@@ -378,8 +381,7 @@ function check_lower_ptls(p::LowerPTLS, getters)
                     (adopt isa LLVM.Function && adopt.function_type == call.called_type &&
                      global_addrspace(adopt) == global_addrspace(getter)) ||
                     throw(LowerPTLSError("@$(p.dialect.ptls_adopt_thread) is not declared like @$name: $(string(adopt))"))
-                return_type = API.LLVMGetReturnType(API.LLVMGlobalGetValueType(f))
-                CountTrackedPointers(return_type).count == 0 || continue
+                restores_gc_state(f) || continue
                 # the GC state is restored at every return, from values defined at the call
                 dt = get!(() -> DomTree(f), domtrees, f)
                 for bb in f.blocks
