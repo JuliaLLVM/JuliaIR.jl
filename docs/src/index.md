@@ -39,25 +39,14 @@ later alone, and CombineMulAdd only in Julia 1.10 and 1.11.
 
 ## Facts about the Julia runtime
 
-Some passes need facts that the IR doesn't state, about the build of the Julia runtime
-the code will run with: LowerExcHandlers allocates stack buffers of the size of the
-runtime's exception handler (`jl_handler_t`, which contains a `jmp_buf` and so depends on
-the OS, the C library and the architecture) and calls the runtime's `setjmp` (whose name
-and signature depend on the OS). A triple doesn't determine them. These passes take them
-as options, as a [`JuliaIR.RuntimeProfile`](@ref):
-
-- explicitly, e.g. `jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=__sigsetjmp>`
-  (the values of Julia 1.12 on x86-64 Linux with glibc);
-- or from the running Julia, for a module whose target triple is the host's, and with
-  `runtime=native` also for a module without a triple. This is only possible for the
-  running Julia's own dialect: the facts of an older Julia are never taken from a newer
-  one, nor those of the host for another target. `jlopt`, which stands in for `opt` with
-  the running Julia's passes loaded, uses `runtime=native` by default.
-
-The running Julia's values aren't exported by its runtime, so they are read from what
-Julia's own LowerExcHandlers emits for a small probe function. Passes only ask for these
-facts when they need them, i.e. when a function has exception handlers, and throw a
-[`JuliaIR.RuntimeError`](@ref) when they are unknown.
+Some passes need facts that the IR doesn't state, about the Julia runtime the code will
+run with: LowerExcHandlers allocates stack buffers of the size of the runtime's exception
+handler (`jl_handler_t`, which contains the C library's `jmp_buf`) and calls the
+runtime's `setjmp`, whose name depends on the OS. Like Julia's own passes, the ports
+take these facts from the running Julia, or from pass options that give them explicitly;
+what the C++ passes derive from the module, like whether `setjmp` takes a `savemask`
+argument (not for a Windows triple), the ports derive from it too. See
+[Runtime facts](runtime.md) for what these facts are and how they are read.
 
 Differences with Julia's C++ passes:
 

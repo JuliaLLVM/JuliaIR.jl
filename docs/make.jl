@@ -13,6 +13,7 @@ function main()
         pages = [
             "Home" => "index.md",
             "LateLowerGC cleanup" => "late_gc_cleanup.md",
+            "Runtime facts" => "runtime.md",
             "Testing" => "testing.md",
             "API reference" => "api.md",
         ],

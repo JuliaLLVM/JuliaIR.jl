@@ -1,11 +1,12 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
+import InteractiveUtils
 using LLVM: API, DataLayout, storage_size, abi_size, abi_alignment, intptr
 
 include("dialect.jl")
-include("runtime.jl")
 include("registration.jl")
+include("runtime.jl")
 include("jlopt.jl")
 include("irutils.jl")
 
@@ -22,6 +23,7 @@ include("passes/lower_exc_handlers.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
+    empty!(NATIVE_FACTS)
 end
 
 end

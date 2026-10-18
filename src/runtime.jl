@@ -1,51 +1,57 @@
 # Facts about the Julia runtime that code is compiled against, which some passes need
-# and which the IR doesn't say: the layout of runtime structures and the names and
-# signatures of runtime functions that depend on how Julia was built. They are facts of
-# the target's runtime build (OS, architecture, libc, build options), not of the dialect,
-# and a target triple doesn't determine them.
+# and which the IR doesn't spell out: the layout of runtime structures (task, thread-local
+# state, exception handlers) and target-specific names and code. Like Julia's C++
+# passes, which compile them in from Julia's headers, the ports take them from the
+# running Julia, whose IR they process; see docs/src/runtime.md.
 
-"""
-    JuliaIR.RuntimeProfile(; handler_size, handler_align=16, setjmp)
+# The facts, with a description for error messages and documentation. Each can be given
+# explicitly as a pass option (e.g. `handler-size=264`).
+const RUNTIME_FACTS = (
+    task_gcstack = "the offset of `gcstack` in `jl_task_t`",
+    task_ptls = "the offset of `ptls` in `jl_task_t`",
+    task_eh = "the offset of `eh` in `jl_task_t`",
+    task_reset_ctx = "the offset of `reset_ctx` in `jl_task_t`",
+    tls_safepoint = "the offset of `safepoint` in `jl_tls_states_t`",
+    tls_gc_state = "the offset of `gc_state` in `jl_tls_states_t`",
+    handler_size = "the size of an exception handler (`jl_handler_t`)",
+    handler_align = "the alignment of an exception handler (`jl_handler_t`)",
+    setjmp = "the name of the runtime's `setjmp` (`jl_setjmp_name`)",
+    reset_ctx_size = "the size of a reset context (`jl_reset_ctx_t`)",
+    reset_ctx_align = "the alignment of a reset context (`jl_reset_ctx_t`)",
+    reset_ctx_gcstack = "the offset of `gcstack` in `jl_reset_ctx_t`",
+    reset_ctx_eh = "the offset of `eh` in `jl_reset_ctx_t`",
+    reset_ctx_mctx = "the offset of `mctx` in `jl_reset_ctx_t`",
+    tls_elf_support = "whether the runtime accesses thread-local storage with ELF TLS (`jl_tls_elf_support`)",
+    tp_asm = "the inline assembly that reads the thread pointer",
+)
 
-The facts about a Julia runtime that passes need, describing the build of Julia the
-generated code will run with:
-
-- `handler_size`, `handler_align`: the size and alignment in bytes of an exception
-  handler (`jl_handler_t`, which holds a `jmp_buf`), used by LowerExcHandlers;
-- `setjmp`: the name of the `setjmp` function that handlers call (`jl_setjmp_name`:
-  `__sigsetjmp` with glibc, `sigsetjmp` on other Unixes, `jl_setjmp`/`ijl_setjmp` on
-  Windows). It also determines the signature: the Windows functions take only the
-  buffer, the others also take the `savemask` argument (`setjmp_savemask`).
-
-Passes that need these facts take them as options (`handler-size=N;handler-align=N;
-setjmp=NAME`), or `runtime=native` for the running Julia's own, see
-[`JuliaIR.resolve_runtime`](@ref).
-"""
-struct RuntimeProfile
-    handler_size::Int
-    handler_align::Int
-    setjmp::String
-    setjmp_savemask::Bool
+# the option that gives a fact explicitly, with the value that means "not given"
+function fact_option_default(name::Symbol)
+    name in (:setjmp, :tp_asm) && return ""
+    name === :tls_elf_support && return :auto
+    return 0
 end
 
-function RuntimeProfile(; handler_size::Integer, handler_align::Integer=16,
-                        setjmp::AbstractString)
-    handler_size > 0 || throw(ArgumentError("invalid handler size $handler_size"))
-    ispow2(handler_align) || throw(ArgumentError("invalid handler alignment $handler_align"))
-    isempty(setjmp) && throw(ArgumentError("the name of setjmp must not be empty"))
-    return RuntimeProfile(handler_size, handler_align, setjmp,
-                          !(setjmp in ("jl_setjmp", "ijl_setjmp")))
-end
+"""
+    JuliaIR.runtime_options(facts::Symbol...)
 
-# The pass options that select a runtime profile, with their defaults: `runtime=native`
-# asks for the running Julia's facts, the others give them explicitly (all or none).
-const RUNTIME_OPTIONS = (; runtime=:auto, handler_size=0, handler_align=0, setjmp="")
+The pass options of a pass that needs the runtime facts `facts` (see
+[`JuliaIR.runtime_layout`](@ref)), for `define_pass`'s `extra`: one option per fact that
+gives it explicitly (`task_ptls` is `task-ptls=N` in a pipeline).
+"""
+function runtime_options(facts::Symbol...)
+    for f in facts
+        haskey(RUNTIME_FACTS, f) || throw(ArgumentError("unknown runtime fact $f"))
+    end
+    return NamedTuple{facts}(map(fact_option_default, facts))
+end
 
 """
     JuliaIR.RuntimeError(msg)
 
-The runtime facts a pass needs are not known: neither given as options, nor those of the
-running Julia (which are only used for its own dialect and target).
+A fact about the Julia runtime that a pass needs is not known: the IR is of another Julia
+version than the running one, the fact doesn't exist in the running Julia, or it could
+not be read from it. Facts can be given explicitly with pass options.
 """
 struct RuntimeError <: Exception
     msg::String
@@ -53,115 +59,351 @@ end
 Base.showerror(io::IO, e::RuntimeError) = print(io, "RuntimeError: ", e.msg)
 
 """
-    JuliaIR.resolve_runtime(extra::NamedTuple, dialect::Dialect, mod::LLVM.Module)
+    JuliaIR.RuntimeFacts
 
-The [`JuliaIR.RuntimeProfile`](@ref) for a pass with the options `extra` (which include
-`RUNTIME_OPTIONS`) on module `mod` of dialect `dialect`. In order:
-
-1. the profile given explicitly by the options `handler-size`, `handler-align` and
-   `setjmp` (which take precedence over `runtime=native`);
-2. the running Julia's own profile, only for its own dialect (never for an older one)
-   and for a module whose target triple is the host's (ignoring the vendor). A module
-   without a triple only gets it with `runtime=native` (which `jlopt` uses by default);
-   by default (`runtime=auto`) its target is considered unknown;
-3. otherwise a [`JuliaIR.RuntimeError`](@ref), e.g. for a module of another target.
-
-Passes call this only when they need the facts, so that IR that doesn't need them is
-processed without.
+The facts about the Julia runtime for one dialect, returned by
+[`JuliaIR.runtime_layout`](@ref). Each fact is a property, looked up when it is read:
+reading one that is not known throws a [`JuliaIR.RuntimeError`](@ref).
 """
-function resolve_runtime(extra::NamedTuple, dialect::Dialect, mod::LLVM.Module)
-    explicit = (extra.handler_size, extra.handler_align, extra.setjmp) != (0, 0, "")
-    extra.runtime in (:auto, :native) ||
-        throw(ArgumentError("invalid option runtime=$(extra.runtime); expected auto or native"))
-    if explicit
-        (extra.handler_size == 0 || extra.handler_align == 0 || isempty(extra.setjmp)) &&
-            throw(ArgumentError("an explicit runtime profile needs all of handler-size, handler-align and setjmp"))
-        return RuntimeProfile(; extra.handler_size, extra.handler_align, extra.setjmp)
-    end
-
-    triple = mod.triple
-    native_dialect = dialect.minor == dialect_minor(VERSION)
-    native_target = isempty(triple) ? extra.runtime === :native : is_host_triple(triple)
-    if native_dialect && native_target
-        return native_runtime(mod)
-    end
-    why = !native_dialect ?
-        "the IR is of the Julia $(dialect.minor) dialect, not of the running Julia $(VERSION.major).$(VERSION.minor)" :
-        isempty(triple) ?
-        "the module has no target triple; use runtime=native for the running Julia's" :
-        "the module's target ($triple) is not the host's"
-    throw(RuntimeError("the facts of the Julia runtime are unknown (handler size and alignment, setjmp): $why; give them with the options handler-size, handler-align and setjmp"))
+struct RuntimeFacts
+    dialect::Dialect
+    overrides::NamedTuple
 end
 
-# whether a target triple is the host's, ignoring the vendor
-function is_host_triple(triple::AbstractString)
-    parts(t) = (p = split(LLVM.normalize(t), '-'); (get(p, 1, ""), get(p, 3, ""), get(p, 4, "")))
-    return parts(triple) == parts(LLVM.default_triple())
+Base.propertynames(::RuntimeFacts) = keys(RUNTIME_FACTS)
+
+function Base.getproperty(rt::RuntimeFacts, name::Symbol)
+    haskey(RUNTIME_FACTS, name) || return getfield(rt, name)
+    return runtime_fact(rt, name)
 end
 
-const NATIVE_RUNTIME = Ref{Union{Nothing,RuntimeProfile}}(nothing)
+running_julia() = "Julia $(VERSION.major).$(VERSION.minor)"
 
-# The running Julia's profile. `jl_handler_t` and `jl_setjmp_name` are not exported, so
-# they are read from what Julia's own LowerExcHandlers emits for a probe function (on the
-# Julia versions that have the pass; later versions emit no handlers to lower).
-function native_runtime(mod::LLVM.Module)
-    profile = NATIVE_RUNTIME[]
-    if profile === nothing
-        profile = probe_native_runtime()
-        NATIVE_RUNTIME[] = profile
-    end
-    # like Julia's pass, which decides on the signature of setjmp by the module's target
-    # (the host's, or none)
-    savemask = !occursin("windows", LLVM.normalize(mod.triple))
-    return RuntimeProfile(profile.handler_size, profile.handler_align, profile.setjmp,
-                          savemask)
-end
-
-function probe_native_runtime()
-    minor = dialect_minor(VERSION)
-    minor <= v"1.12" ||
-        throw(RuntimeError("the running Julia $VERSION has no native exception handler runtime facts (handlers are lowered by its code generator)"))
-    enter, args, pop = minor == v"1.10" ? ("i32", "", "i32 1") :
-                       minor == v"1.11" ? ("i32", "ptr %ct", "ptr %ct, i32 1") :
-                                          ("{i32, ptr}", "ptr %ct", "ptr %ct, i32 1")
-    ir = """
-        declare $enter @julia.except_enter($(isempty(args) ? "" : "ptr")) returns_twice
-        declare void @ijl_pop_handler($(minor == v"1.10" ? "i32" : "ptr, i32"))
-        define void @probe(ptr %ct) {
-          %r = call $enter @julia.except_enter($args)
-          call void @ijl_pop_handler($pop)
-          ret void
-        }
-        """
-    @dispose ctx=Context(; opaque_pointers=true) begin
-        mod = parse(LLVM.Module, ir)
-        try
-            try
-                @dispose pb=PassBuilder() begin
-                    add!(pb, "function(LowerExcHandlers)")
-                    run!(pb, mod)
-                end
-            catch err
-                throw(RuntimeError("cannot determine the running Julia's runtime facts: Julia's LowerExcHandlers pass failed or is unavailable ($(sprint(showerror, err)))"))
-            end
-            f = mod.functions["probe"]
-            size = align = 0
-            setjmp = ""
-            for inst in first(f.blocks).instructions
-                if inst isa LLVM.AllocaInst
-                    size = convert(Int, inst.operands[1])
-                    align = inst.alignment
-                elseif inst isa LLVM.CallInst && (callee = inst.called_function) !== nothing &&
-                       callee.name != "ijl_enter_handler" && callee.name != "ijl_pop_handler" &&
-                       !LLVM.isintrinsic(callee)
-                    setjmp = callee.name
-                end
-            end
-            size > 0 && !isempty(setjmp) ||
-                throw(RuntimeError("cannot determine the running Julia's runtime facts: unexpected output of Julia's LowerExcHandlers pass:\n$(string(mod))"))
-            return RuntimeProfile(; handler_size=size, handler_align=align, setjmp)
-        finally
-            dispose(mod)
+function runtime_fact(rt::RuntimeFacts, name::Symbol)
+    overrides = getfield(rt, :overrides)
+    given = get(overrides, name, nothing)
+    if given !== nothing && given != fact_option_default(name)
+        if name === :tls_elf_support
+            given === :yes && return true
+            given === :no && return false
+            throw(ArgumentError("invalid option $(option_key(name))=$given; expected yes or no"))
         end
+        return given
+    end
+    dialect = getfield(rt, :dialect)
+    julia = "Julia $(dialect.minor.major).$(dialect.minor.minor)"
+    what = "$(RUNTIME_FACTS[name]) (`$name`) of $julia's runtime"
+    option = "; give it with the pass option $(option_key(name))"
+    if dialect.minor != dialect_minor(VERSION)
+        throw(RuntimeError("$what is only known when running on $julia, not on $(running_julia())$option"))
+    end
+    return native_fact(name, option)
+end
+
+"""
+    JuliaIR.runtime_layout(dialect::Dialect, mod::LLVM.Module; facts...)
+    JuliaIR.runtime_layout(opts::PassOptions, mod::LLVM.Module)
+
+The facts about the runtime of Julia `dialect` that passes processing `mod` need, as a
+[`JuliaIR.RuntimeFacts`](@ref) whose properties are the facts:
+
+- the layout of a task (`task_gcstack`, `task_ptls`, `task_eh` and, on Julia master,
+  `task_reset_ctx`) and of the thread-local state (`tls_safepoint`, `tls_gc_state`), as
+  byte offsets;
+- exception handlers: `handler_size` and `handler_align` (of `jl_handler_t`) and the name
+  of the runtime's `setjmp`; on Julia master, the reset context (`reset_ctx_size`,
+  `reset_ctx_align` and the offsets `reset_ctx_gcstack`, `reset_ctx_eh`, `reset_ctx_mctx`);
+- thread-local storage: `tls_elf_support` and the thread-pointer assembly `tp_asm`.
+
+A fact is resolved when it is read, in order: from the keyword argument (pass option) of
+the same name, which gives it explicitly; from the running Julia, if `dialect` is its
+own; otherwise a [`JuliaIR.RuntimeError`](@ref) that names the fact and the option. Like
+Julia's own passes, the running Julia's facts are used whatever target `mod` is for
+(IR for targets without Julia's runtime, like GPUs, doesn't need them).
+
+With `PassOptions`, the facts given explicitly come from the pass's options (see
+[`JuliaIR.runtime_options`](@ref)).
+"""
+function runtime_layout(dialect::Dialect, mod::LLVM.Module; facts...)
+    for (k, _) in facts
+        haskey(RUNTIME_FACTS, k) || throw(ArgumentError("unknown runtime fact $k"))
+    end
+    return RuntimeFacts(dialect, values(facts))
+end
+
+function runtime_layout(opts::PassOptions, mod::LLVM.Module)
+    facts = NamedTuple(k => v for (k, v) in pairs(opts.extra) if haskey(RUNTIME_FACTS, k))
+    return runtime_layout(opts.dialect, mod; facts...)
+end
+
+"""
+    JuliaIR.runtime_fact(dialect::Dialect, mod::LLVM.Module, name::Symbol; facts...)
+
+One fact of [`JuliaIR.runtime_layout`](@ref).
+"""
+runtime_fact(dialect::Dialect, mod::LLVM.Module, name::Symbol; kwargs...) =
+    getproperty(runtime_layout(dialect, mod; kwargs...), name)
+
+## the running Julia's facts
+
+# Each fact comes from one probe, run once per process when one of its facts is first
+# needed: the runtime's own structures and exported functions where possible, and the
+# code that Julia's code generator and C++ passes emit for a small function otherwise.
+const FACT_PROBES = (
+    task_gcstack = :task, task_ptls = :safepoint, task_eh = :task,
+    task_reset_ctx = :cancel, tls_safepoint = :safepoint, tls_gc_state = :gc_state,
+    handler_size = :handler, handler_align = :handler, setjmp = :handler,
+    reset_ctx_size = :cancel, reset_ctx_align = :cancel,
+    reset_ctx_gcstack = :cancel, reset_ctx_eh = :cancel, reset_ctx_mctx = :cancel,
+    tls_elf_support = :tls, tp_asm = :safepoint,
+)
+
+# probe => its facts (a NamedTuple, `nothing` for facts the running Julia doesn't have)
+# or the RuntimeError it threw
+const NATIVE_FACTS = Dict{Symbol,Any}()
+const NATIVE_FACTS_LOCK = ReentrantLock()
+
+function native_probe(probe::Symbol)
+    facts = lock(NATIVE_FACTS_LOCK) do
+        get!(NATIVE_FACTS, probe) do
+            try
+                run_probe(Val(probe))
+            catch err
+                err isa RuntimeError || rethrow()
+                err
+            end
+        end
+    end
+    facts isa RuntimeError && throw(facts)
+    return facts
+end
+
+function native_fact(name::Symbol, option::String)
+    value = try
+        getproperty(native_probe(FACT_PROBES[name]), name)
+    catch err
+        err isa RuntimeError || rethrow()
+        throw(RuntimeError("cannot read $(RUNTIME_FACTS[name]) (`$name`) from the running $(running_julia()): $(err.msg)$option"))
+    end
+    value === nothing &&
+        throw(RuntimeError("$(RUNTIME_FACTS[name]) (`$name`) doesn't exist in the runtime of the running $(running_julia())$option"))
+    return value
+end
+
+# the current task's `gcstack` (whose address the runtime hands out as the task's
+# `pgcstack`), and its `eh`: the field that a `try` changes (to its handler) and that is
+# restored when it is left
+function run_probe(::Val{:task})
+    task = current_task()
+    W = sizeof(Ptr{Cvoid})
+    n = 8
+    outside = Vector{UInt}(undef, n)
+    inside = Vector{UInt}(undef, n)
+    restored = Vector{UInt}(undef, n)
+    GC.@preserve task outside inside restored begin
+        pgcstack = ccall(:jl_get_pgcstack, Ptr{Cvoid}, ())
+        gcstack = Int(pgcstack - pointer_from_objref(task))
+        0 < gcstack < 4096 ||
+            throw(RuntimeError("the current task's `pgcstack` is not inside the task"))
+        words = Ptr{UInt}(pgcstack)
+        read_words!(outside, words)
+        try
+            read_words!(inside, words)
+        catch
+        end
+        read_words!(restored, words)
+    end
+    changed = [i for i in 1:n if inside[i] != outside[i]]
+    (length(changed) == 1 && outside == restored && inside[only(changed)] != 0) ||
+        throw(RuntimeError("entering a `try` doesn't change exactly one field of the task after `gcstack`"))
+    return (; task_gcstack=gcstack, task_eh=gcstack + (only(changed) - 1) * W)
+end
+
+@noinline function read_words!(buf::Vector{UInt}, ptr::Ptr{UInt})
+    for i in eachindex(buf)
+        buf[i] = unsafe_load(ptr, i)
+    end
+end
+
+# the byte of the thread-local state that becomes JL_GC_STATE_SAFE (2) in a GC-safe region
+function run_probe(::Val{:gc_state})
+    ptls = ccall(:jl_get_ptls_states, Ptr{Cvoid}, ())
+    n = 512
+    before = Vector{UInt8}(undef, n)
+    after = Vector{UInt8}(undef, n)
+    # the GC may run while this thread is GC-safe: only copy bytes there, into memory
+    # allocated before
+    GC.@preserve before after begin
+        ccall(:memcpy, Ptr{Cvoid}, (Ptr{UInt8}, Ptr{Cvoid}, Csize_t), before, ptls, n)
+        old = ccall(:jl_gc_safe_enter, Int8, ())
+        ccall(:memcpy, Ptr{Cvoid}, (Ptr{UInt8}, Ptr{Cvoid}, Csize_t), after, ptls, n)
+        ccall(:jl_gc_safe_leave, Cvoid, (Int8,), old)
+    end
+    changed = [i - 1 for i in 1:n if before[i] == 0 && after[i] == 2]
+    length(changed) == 1 ||
+        throw(RuntimeError("entering a GC-safe region doesn't change exactly one byte of the thread-local state from 0 to 2"))
+    return (; tls_gc_state=only(changed))
+end
+
+function run_probe(::Val{:tls})
+    return (; tls_elf_support=unsafe_load(cglobal(:jl_tls_elf_support, Cint)) != 0)
+end
+
+# The probes of generated code. The code is parsed into a context of the library LLVM.jl
+# uses, which may be newer than Julia's LLVM.
+probe_safepoint() = (GC.safepoint(); nothing)
+
+function probe_handler(x::Int)
+    try
+        x > 0 && error("x")
+        return 1
+    catch
+        return 2
+    end
+end
+
+@static if isdefined(Base, Symbol("@cancel_check"))
+    probe_cancel() = (Base.@cancel_check; 1)
+end
+
+function with_probe_ir(f, probe, types, what)
+    ir = sprint(io -> InteractiveUtils.code_llvm(io, probe, types; optimize=true,
+                                                 dump_module=true, debuginfo=:none))
+    result = @dispose ctx=Context(; opaque_pointers=true) mod=parse_probe_ir(ir, what) begin
+        f(mod)
+    end
+    result === nothing &&
+        throw(RuntimeError("the code it generates for $what doesn't have the expected shape:\n$ir"))
+    return result
+end
+
+function parse_probe_ir(ir, what)
+    try
+        parse(LLVM.Module, ir)
+    catch err
+        throw(RuntimeError("the code it generates for $what can't be parsed: $(sprint(showerror, err))"))
+    end
+end
+
+instructions(mod::LLVM.Module) =
+    (inst for f in mod.functions for bb in f.blocks for inst in bb.instructions)
+
+# the base pointer and constant byte offset of a pointer
+function base_offset(ptr::LLVM.Value, dl::DataLayout)
+    offset = 0
+    while true
+        if ptr isa LLVM.GetElementPtrInst
+            offset += LLVM.constant_offset(Int, ptr, dl)
+            ptr = ptr.operands[1]
+        elseif ptr isa LLVM.BitCastInst || ptr isa LLVM.AddrSpaceCastInst
+            ptr = ptr.operands[1]
+        else
+            return ptr, offset
+        end
+    end
+end
+
+function returns_twice(call::LLVM.CallInst)
+    haskey(call.function_attributes, :returns_twice) && return true
+    callee = call.called_function
+    return callee !== nothing && haskey(callee.function_attributes, :returns_twice)
+end
+
+# A safepoint is a volatile load from the page that the thread-local state's `safepoint`
+# points to, and the thread-local state is loaded from the task's `ptls`, at an offset
+# from the task's `pgcstack`. Where the JIT reads the thread pointer inline, that is the
+# inline assembly at the root.
+function run_probe(::Val{:safepoint})
+    with_probe_ir(probe_safepoint, Tuple{}, "`GC.safepoint()`") do mod
+        dl = mod.datalayout
+        # (code coverage adds other volatile accesses)
+        polls = Set{Tuple{Int,Int,Union{Nothing,String}}}()
+        for inst in instructions(mod)
+            (inst isa LLVM.LoadInst && LLVM.API.LLVMGetVolatile(inst) != 0) || continue
+            page = inst.operands[1]
+            page isa LLVM.LoadInst || continue
+            ptls, safepoint = base_offset(page.operands[1], dl)
+            ptls isa LLVM.LoadInst || continue
+            pgcstack, ptls_offset = base_offset(ptls.operands[1], dl)
+            tp_asm = nothing
+            if pgcstack isa LLVM.LoadInst
+                tp, _ = base_offset(pgcstack.operands[1], dl)
+                if tp isa LLVM.CallInst && tp.called_operand isa LLVM.InlineAsm
+                    m = match(r"asm(?: \w+)* \"([^\"]*)\"", string(tp.called_operand))
+                    m === nothing || (tp_asm = String(m[1]))
+                end
+            end
+            push!(polls, (ptls_offset, safepoint, tp_asm))
+        end
+        length(polls) == 1 || return nothing
+        ptls_offset, safepoint, tp_asm = only(polls)
+        gcstack = native_probe(:task).task_gcstack
+        return (; task_ptls=gcstack + ptls_offset, tls_safepoint=safepoint, tp_asm)
+    end
+end
+
+# An exception handler is a stack buffer that `setjmp` (the only call that returns twice)
+# is called on: lowered by Julia's C++ LowerExcHandlers up to Julia 1.12, emitted by its
+# code generator later.
+function run_probe(::Val{:handler})
+    with_probe_ir(probe_handler, Tuple{Int}, "a `try`") do mod
+        dl = mod.datalayout
+        calls = [inst for inst in instructions(mod)
+                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                    !isempty(inst.arguments)]
+        length(calls) == 1 || return nothing
+        call = only(calls)
+        buff, offset = base_offset(call.arguments[1], dl)
+        (buff isa LLVM.AllocaInst && offset == 0) || return nothing
+        return (; handler_size=alloca_size(buff, dl), handler_align=Int(buff.alignment),
+                setjmp=call.called_operand.name)
+    end
+end
+
+alloca_size(buff::LLVM.AllocaInst, dl::DataLayout) =
+    Int(abi_size(dl, buff.allocated_type)) * convert(Int, buff.operands[1])
+
+# Julia master's cancellation points: `setjmp` on the `mctx` of a reset context on the
+# stack, whose `gcstack` and `eh` are copied from the task, and which the task's
+# `reset_ctx` points to (all addressed from the task's `pgcstack`).
+function run_probe(::Val{:cancel})
+    isdefined(@__MODULE__, :probe_cancel) ||
+        return (; task_reset_ctx=nothing, reset_ctx_size=nothing, reset_ctx_align=nothing,
+                reset_ctx_gcstack=nothing, reset_ctx_eh=nothing, reset_ctx_mctx=nothing)
+    gcstack = native_probe(:task).task_gcstack
+    with_probe_ir(probe_cancel, Tuple{}, "`Base.@cancel_check`") do mod
+        dl = mod.datalayout
+        calls = [inst for inst in instructions(mod)
+                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                    !isempty(inst.arguments)]
+        isempty(calls) && return nothing
+        buff, mctx = base_offset(first(calls).arguments[1], dl)
+        buff isa LLVM.AllocaInst || return nothing
+        pgcstack = task_reset_ctx = reset_gcstack = reset_eh = nothing
+        stores = [inst for inst in instructions(mod) if inst isa LLVM.StoreInst]
+        for store in stores
+            val, ptr = store.operands
+            if val == buff
+                pgcstack, task_reset_ctx = base_offset(ptr, dl)
+            end
+        end
+        pgcstack === nothing && return nothing
+        for store in stores
+            val, ptr = store.operands
+            val isa LLVM.LoadInst || continue
+            base, offset = base_offset(ptr, dl)
+            base == buff || continue
+            src, field = base_offset(val.operands[1], dl)
+            src == pgcstack || continue
+            if field == 0
+                reset_gcstack = offset
+            else
+                reset_eh = offset
+            end
+        end
+        (reset_gcstack === nothing || reset_eh === nothing) && return nothing
+        return (; task_reset_ctx=gcstack + task_reset_ctx,
+                reset_ctx_size=alloca_size(buff, dl), reset_ctx_align=Int(buff.alignment),
+                reset_ctx_gcstack=reset_gcstack, reset_ctx_eh=reset_eh, reset_ctx_mctx=mctx)
     end
 end

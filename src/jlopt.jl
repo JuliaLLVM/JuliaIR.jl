@@ -124,7 +124,7 @@ const JLOPT_USAGE = """
                                 when running on Julia's LLVM
 
     Passes that need facts about the Julia runtime (e.g. the size of an exception handler)
-    use the running Julia's (`runtime=native`) unless the pipeline gives them.
+    take the running Julia's unless the pipeline gives them.
     """
 
 function parse_jlopt_args(args::Vector{String})
@@ -247,7 +247,7 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
             tm = target_machine(mod)
             try
                 @dispose pb=PassBuilder() begin
-                    register!(pb; julia=opts.julia, runtime=:native)
+                    register!(pb; julia=opts.julia)
                     add!(pb, pipeline)
                     run!(pb, mod, tm)
                 end

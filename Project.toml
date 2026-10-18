@@ -7,8 +7,10 @@ authors = ["Tim Besard <tim.besard@gmail.com>"]
 projects = ["test", "docs"]
 
 [deps]
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 
 [compat]
+InteractiveUtils = "1"
 LLVM = "10.2.1"
 julia = "1.10"
