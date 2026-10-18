@@ -6,6 +6,7 @@ using .UpstreamHarness: HarnessError, RunLine, run_lines, shell_words, opt_invoc
                         classify_run, apply_patch, disable_runs, find_python, lit_params,
                         reprint_tools, JULIA_CPP_PASSES, ported_passes, LLVM,
                         LLVM_utils_unified_jll
+include(joinpath(@__DIR__, "upstream", "derive.jl"))
 
 @testset "upstream harness" begin
 
@@ -82,6 +83,67 @@ end
           "derived-B/llvm18/1.12/x.ll.patch"
     @test UpstreamHarness.slashed_relpath(joinpath(pwd(), "derived-B", "llvm18", "1.12"), pwd()) ==
           "derived-B/llvm18/1.12"
+end
+
+@testset "mode-B rules" begin
+    rules = Dict(rule.name => rule for rule in DeriveB.RULES)
+    rewrite(name, line, kind=:check) = rules[name].rewrite(line, kind)
+
+    @test rewrite("lifetime-size", "; OPAQUE: call void @llvm.lifetime.start.p5(i64 4, ptr addrspace(5) %var1)") ==
+          "; OPAQUE: call void @llvm.lifetime.start.p5(ptr addrspace(5) %var1)"
+    @test rewrite("lifetime-size", "; CHECK-NEXT: call void @llvm.lifetime.end{{.*}}(i64 8,") ==
+          "; CHECK-NEXT: call void @llvm.lifetime.end{{.*}}(ptr"
+    # never the input, which LLVM upgrades when it reads it
+    input = "  call void @llvm.lifetime.start.p0(i64 8, ptr %a)"
+    @test rewrite("lifetime-size", input, :input) == input
+
+    @test rewrite("masked-align", "; CHECK: call <2 x ptr> @llvm.masked.gather.v2p0.v2p11(<2 x ptr addrspace(11)> %ptrs, i32 16, <2 x i1> %m, <2 x ptr> %p)") ==
+          "; CHECK: call <2 x ptr> @llvm.masked.gather.v2p0.v2p11(<2 x ptr addrspace(11)> align 16 %ptrs, <2 x i1> %m, <2 x ptr> %p)"
+
+    @test rewrite("splat", "; CHECK: <2 x i1> <i1 true, i1 true>, <4 x i8> <i8 1, i8 2, i8 1, i8 1>") ==
+          "; CHECK: <2 x i1> {{(<i1 true, i1 true>|splat \\(i1 true\\))}}, <4 x i8> <i8 1, i8 2, i8 1, i8 1>"
+
+    @test rewrite("null-pointer-splat", "; CHECK: insertelement <4 x ptr addrspace(10)> zeroinitializer, ptr") ==
+          "; CHECK: insertelement <4 x ptr addrspace(10)> {{zeroinitializer|splat \\(ptr addrspace\\(10\\) null\\)}}, ptr"
+    @test rewrite("null-pointer-splat", "; CHECK: <4 x i32> zeroinitializer") == "; CHECK: <4 x i32> zeroinitializer"
+
+    @test rewrite("decimal-fp", "; CHECK: fadd half %x, 0xH3C00") ==
+          "; CHECK: fadd half %x, {{0xH3C00|1\\.000000e\\+00}}"
+    @test rewrite("decimal-fp", "; CHECK: fadd bfloat %x, 0xR4040") ==
+          "; CHECK: fadd bfloat %x, {{0xR4040|3\\.000000e\\+00}}"
+    # a value whose decimal spelling isn't exact would need another form
+    @test_throws DeriveB.HarnessError rewrite("decimal-fp", "; CHECK: half 0xH3555")
+
+    @test rewrite("target-features-sign", "; CHECK-DAG: \"target-features\"=\"cloneall\"") ==
+          "; CHECK-DAG: \"target-features\"=\"-cloneall\""
+    @test rewrite("target-features-sign", "!5 = !{!\"cpucloneall\", !\"cloneall\", i32 0, i32 2}", :input) ==
+          "!5 = !{!\"cpucloneall\", !\"-cloneall\", i32 0, i32 2}"
+
+    # rules apply to the check prefixes of RUN lines with opaque pointers, to the fixtures
+    # they list, and to pins whose LLVM is older than the change
+    text = """
+        ; RUN: opt --opaque-pointers=0 -passes=AllocOpt -S %s | FileCheck %s --check-prefixes=CHECK,TYPED
+        ; RUN: opt --opaque-pointers=1 -passes=AllocOpt -S %s | FileCheck %s --check-prefixes=CHECK,OPAQUE
+        ; TYPED: call void @llvm.lifetime.start{{.*}}(i64 8, i8*
+        ; OPAQUE: call void @llvm.lifetime.start{{.*}}(i64 8, ptr
+        ; CHECK: call void @llvm.lifetime.end{{.*}}(i64 8, ptr
+        """
+    derived, counts = DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 15, 23)
+    @test counts == Dict("lifetime-size" => 2)
+    @test occursin("; TYPED: call void @llvm.lifetime.start{{.*}}(i64 8, i8*", derived)
+    @test occursin("; OPAQUE: call void @llvm.lifetime.start{{.*}}(ptr\n", derived)
+    @test occursin("; CHECK: call void @llvm.lifetime.end{{.*}}(ptr\n", derived)
+    @test DeriveB.apply_rules(text, "other.ll", 15, 23)[1] == text
+    @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 22, 23)[1] == text
+    @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 15, 21)[1] == text
+
+    # the generated patches apply with the harness
+    long = join(["line $i" for i in 1:20], '\n') * '\n'
+    changed = replace(long, "line 3\n" => "LINE 3\n", "line 4\n" => "LINE 4\n", "line 18\n" => "LINE 18\n")
+    diff = DeriveB.line_diff(long, changed, "x.ll"; header="generated\n")
+    @test startswith(diff, "generated\n--- a/x.ll\n+++ b/x.ll\n@@ -1,7 +1,7 @@\n")
+    @test count("@@ -", diff) == 2
+    @test apply_patch(long, diff) == changed
 end
 
 if !Sys.iswindows()
