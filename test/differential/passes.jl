@@ -184,4 +184,6 @@ const PASS_SPECS = [
              prefixes=["raw", "simplified"], remarks=["lower_simd_loop"]),
     PassSpec("ExpandAtomicModify"; inputs=r"julia\.atomicmodify",
              prefixes=["raw", "simplified", "gc-lowered"]),
+    # also changes functions without cancellation points (calls in IPO-safe functions)
+    PassSpec("CancellationLowering"; prefixes=["raw", "optimized"]),
 ]

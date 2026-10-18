@@ -92,6 +92,20 @@ else
     gc_safe_call() = @ccall usleep(0::Cuint)::Cint
 end
 
+## cancellation points (Julia 1.14 and later)
+
+@static if isdefined(Base, Symbol("@cancel_check"))
+    function cancel_loop(n)
+        s = 0
+        for i in 1:n
+            Base.@cancel_check
+            s += i
+        end
+        s
+    end
+    cancel_alloc(x) = (Base.@cancel_check; Ref(x))
+end
+
 ## GC.@preserve
 
 function preserve_load(a::Vector{Int})
@@ -290,6 +304,10 @@ const CORPUS = Any[
     (make_closure, (Int,)), (make_adder, (Any,)), (call_closure, (Function, Int)),
     (boxed_capture, (Int,)),
 ]
+
+@static if isdefined(Base, Symbol("@cancel_check"))
+    push!(CORPUS, (cancel_loop, (Int,)), (cancel_alloc, (Any,)))
+end
 
 function main(out)
     mkpath(out)
