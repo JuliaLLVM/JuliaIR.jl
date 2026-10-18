@@ -29,6 +29,7 @@ read it first, including its Log). This file says where things are and how to co
 | S11a mode B in the upstream harness, upgrade oracle, rule-generated patches for LLVM 23 (S11 steps 4–5) | done, branch `tb/s11a-mode-b-harness` (on S12) | see `git log` |
 | v115 Julia 1.15 (master after 1.14 branched): pins, dialect gates, CI | done, branch `tb/julia-1.15` (on S11a) | see `git log` |
 | S7 RemoveJuliaAddrspaces (`jl-remove-addrspaces`), RemoveAddrspaces (`jl-remove-all-addrspaces`) | done, branch `tb/s7-remove-addrspaces` (on `tb/juliair-deps-pin`) | see `git log` |
+| S15 FinalLowerGC (`jl-final-lower-gc`) | done, every dialect; branch `tb/s15-final-lower-gc` (on S7) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -64,13 +65,15 @@ the differences between Julia versions are the `gc_*` fields of `Dialect`.
 `ijl_gc_small_alloc`). The task and TLS offsets come from S24c's runtime facts
 (`runtime_layout(opts, mod)`, pass options `task-ptls` etc. via `runtime_options`), read
 only by the allocation and GC-transition lowerings; lit tests give them as options so
-their output doesn't depend on the host. The GC constants are in the pass
-file. The docs page `docs/src/late_lower_gc_frame.md` has the per-version table,
+their output doesn't depend on the host. The GC constants and the helpers shared with
+FinalLowerGC (GC stack, declarations of intrinsics and runtime functions, TBAA, tag
+loads, write barriers) are in `src/gc.jl`. The docs page `docs/src/late_lower_gc_frame.md` has the per-version table,
 the contract and every deviation. All `late-lower-gc*.ll`, `gcroots.ll`,
 `refinements.ll`, `returnstwicegc.ll`, `gc-writebarrier-volatile.ll`,
 `alloc-opt-gcframe.ll`, `multiversioning-abi.ll` and `safepoint_stress.jl` run with the
 port in mode A at every pin (1.10's `safepoint_stress.jl` through an override: its CHECK
-line is typed). The harness's `derived` status (S6) is unused now.
+line is typed), with the FinalLowerGC port behind it since S15. The harness's `derived`
+status (S6) is unused now.
 
 S18 details: `src/passes/combine_muladd.jl`, a faithful port of the 1.10/1.11 C++ pass
 (identical in both versions), remarks included. `Dialect.has_combine_muladd` says which
@@ -149,10 +152,11 @@ every version ran every dialect's lines); mode A 20/21/22/24/27 and `--cpp` 28/3
 S19 details: `src/passes/cancellation_lowering.jl`, faithful to master's C++ (the only
 version with the pass; `Dialect.has_cancellation_lowering`, a no-op before). Required.
 The safepoint emission it shares with LateLowerGCFrame moved to `src/codegen_shared.jl`;
-`GCFunctions` gained `cancellation_point` and `get_pgcstack(fns, dialect, f)` serves both
-passes. Facts: the task, `jl_reset_ctx_t` and `setjmp` facts of S24c, read only for
-functions with points or runtime calls in `"julia.ipo_reset_safe"` functions; the setjmp
-arity uses LowerExcHandlers' unnormalized triple rule (`setjmp_savemask`). Deviations
+`GCFunctions` gained `cancellation_point` and `get_pgcstack` (in `src/gc.jl` since S15)
+serves both passes. Facts: the task, `jl_reset_ctx_t` and `setjmp` facts of S24c, read
+only for functions with points or runtime calls in `"julia.ipo_reset_safe"` functions;
+the setjmp arity uses LowerExcHandlers' unnormalized triple rule (`setjmp_savemask`).
+Deviations
 (docs/src/cancellation_lowering.md): the CFG is reported changed when blocks are split
 (the C++'s stale dominator tree makes LateLowerGCFrame, the C++ and the port alike, drop
 a `GC.@preserve` root; `test/passes.jl` checks it end to end), `CancellationLoweringError`
@@ -293,6 +297,33 @@ ExpandAtomicModify after FinalLowerGC, on master CancellationLowering first). Va
 `Pkg.test()` 1.10 469, 1.11 469, 1.12 466, 1.13 434, nightly 432; mode A 21/22/23/25/28,
 `--cpp` unchanged.
 
+S15 details: `src/passes/final_lower_gc.jl`, faithful to the C++ of every pin
+(`llvm-final-gc-lowering.cpp`, master's `-stock.cpp`), with the functions' names. The
+differences between versions are `Dialect` fields (`gc_final_module`,
+`gc_final_skip_unused`, `gc_final_debugloc_next`, `gc_alloc_entry_points`,
+`gc_alloc_reset_safe`, and S6b's `gc_names`, `gc_alloc_bytes_tag`,
+`gc_barrier_lowering`). `jl-final-lower-gc` is registered twice, as a module and as a
+function pass (`define_pass` keys on name and kind; LLVM's parser picks the registration
+by the nesting level); the module pass does 1.10's module-level declarations
+(`llvm.compiler.used` round trip) and otherwise runs the function pass on every function.
+Allocations of a constant size ask the running Julia's `jl_gc_classify_pools`
+(`gc_pool_class`, cached per process, emptied in `__init__`; `RuntimeError` for another
+dialect or a non-stock GC); no pass option. Adopted on every dialect: master's
+non-volatile TBAA-tagged frame `memset` (F1), 1.11's `dereferenceable` (F2, for 1.10),
+the frame alignment S6b records (1.13). An existing runtime declaration of another type
+throws `DeclarationError` before anything changes (F4; the C++ emits invalid IR). Pointer
+size and alignment come from the data layout, not the host. On master the CFG is
+preserved unless a barrier was lowered. docs/src/final_lower_gc.md has the table and
+every deviation; `test/lit/final-lower-gc.ll` the per-version cases, and the testset
+"FinalLowerGC" in `test/passes.jl` the pool classes against the runtime. Every upstream
+fixture that names FinalLowerGC runs with the port in mode A at every pin
+(`final-lower-gc*.ll` are ports now; the frame fixtures and `alloc-opt-gcframe.ll` lost
+their "mixed" kind). A differential against the C++ (the `code_llvm` corpus after Julia's
+C++ prefix through LateLowerGCFrame, separately and interleaved, and the fixtures'
+pipelines) is identical modulo F1/F2 at every pin. Validated: `Pkg.test()` 1.10 457, 1.11
+457, 1.12 454, 1.13 422, nightly 420; mode A 22/23/24/26/29 and `--cpp` 28/32/33/35/40 + 2
+unsupported (1.10 to master, master at 08e5253dc0).
+
 JuliaIR.jl depends on unmerged LLVM.jl work (custom loop passes, the inlining API, value
 mapping and cloning, MemorySSA, the target triple wrapper, ...), split into the pull
 requests JuliaLLVM/LLVM.jl#679 to #686. `[sources]` (root, `test/` and
@@ -310,7 +341,8 @@ developing its checkout, as Pkg 1.11 and later refuse to replace a `url` source 
   `PassDefinition`/`define_pass`, `custom_pass` (the LLVM.jl pass with defaults),
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
   `src/runtime.jl`: `runtime_layout` and the probes behind it (facts about the
-  running Julia's runtime that some passes need).
+  running Julia's runtime that some passes need), and `gc_pool_class`. `src/gc.jl`: what
+  LateLowerGCFrame and FinalLowerGC share (`GCLowering`, declarations, TBAA, barriers).
   `src/jlopt.jl`: the `opt`-compatible driver. `src/passes/<pass>.jl`: one file per pass,
   each ending with `define_pass(...)` and its `JuliaIR.<Name>Pass` constructor.
 - `bin/jlopt`: executable wrapper (`using JuliaIR; exit(JuliaIR.jlopt_main(ARGS))`).
@@ -394,9 +426,8 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S6b is done on `tb/s6b-late-lower-gc-frame` (on S8). Next: S15 (FinalLowerGC, which
-   the frame fixtures run behind the port), then E2 → S7, L5b → S9, E3 → S10 and the
-   other CPU passes.
+2. S6b and S15 are done: the GC lowering runs without Julia's C++ passes. Next: the other
+   CPU passes.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
    to report it with a backtrace, `jl-late-gc-cleanup` throws `UnsupportedInputError`;
