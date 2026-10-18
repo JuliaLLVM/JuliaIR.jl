@@ -16,6 +16,8 @@ JuliaIR.GCInvariantError
 JuliaIR.GCInvariantViolation
 JuliaIR.LateLowerGCFramePass
 JuliaIR.LateGCCleanupPass
+JuliaIR.FinalLowerGCPass
+JuliaIR.DeclarationError
 JuliaIR.CombineMulAddPass
 JuliaIR.UnsupportedInputError
 JuliaIR.UnsupportedConstruct
@@ -46,6 +48,7 @@ JuliaIR.runtime_layout
 JuliaIR.runtime_fact
 JuliaIR.RuntimeFacts
 JuliaIR.runtime_options
+JuliaIR.gc_pool_class
 JuliaIR.RuntimeError
 ```
 

@@ -23,7 +23,7 @@ that the function pushes onto its task's GC stack. The pass
    them), `julia.pointer_from_objref` and `julia.gc_loaded`, and removes the metadata,
    intrinsics and operand bundles that only hold before this pass.
 
-`FinalLowerGC` (not ported yet) then lowers the frame intrinsics and
+[FinalLowerGC](final_lower_gc.md) then lowers the frame intrinsics and
 `julia.gc_alloc_bytes` to Julia's runtime.
 
 `jl-late-lower-gc-frame` (`JuliaIR.LateLowerGCFramePass`) ports the pass for the IR of

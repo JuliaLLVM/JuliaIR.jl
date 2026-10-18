@@ -57,6 +57,12 @@ into a context of the LLVM library that LLVM.jl uses, which may be newer than Ju
 own. If that code doesn't have the expected shape, reading the fact throws a
 `RuntimeError` that shows it.
 
+FinalLowerGC also needs the pool that an allocation of a given size comes from, which the
+runtime computes (`jl_gc_classify_pools`) rather than stores. It is not a field of
+`RuntimeFacts`: [`JuliaIR.gc_pool_class`](@ref) asks the running Julia for each size, with
+the same rules (only for the running Julia's dialect, once per process; see
+[FinalLowerGC](final_lower_gc.md#Pool-size-classes)).
+
 The package tests compare every fact with an independent check where one exists (the
 runtime's `jl_get_ptls_states`, the C library's `setjmp`, the pool offsets Julia emits for
 an allocation against `jl_gc_classify_pools`, ...), and with the values measured on
