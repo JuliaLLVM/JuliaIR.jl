@@ -168,6 +168,9 @@ const PASS_SPECS = [
     # the GC passes also check or rewrite IR that names nothing of Julia's (e.g.
     # `julia.call` arguments, aggregates built with `insertvalue`), so they see everything
     PassSpec("GCInvariantVerifier"; prefixes=["raw", "optimized"], aborts=true),
+    PassSpec("GCInvariantVerifier<strong>"; cpp="GCInvariantVerifier<strong>",
+             port="jl-gc-invariant-verifier<strong>", prefixes=["raw", "optimized"],
+             aborts=true),
     # Julia's C++ orders the frame slots of allocas by their addresses (a pointer-keyed
     # map), so its output can differ between runs
     PassSpec("LateLowerGCFrame"; prefixes=["raw", "optimized"], cpp_runs=8),
