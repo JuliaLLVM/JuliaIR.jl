@@ -177,8 +177,12 @@ status = "run"
 [fixtures."remove-addrspaces.ll"]
 kind = "port"
 ports = ["RemoveJuliaAddrspaces"]
-status = "skip"
-missing = ["RemoveJuliaAddrspaces"]
+status = "run"
+
+[fixtures."remove-addrspaces.ll".pins."1.10"]
+status = "override"
+patch = "derived/1.10/remove-addrspaces.ll.patch"
+reason = "its RUN lines use typed pointers, but the file already has the checks for opaque pointers; the derived copy runs them in an opaque context"
 
 
 ## ported passes together with CPU-only ones
