@@ -395,16 +395,21 @@ them). The `targets` keyword is vector-valued, which `custom_pass` now supports 
 settable in a pipeline). Deviations (S-D22) are on `docs/src/multiversioning.md`. The
 annotate-only, clone-only and x86 fixtures run with the port at every pin (`-x86.ll` with
 the CPUFeatures port behind it), `-abi.ll` from 1.13 (behind the LateLowerGCFrame port).
-Validated: `Pkg.test()` 1.10 742, 1.11 742, 1.12 739, 1.13 707, nightly 705; mode A 23/24/25/27/30 (+3 each), `--cpp`
-28/32/33/35/40 + 2 unsupported (unchanged). The in-process differential against the C++
-(fixtures, the lit module, a module with every kind of use) is identical except for the
-trampolines' ABI on 1.10–1.12 (S-D22(2)); the audit's probes give identical output, an
-error where the C++ crashes or miscompiles, or the documented deviations (D1 expansion,
-D2 on 1.10, D5, D7). On Julia 1.13's own system image built for three targets
-(`--output-unopt-bc`, 89 MB of bitcode), the output is identical up to the order of the
-relocations of one function in `jl_clone_slots` (the C++'s unstable sort), and the port
-takes 1.8× the C++'s time, half of it in LLVM.jl's value-mapper prepass of `clone_into!`
-(which runs even without callbacks).
+The pass expects the always-inliner to have run, as in Julia's pipeline: before it, the `available_externally` copies of other partitions'
+`alwaysinline` functions are relocated but not in the partition's `jl_fvars`, which the
+port rejects (the C++ reads a garbage index). Validated after the review: `Pkg.test()` 1.10
+759, 1.12 756, nightly 722 (implementer: 742/742/739/707/705); mode A 23/24/25/27/30 (+3
+each), `--cpp` 28/32/33/35/40 + 2 unsupported (unchanged). The in-process differential
+against the C++ (fixtures, the lit module, a module with every kind of use) is identical
+except for the trampolines' ABI on 1.10–1.12 (S-D22(2)); the audit's probes give identical
+output, an error where the C++ crashes or miscompiles, or the documented deviations (D1
+expansion, D2 on 1.10, D5, D7). On the four partitions of a 1.13 system image built for
+`generic;sandybridge,clone_all;haswell,-rdrnd,base(1)` (after the always-inliner), the
+output is identical up to the order of the relocations of one function in `jl_clone_slots`
+(the C++'s unstable sort), in 0.91× the C++'s time. System images built with the port in
+place of the C++ pass load and run with `-C generic`, `sandybridge`, `haswell` and `native`
+on 1.13 (4 partitions) and nightly (88 partitions). LLVM.jl's `clone_into!` runs its
+value-mapper prepass even without callbacks (about 30% of its time on large functions).
 
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
