@@ -145,7 +145,7 @@ Differences with Julia's C++ passes:
   alignment; see [CancellationLowering](@ref).
 - RemoveJuliaAddrspaces and RemoveAddrspaces keep the compile units for every Julia
   version (Julia 1.13 added this) and the debug info of global variables consistent with
-  them, map the metadata of global variables after their initializers, and keep the
+  them, map the metadata of global variables after the rest, and keep the
   metadata of global variable declarations, the types of `inalloca` and `preallocated`
   attributes, and indirect functions, which the C++ passes drop, leave unmapped or
   corrupt; see [RemoveJuliaAddrspaces](@ref).

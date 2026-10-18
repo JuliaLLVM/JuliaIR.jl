@@ -193,10 +193,7 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             vmap[gi] = new
         end
 
-        # initializers and comdats of the global variables, before any metadata: metadata
-        # is mapped without the type mapper and materializer (like Julia does), and would
-        # leave the map with constant expressions of the old types for the initializers to
-        # reuse
+        # initializers and comdats of the global variables
         for gv in globals
             isdeclaration(gv) && continue
             new = vmap[gv]
@@ -222,15 +219,6 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             var === nothing || (vmap.metadata[var] = var)
         end
 
-        # metadata of the global variables, unlike Julia also of declarations, and of the
-        # indirect functions
-        for gv in globals, (kind, md) in gv.metadata
-            add_metadata!(vmap[gv], kind, map_metadata(md, vmap))
-        end
-        for gi in ifuncs, (kind, md) in gi.metadata
-            add_metadata!(vmap[gi], kind, map_metadata(md, vmap))
-        end
-
         # the functions, declarations included (for their attributes)
         for f in functions
             new = vmap[f]
@@ -250,6 +238,17 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             aliasee = ga.aliasee
             aliasee === nothing || (vmap[ga].aliasee = map_constant(aliasee))
             ga.aliasee = nothing
+        end
+
+        # Metadata of the global variables, unlike Julia also of declarations, and of the
+        # indirect functions, after everything that is mapped with the type mapper and
+        # materializer: it is mapped without them (like Julia does), and would leave the
+        # map with constant expressions of the old types for those to reuse.
+        for gv in globals, (kind, md) in gv.metadata
+            add_metadata!(vmap[gv], kind, map_metadata(md, vmap))
+        end
+        for gi in ifuncs, (kind, md) in gi.metadata
+            add_metadata!(vmap[gi], kind, map_metadata(md, vmap))
         end
 
         for (_, node) in mod.metadata
