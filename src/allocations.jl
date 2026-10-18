@@ -48,7 +48,7 @@ const FIELD_WB_SLOT_ARG = 2
 # whether a type contains a tracked pointer
 function has_objref(@nospecialize(ty::LLVMType))
     ty isa LLVM.PointerType && return ty.addrspace == AS_TRACKED
-    (ty isa LLVM.ArrayType || ty isa LLVM.VectorType) && return has_objref(eltype(ty))
+    (ty isa LLVM.ArrayType || ty isa LLVM.VectorType) && return has_objref(ty.element_type)
     if ty isa LLVM.StructType
         for elty in ty.elements
             has_objref(elty) && return true
