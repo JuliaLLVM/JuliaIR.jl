@@ -173,20 +173,15 @@ function lower_bitstype(T::DataType, llvmcall::Bool, d::Dialect)
     return LLVM.IntType(primitive_bits(T))
 end
 
-# the `GenericMemoryRef` types: a pointer to the element (an offset, for union and ghost
-# elements) and the memory object
+# the `GenericMemoryRef` types: the element's address (its index, for memory of unions or
+# of types without data) and the memory object
 function lower_memoryref(T::DataType, d::Dialect)
     M = fieldtype(T, 2)
     elem = Base.datatype_arrayelem(M)   # 0: inline, 1: boxed, 2: union
-    memory = PointerType(10)
+    index = elem == 2 || (elem == 0 && own_layout(M).size == 0)
     # `GenericMemoryRef`'s address-space parameter is not used: the C++ always uses 0
-    if elem == 1
-        return StructType(LLVMType[PointerType(0), memory])
-    elseif elem == 2 || own_layout(M).size == 0
-        return StructType(LLVMType[lower_bitstype(Int, false, d), memory])
-    else
-        return StructType(LLVMType[PointerType(0), memory])
-    end
+    ptr_or_offset = index ? lower_bitstype(Int, false, d) : PointerType(0)
+    return StructType(LLVMType[ptr_or_offset, PointerType(10)])
 end
 
 # the types that represent an inline union field of `fieldsize` bytes (data, then the
@@ -211,54 +206,45 @@ function push_union_field!(elts::Vector{LLVMType}, @nospecialize(U), fieldsize::
     return elts
 end
 
-# the struct case of `_julia_struct_to_llvm`
+# the struct case of `_julia_struct_to_llvm`: the fields that hold data, as one LLVM type
 function lower_fields(T::DataType, llvmcall::Bool, d::Dialect)
-    ftypes = fieldtypes(T)
-    n = length(ftypes)
     try_layout(T) ||
         throw(ArgumentError("type $T has no fixed layout, and cannot be lowered"))
+    ftypes = fieldtypes(T)
+    n = length(ftypes)
     (n == 0 || datatype_size(T) == 0) && return LLVM.VoidType()
 
+    # one element per field, except that fields without data are dropped and inline unions
+    # take several
     elts = LLVMType[]
-    isarray = isvector = allghost = true
-    lastjl = nothing
-    last = nothing
+    has_union = false
     desc = Base.DataTypeFieldDesc(T)
-    for i in 1:n
-        F = ftypes[i]
-        lastjl !== nothing && F !== lastjl && (isvector = false)
-        lastjl = F
+    for (i, F) in enumerate(ftypes)
         Base.isfieldatomic(T, i) &&
             throw(ArgumentError("type $T has an atomic field ($(fieldname(T, i))), which cannot be lowered"))
         fd = desc[i]
         if fd.isptr
-            lty = PointerType(10)
-            isvector = false
+            push!(elts, PointerType(10))
         elseif F isa Union
             push_union_field!(elts, F, Int(fd.size))
-            isarray = allghost = false
-            continue
+            has_union = true
         else
             lty = lower_struct(F, llvmcall, d).type
-        end
-        last !== nothing && last != lty && (isarray = false)
-        last = lty
-        if !is_ghost(lty)
-            allghost = false
-            push!(elts, lty)
+            is_ghost(lty) || push!(elts, lty)
         end
     end
 
-    if allghost
-        return LLVM.VoidType()
-    elseif is_vecelement_type(T) && !(ftypes[1] isa Union)
-        # VecElement is unwrapped
-        return elts[1]
-    elseif isarray && !is_ghost(last)
-        if is_tuple_type(T) && isvector && special_vector_alignment(n, lastjl) != 0
-            return VectorType(last, n)
+    isempty(elts) && return LLVM.VoidType()
+    # `VecElement` is unwrapped, unless its element is a union (even a boxed one)
+    is_vecelement_type(T) && !(ftypes[1] isa Union) && return only(elts)
+    # fields of one LLVM type, none of them dropped, form an array, or a vector for tuples
+    # of `VecElement`s of a suitable size
+    if !has_union && length(elts) == n && all(==(elts[1]), elts)
+        if is_tuple_type(T) && all(F -> F === ftypes[1], ftypes) &&
+           special_vector_alignment(n, ftypes[1]) != 0
+            return VectorType(elts[1], n)
         elseif is_tuple_type(T) || !llvmcall
-            return ArrayType(last, n)
+            return ArrayType(elts[1], n)
         end
     end
     return StructType(elts)
