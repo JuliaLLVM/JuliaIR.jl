@@ -306,12 +306,16 @@ differences between versions are `Dialect` fields (`gc_final_module`,
 function pass (`define_pass` keys on name and kind; LLVM's parser picks the registration
 by the nesting level); the module pass does 1.10's module-level declarations
 (`llvm.compiler.used` round trip) and otherwise runs the function pass on every function.
+A top-level name is the module pass, so from 1.11 on `jlopt` (and the upstream harness,
+through `port_pipeline`) nests a C++ pipeline that starts with `FinalLowerGC` in
+`function(...)`, as LLVM does for the C++ function pass.
 Allocations of a constant size ask the running Julia's `jl_gc_classify_pools`
 (`gc_pool_class`, cached per process, emptied in `__init__`; `RuntimeError` for another
 dialect or a non-stock GC); no pass option. Adopted on every dialect: master's
 non-volatile TBAA-tagged frame `memset` (F1), 1.11's `dereferenceable` (F2, for 1.10),
 the frame alignment S6b records (1.13). An existing runtime declaration of another type
-throws `DeclarationError` before anything changes (F4; the C++ emits invalid IR). Pointer
+throws `DeclarationError` before anything changes (F4; the C++ emits invalid IR; also a
+mismatching `julia.queue_gc_root` call, checked for every function to be lowered first). Pointer
 size and alignment come from the data layout, not the host. On master the CFG is
 preserved unless a barrier was lowered. docs/src/final_lower_gc.md has the table and
 every deviation; `test/lit/final-lower-gc.ll` the per-version cases, and the testset
@@ -320,8 +324,10 @@ fixture that names FinalLowerGC runs with the port in mode A at every pin
 (`final-lower-gc*.ll` are ports now; the frame fixtures and `alloc-opt-gcframe.ll` lost
 their "mixed" kind). A differential against the C++ (the `code_llvm` corpus after Julia's
 C++ prefix through LateLowerGCFrame, separately and interleaved, and the fixtures'
-pipelines) is identical modulo F1/F2 at every pin. Validated: `Pkg.test()` 1.10 457, 1.11
-457, 1.12 454, 1.13 422, nightly 420; mode A 22/23/24/26/29 and `--cpp` 28/32/33/35/40 + 2
+pipelines) is identical modulo F1/F2 at every pin (Julia's C++ LateLowerGCFrame orders the
+frame slots of `sret` root buffers by pointer, a `DenseMap`, so a corpus comparison can
+differ between runs in that order). Validated after review: `Pkg.test()` 1.10 469, 1.11
+470, 1.12 467, 1.13 435, nightly 441; mode A 22/23/24/26/29 and `--cpp` 28/32/33/35/40 + 2
 unsupported (1.10 to master, master at 08e5253dc0).
 
 JuliaIR.jl depends on unmerged LLVM.jl work (custom loop passes, the inlining API, value
