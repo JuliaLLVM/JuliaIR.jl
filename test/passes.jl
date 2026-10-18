@@ -27,7 +27,7 @@ dialect = JuliaIR.Dialect(VERSION)
 end
 
 @testset "PropagateJuliaAddrspaces" begin
-    @test !JuliaIR.PropagateAddrspacesPass().required
+    @test JuliaIR.PropagateAddrspacesPass().required
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             define i64 @f() {
               %stack = alloca i64

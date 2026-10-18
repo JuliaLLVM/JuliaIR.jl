@@ -270,7 +270,7 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
 end
 
 const PROPAGATE_ADDRSPACES = define_pass("jl-propagate-addrspaces", :function,
-                                         propagate_addrspaces!; required=false,
+                                         propagate_addrspaces!; required=true,
                                          cpp_name="PropagateJuliaAddrspaces")
 
 """
@@ -280,6 +280,7 @@ Make loads, stores, atomics and memory intrinsics that access memory through one
 Julia's special address spaces use the untracked pointer the address was derived from,
 when that pointer can be recovered through address space casts, GEPs, phis and selects
 (`jl-propagate-addrspaces` in a pipeline). Run `dce` or another cleanup afterwards to
-remove the instructions that became unused.
+remove the instructions that became unused. Like Julia's C++ pass, it is required, so it
+also runs on `optnone` functions.
 """
 PropagateAddrspacesPass(; kwargs...) = custom_pass(PROPAGATE_ADDRSPACES; kwargs...)

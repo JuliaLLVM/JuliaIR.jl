@@ -15,17 +15,20 @@ What is supported:
 - Only IR with opaque pointers is supported.
 
 What the IR of each Julia version looks like is described by `JuliaIR.Dialect`, and the
-passes use the running Julia's (`JuliaIR.Dialect(VERSION)`). Their options only cover
-what the version doesn't determine, like DemoteFloat16's `fp16` and `bf16` policies or the
+passes use the running Julia's (`JuliaIR.Dialect(VERSION)`). Their options cover what
+the version doesn't determine, like DemoteFloat16's `fp16` and `bf16` policies or the
 GC write-barrier configuration Julia was built with (`gc-barrier`). Facts about Julia's
 runtime that some passes need (see below) are taken from the running Julia too; IR for
 GPUs doesn't need them.
+
+A required pass also runs on `optnone` functions, which LLVM's pass managers skip for
+the others; each port is required exactly when Julia's C++ pass is.
 
 | Pass | Julia's name | Required |
 |------|--------------|----------|
 | `jl-remove-ni` | `RemoveNI` | yes |
 | `jl-alloc-opt` | `AllocOpt` | no |
-| `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | no |
+| `jl-propagate-addrspaces` | `PropagateJuliaAddrspaces` | yes |
 | `jl-demote-float16` | `DemoteFloat16` | yes |
 | `jl-gc-invariant-verifier` | `GCInvariantVerifier` | yes |
 | `jl-combine-muladd` | `CombineMulAdd` (Julia 1.10 and 1.11) | no |
@@ -80,8 +83,7 @@ Differences with Julia's C++ passes:
   falls back to them for functions without `target-features`); the `fp16` and `bf16`
   options override the Julia version's rule. It leaves alone instructions that have no
   operand to demote (the C++ pass recreates every instruction with a 16-bit result,
-  dropping its name), names the replacement like the original, and runs on `optnone`
-  functions (it changes their semantics, so it is a required pass).
+  dropping its name), and names the replacement like the original.
 - GCInvariantVerifier throws a `JuliaIR.GCInvariantError` listing every violation
   instead of printing them and aborting (`jlopt` prints the error and aborts, like
   `opt`). It reads the address space of vectors of pointers from their elements on

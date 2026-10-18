@@ -169,7 +169,7 @@ attributes (1.12 and later; without them, `half` is demoted only on PowerPC and 
 is kept). Operations with all fast-math flags are left alone.
 
 Meant to run late in the pipeline, not followed by `instcombine` (which would fold the
-conversions away); `gvn` can clean up redundant conversions. Unlike Julia's C++ pass,
-it is not skipped on `optnone` functions, since it affects their semantics.
+conversions away); `gvn` can clean up redundant conversions. Like Julia's C++ pass, it
+is required, so it also runs on `optnone` functions, whose semantics it affects.
 """
 DemoteFloat16Pass(; kwargs...) = custom_pass(DEMOTE_FLOAT16; kwargs...)
