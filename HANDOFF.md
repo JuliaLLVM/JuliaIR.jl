@@ -17,6 +17,7 @@ read it first, including its Log). This file says where things are and how to co
 | S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done as a subset, PR #5; generalized by S6b | e672c86, d11ee73 |
 | S18 CombineMulAdd (`jl-combine-muladd`) | done, `tb/s18-combine-muladd` (sibling of S6b/S17 on PR #5) | 1ee4acf |
 | S17 LowerExcHandlers (`jl-lower-exc-handlers`), runtime profiles | done, branch `tb/s17-lower-exc-handlers` (on S18's PR #6) | 138ff79, e4b7864, 8e55cc4 |
+| S24c runtime facts from the running Julia, AllocOpt pointer size from the data layout | done, replaces S24b's tables in PR #9 (on S17) | 2ad92d5, 3772cd7 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -31,7 +32,8 @@ On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. PRs #1 (CI against LLVM.jl `
 
 Scope and workflow changed on 2026-10-18 (plan decisions S-D12–S-D14, "Operating mode"): all of Julia's
 passes get faithful, general ports (CPU paths included), for dialects D ≤ the running Julia and on every
-LLVM from the dialect's own on. A coordinator session (kick-off prompt
+LLVM from the dialect's own on. Narrowed by S-D17: a Julia version only processes its own IR (the `julia`
+option stays for tests); only the LLVM library may be newer than Julia's. A coordinator session (kick-off prompt
 `~/Julia/plans/llvm-middleend/PROMPT.coordinator.md`) delegates items to subagents, stacks PRs with
 `gh stack`, and may push `tb/*` branches and open PRs on JuliaIR.jl and LLVM.jl.
 
@@ -56,19 +58,30 @@ dialects have the pass; for 1.12 and later it is a no-op. Not required (skipped 
 at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
 
 S17 details: `src/passes/lower_exc_handlers.jl`; `Dialect.except_enter` (`:no_task`,
-`:task`, `:task_buffer`, `:none` from 1.13, where the pass is a no-op). Facts about the
-runtime build (handler size/alignment, setjmp name and signature) are a `RuntimeProfile`
-in `src/runtime.jl`, resolved by `resolve_runtime` only when a function has handlers:
-explicit options (`handler-size=N;handler-align=N;setjmp=NAME`, which win over
-`runtime=native`), else the running Julia's, only for its own dialect and a host triple
-(vendor ignored; an empty triple only with `runtime=native`; a foreign triple always
-needs an explicit profile), read by running Julia's own C++
-LowerExcHandlers on a probe function (cached). `jlopt` registers passes with
-`runtime=native`. S6b and later CPU passes should extend this profile rather than add
-another mechanism (plan decision S-D15). Upstream `lower-handlers*.ll` run with the port
-at 1.10–1.12 (`lower-handlers-addrspaces.ll` targets amdgcn, so it is an override
-that gives the profile as options); the package's lit tests use explicit profiles so they don't depend on the
-host. Pass options can be `Int` and `String` (taken verbatim) besides `Bool`/`Symbol`.
+`:task`, `:task_buffer`, `:none` from 1.13, where the pass is a no-op). The handler size
+and alignment and setjmp's name are runtime facts (S24c, below), read only when a
+function has handlers; whether setjmp takes a `savemask` argument follows the module's
+triple (not on Windows), like the C++, unless `setjmp-savemask` overrides it. Upstream
+`lower-handlers*.ll` run with the port at 1.10–1.12, without overrides; the package's lit
+tests give the facts explicitly so they don't depend on the host. Pass options can be
+`Int` and `String` (taken verbatim) besides `Bool`/`Symbol`.
+
+S24c details (plan decision S-D17; replaces S17's `RuntimeProfile` and S24b's generated
+tables): `src/runtime.jl`. `runtime_layout(dialect, mod)` (or `runtime_layout(opts, mod)`
+from pass options) returns a lazy `RuntimeFacts` whose properties are the facts
+(`task_gcstack`, `task_ptls`, `task_eh`, `tls_safepoint`, `tls_gc_state`, `handler_size`,
+`setjmp`, `tp_asm`, master's `task_reset_ctx`/`reset_ctx_*`, ...; `RUNTIME_FACTS` lists
+them). Each is resolved when read: the pass option of the same name, else the running
+Julia's value (only for its own dialect), else a `RuntimeError` naming the fact and the
+option. No target checks: like the C++, the host's values serve any triple. A pass
+declares the options with `extra=runtime_options(:fact, ...)`. The running Julia's values
+come from probes run once per process (`NATIVE_FACTS`, emptied in `__init__`): live from
+the runtime (`jl_get_pgcstack`, the task word a `try` changes, the TLS byte
+`jl_gc_safe_enter` sets, `jl_tls_elf_support`) or from `code_llvm` of small functions
+(`GC.safepoint()`, a `try`, `Base.@cancel_check`) parsed into LLVM.jl's library;
+docs/src/runtime.md has the table. GC pool classification is not a fact: S15 should
+`ccall(:jl_gc_classify_pools, ...)` like the C++. AllocOpt takes the reference-slot size
+and alignment from the data layout (`test/lit/alloc-opt-32bit.ll`).
 
 ## Layout
 
@@ -77,8 +90,8 @@ host. Pass options can be `Int` and `String` (taken verbatim) besides `Bool`/`Sy
   shared by passes (metadata copy, pointer types by reference, alloca address space). `src/registration.jl`: option parsing (`jl-x<julia=1.12;fp16=demote>`),
   `PassDefinition`/`define_pass`, `custom_pass` (the LLVM.jl pass with defaults),
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
-  `src/runtime.jl`: `RuntimeProfile` and `resolve_runtime` (facts about the Julia
-  runtime build that some passes need).
+  `src/runtime.jl`: `runtime_layout` and the probes behind it (facts about the
+  running Julia's runtime that some passes need).
   `src/jlopt.jl`: the `opt`-compatible driver. `src/passes/<pass>.jl`: one file per pass,
   each ending with `define_pass(...)` and its `JuliaIR.<Name>Pass` constructor.
 - `bin/jlopt`: executable wrapper (`using JuliaIR; exit(JuliaIR.jlopt_main(ARGS))`).
@@ -217,13 +230,23 @@ host. Pass options can be `Int` and `String` (taken verbatim) besides `Bool`/`Sy
   `LLVM.after(inst)`. `mod.datalayout` is a `DataLayout`; `alloca_addrspace` wants the
   string (`unsafe_string(API.LLVMGetDataLayoutStr(mod))`).
 - Pass defaults and pipeline options are merged before the pass sees them, so a pass
-  can't tell a default (`jlopt`'s `runtime=native`) from an explicit option: explicit
-  runtime facts must win over `runtime=native`.
+  can't tell a default from an explicit option: the runtime-fact options use a value
+  that means "not given" (0, `""`, `:auto`).
 - Closures assign outer locals of the same name: `plan_fixture`'s `classify` overwrote
   the fixture's `runs` (fixed with `local`), which hid override pipelines from the
   ledger check.
 - Running one of Julia's C++ passes from inside a JuliaIR pass callback (a nested
-  `PassBuilder` in a fresh context) works; the native runtime probe does that.
+  `PassBuilder` in a fresh context) works.
+- Runtime-fact probes: code coverage (CI's `--code-coverage=user`) adds `load volatile`
+  and `store volatile` of line counters at constant addresses to the probe functions on
+  1.10 and 1.11, so the safepoint probe can't take the only volatile load (that failed
+  S24b's CI on 1.10/1.11); it collects every load chain of the expected shape and
+  requires one distinct result. `@test` evaluates its expression inside a `try`, so
+  reading the task's `eh` inside `@test` sees the test's handler. Julia 1.10 under `-g2`
+  (which verifies the optimizer's IR) printed "φ node is not at the beginning of the
+  basic block" and an internal-error dump for a `return` inside nested
+  `try`/`finally` in a `@dispose` block (harmless, the method falls back to
+  unoptimized code); `with_probe_ir` avoids that shape.
 
 ## Decisions (Tim, 2026-10-17)
 
