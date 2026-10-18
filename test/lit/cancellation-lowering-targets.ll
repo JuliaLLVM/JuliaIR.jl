@@ -15,6 +15,10 @@
 ; RUN: opt -passes='function(CancellationLowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=32;setjmp=ijl_setjmp>)' -mtriple=x86_64-w64-windows-gnu -S %t/point.ll | FileCheck %t/point.ll --check-prefix=WINDOWS
 ; RUN: opt -passes='function(CancellationLowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=32;setjmp=ijl_setjmp>)' -mtriple=x86_64-w64-mingw32 -S %t/point.ll | FileCheck %t/point.ll --check-prefix=MINGW
 
+; As with `getOrInsertFunction`, whatever global has setjmp's name is called, also an
+; alias.
+; RUN: opt -passes='function(CancellationLowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=24;setjmp=__sigsetjmp>)' -S %t/alias.ll | FileCheck %t/alias.ll
+
 ; Pointers are loaded and stored with the data layout's pointer alignment (Julia's pass
 ; uses the host's, 8 on 64-bit hosts), and the buffer's address is stored as an integer
 ; of the pointer's size.
@@ -120,6 +124,26 @@ define void @f() {
 entry:
   br label %next
 next:
+  %pgcstack = call ptr @julia.get_pgcstack()
+  %r = call i32 @julia.cancellation_point()
+  ret void
+}
+
+;--- alias.ll
+declare i32 @julia.cancellation_point()
+declare ptr @julia.get_pgcstack()
+
+@__sigsetjmp = alias i32 (ptr, i32), ptr @real_setjmp
+
+define i32 @real_setjmp(ptr %buf, i32 %savemask) {
+  ret i32 0
+}
+
+; CHECK-LABEL: @f(
+; CHECK: %{{[0-9]+}} = call i32 @__sigsetjmp(ptr %cancel_mctx, i32 0) #[[ATTR:[0-9]+]]
+; CHECK: attributes #[[ATTR]] = { returns_twice }
+define void @f() {
+entry:
   %pgcstack = call ptr @julia.get_pgcstack()
   %r = call i32 @julia.cancellation_point()
   ret void
