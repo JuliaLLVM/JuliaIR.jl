@@ -115,12 +115,6 @@ struct Dialect
     1.12 and later)."
     fp16_rule::Symbol
 
-    # PropagateJuliaAddrspaces
-    "The address space PropagateJuliaAddrspaces rewrites to. Always `:common_leaf` (the
-    common address space of the leaves, as on Julia master); kept for the record since
-    Julia 1.13 and older used the alloca address space."
-    propagate_addrspaces_target::Symbol
-
     # LateLowerGCFrame
     "Which loads LateLowerGCFrame refines to the object they load from (rooted by it):
     `:tbaa` (loads with `!invariant.load` or a TBAA type that derives from one of
@@ -253,7 +247,6 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.12",                      # simdloop_check_combine
                    minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
-                   :common_leaf,
                    development ? :regions : :tbaa,        # gc_rooted_loads
                    gc_immutable_tbaa,
                    minor <= v"1.12",                      # gc_frame_ref_refinement

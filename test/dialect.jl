@@ -59,7 +59,6 @@ end
     @test !d11.verifier_vector_pointers && d12.verifier_vector_pointers
     @test (d10.fp16_rule, d11.fp16_rule, d12.fp16_rule) ==
           (:target_features, :target_features_bf16, :attributes)
-    @test all(d -> d.propagate_addrspaces_target === :common_leaf, (d10, d13, dm))
 
     # LateLowerGCFrame
     @test (d13.gc_rooted_loads, dm.gc_rooted_loads) == (:tbaa, :regions)
