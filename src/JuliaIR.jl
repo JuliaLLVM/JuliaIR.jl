@@ -33,6 +33,7 @@ include("gc_transitions.jl")
 include("passes/lower_ptls.jl")
 include("passes/cpu_features.jl")
 include("passes/multiversioning.jl")
+include("passes/julia_licm.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
