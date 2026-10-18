@@ -957,6 +957,39 @@ end
         end
     end
 
+    # on Julia master, the write barriers call `julia.queue_gc_root`, unless every child is
+    # null; the intrinsic is only checked when one does
+    if dialect.gc_barrier_lowering === :deferred
+        barrier_ir(child) = """
+            declare ptr @julia.get_pgcstack()
+            declare void @julia.object_write_barrier(ptr addrspace(10), ...)
+            declare void @julia.queue_gc_root(ptr)
+            define void @f(ptr addrspace(10) %p, ptr addrspace(10) %c) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %p, ptr addrspace(10) $child)
+              ret void
+            }"""
+        for kind in (:module, :function)
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("null")) begin
+                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                @test !occursin("write_barrier(", string(mod.functions["f"]))
+            end
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("%c")) begin
+                before = string(mod)
+                err = try
+                    run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                    nothing
+                catch err
+                    err
+                end
+                @test err isa PassException && err.ex isa JuliaIR.DeclarationError
+                @test err isa PassException && err.ex.name == "julia.queue_gc_root"
+                @test string(mod) == before
+            end
+        end
+    end
+
     @testset "pool classes" begin
         # the runtime's size classes: every object up to `GC_MAX_SZCLASS` comes from a pool
         # whose objects fit it and its tag, the pools of larger objects come later

@@ -42,6 +42,22 @@ function declare_runtime_functions!(p::FinalLowerGC)
     return [p.runtime[which] for which in runtime_functions(p.dialect)]
 end
 
+parent_function(inst::Instruction) = LLVM.parent(LLVM.parent(inst))
+
+# the calls of write barriers that FinalLowerGC lowers (Julia master)
+function barrier_calls(p::FinalLowerGC)
+    calls = Instruction[]
+    for name in write_barrier_names(p.dialect)
+        f = get(p.mod.functions, name, nothing)
+        f === nothing && continue
+        for use in LLVM.uses(f)
+            call = LLVM.user(use)
+            call isa LLVM.CallInst && call.called_operand == f && push!(calls, call)
+        end
+    end
+    return calls
+end
+
 # The C++ pass calls an existing function of a runtime function's name whatever its type,
 # which gives invalid IR. Check what the functions in `functions` will call, before the
 # pass changes anything: the existing declarations, the calls of `julia.queue_gc_root`
@@ -58,7 +74,8 @@ function check_declarations(p::FinalLowerGC, functions)
     queue_root = get(mod.functions, "julia.queue_gc_root", nothing)
     queue_root === nothing && return
     name, ft = gc_declaration(p, :gc_queue_root)
-    if any(name -> has_use(mod, name), write_barrier_names(p.dialect))
+    if any(call -> parent_function(call) in functions && !isempty(barrier_children(call)),
+           barrier_calls(p))
         queue_root.function_type == ft ||
             throw(DeclarationError(LLVM.name(queue_root), string(ft),
                                    string(queue_root.function_type)))
@@ -66,7 +83,7 @@ function check_declarations(p::FinalLowerGC, functions)
     for use in LLVM.uses(queue_root)
         call = LLVM.user(use)
         call isa LLVM.CallInst && call.called_operand == queue_root || continue
-        LLVM.parent(LLVM.parent(call)) in functions || continue
+        parent_function(call) in functions || continue
         call.called_type == ft ||
             throw(DeclarationError(name, string(ft), string(call.called_type)))
     end
@@ -277,20 +294,21 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-# the children of a write barrier: the arguments after the parent, without the slot
-# operands of field barriers (`JuliaPassContext::writeBarrierChildren`)
+# the children of a write barrier that need one: the arguments after the parent, without
+# the slot operands of field barriers (`JuliaPassContext::writeBarrierChildren`) and the
+# null pointers (a field that is cleared)
 function barrier_children(call::Instruction)
     args = collect(call.arguments)
     field = startswith(LLVM.name(call.called_operand), "julia.field_write_barrier")
-    return [args[i] for i in 2:length(args) if !field || iseven(i - 1)]
+    return [args[i] for i in 2:length(args)
+            if (!field || iseven(i - 1)) && !(strip_pointer_casts(args[i]) isa LLVM.PointerNull)]
 end
 
 # a write barrier (Julia master), the stock GC's: like Julia 1.13's in LateLowerGCFrame,
 # without the children that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
-    children = [c for c in barrier_children(target)
-                if !(strip_pointer_casts(c) isa LLVM.PointerNull)]
+    children = barrier_children(target)
     isempty(children) && return
     p.cfg_modified = true
     queue_root = emit_write_barrier!(p, target, parent, children, :image, 1)
