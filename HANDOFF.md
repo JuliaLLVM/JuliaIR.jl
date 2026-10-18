@@ -16,6 +16,7 @@ read it first, including its Log). This file says where things are and how to co
 | S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, merged); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
 | S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done as a subset, PR #5; generalized by S6b | e672c86, d11ee73 |
 | S18 CombineMulAdd (`jl-combine-muladd`) | done, `tb/s18-combine-muladd` (sibling of S6b/S17 on PR #5) | 1ee4acf |
+| S17 LowerExcHandlers (`jl-lower-exc-handlers`), runtime profiles | done, branch `tb/s17-lower-exc-handlers` (on S18's PR #6) | 138ff79, e4b7864, 8e55cc4 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -54,6 +55,21 @@ dialects have the pass; for 1.12 and later it is a no-op. Not required (skipped 
 `optnone`, like the C++). Reads no target information. Upstream `muladd.ll` runs in mode A
 at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
 
+S17 details: `src/passes/lower_exc_handlers.jl`; `Dialect.except_enter` (`:no_task`,
+`:task`, `:task_buffer`, `:none` from 1.13, where the pass is a no-op). Facts about the
+runtime build (handler size/alignment, setjmp name and signature) are a `RuntimeProfile`
+in `src/runtime.jl`, resolved by `resolve_runtime` only when a function has handlers:
+explicit options (`handler-size=N;handler-align=N;setjmp=NAME`, which win over
+`runtime=native`), else the running Julia's, only for its own dialect and a host triple
+(vendor ignored; an empty triple only with `runtime=native`; a foreign triple always
+needs an explicit profile), read by running Julia's own C++
+LowerExcHandlers on a probe function (cached). `jlopt` registers passes with
+`runtime=native`. S6b and later CPU passes should extend this profile rather than add
+another mechanism (plan decision S-D15). Upstream `lower-handlers*.ll` run with the port
+at 1.10–1.12 (`lower-handlers-addrspaces.ll` targets amdgcn, so it is an override
+that gives the profile as options); the package's lit tests use explicit profiles so they don't depend on the
+host. Pass options can be `Int` and `String` (taken verbatim) besides `Bool`/`Symbol`.
+
 ## Layout
 
 - `src/dialect.jl`: `Dialect` (what each Julia version's IR looks like; passes branch on
@@ -61,6 +77,8 @@ at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
   shared by passes (metadata copy, pointer types by reference, alloca address space). `src/registration.jl`: option parsing (`jl-x<julia=1.12;fp16=demote>`),
   `PassDefinition`/`define_pass`, `custom_pass` (the LLVM.jl pass with defaults),
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
+  `src/runtime.jl`: `RuntimeProfile` and `resolve_runtime` (facts about the Julia
+  runtime build that some passes need).
   `src/jlopt.jl`: the `opt`-compatible driver. `src/passes/<pass>.jl`: one file per pass,
   each ending with `define_pass(...)` and its `JuliaIR.<Name>Pass` constructor.
 - `bin/jlopt`: executable wrapper (`using JuliaIR; exit(JuliaIR.jlopt_main(ARGS))`).
@@ -120,7 +138,7 @@ at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
 2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
-   (plan item S6b). Independent: S17, S24 (S18 done); then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
+   (plan item S6b). Independent: S24 (S17, S18 done); then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
    passes S15–S21.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
@@ -194,6 +212,18 @@ at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
   `atomicrmw xchg` of pointers.
 - Julia's libLLVM targets differ per platform (macOS arm64 has no X86, Linux x86 no
   AArch64): lit tests that need a target say `REQUIRES: <target>-registered-target`.
+
+- `position!(builder, inst)` doesn't exist in LLVM.jl 10: use `LLVM.before(inst)` /
+  `LLVM.after(inst)`. `mod.datalayout` is a `DataLayout`; `alloca_addrspace` wants the
+  string (`unsafe_string(API.LLVMGetDataLayoutStr(mod))`).
+- Pass defaults and pipeline options are merged before the pass sees them, so a pass
+  can't tell a default (`jlopt`'s `runtime=native`) from an explicit option: explicit
+  runtime facts must win over `runtime=native`.
+- Closures assign outer locals of the same name: `plan_fixture`'s `classify` overwrote
+  the fixture's `runs` (fixed with `local`), which hid override pipelines from the
+  ledger check.
+- Running one of Julia's C++ passes from inside a JuliaIR pass callback (a nested
+  `PassBuilder` in a fresh context) works; the native runtime probe does that.
 
 ## Decisions (Tim, 2026-10-17)
 
