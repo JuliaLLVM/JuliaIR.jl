@@ -145,6 +145,49 @@ function Base.empty!(info::AllocUseInfo)
     return info
 end
 
+# Print what the escape analysis found, like `AllocUseInfo::dump` (for remarks). Uses are
+# listed in the order they were found.
+function dump_use_info(io::IO, info::AllocUseInfo)
+    b(x::Bool) = Int(x)
+    println(io, "AllocUseInfo:")
+    println(io, "escaped: ", b(info.escaped))
+    println(io, "addrescaped: ", b(info.addrescaped))
+    println(io, "returned: ", b(info.returned))
+    println(io, "haserror: ", b(info.haserror))
+    println(io, "hasload: ", b(info.hasload))
+    println(io, "haspreserve: ", b(info.haspreserve))
+    println(io, "hasunknownmem: ", b(info.hasunknownmem))
+    println(io, "hastypeof: ", b(info.hastypeof))
+    println(io, "refload: ", b(info.refload))
+    println(io, "refstore: ", b(info.refstore))
+    print(io, "allockind:")
+    info.allockind & ALLOCKIND_UNINITIALIZED != 0 && print(io, " uninitialized")
+    info.allockind & ALLOCKIND_ZEROED != 0 && print(io, " zeroed")
+    println(io)
+    println(io, "Uses: ", length(info.use_order))
+    foreach(inst -> println(io, string(inst)), info.use_order)
+    if !isempty(info.preserves)
+        println(io, "Preserves: ", length(info.preserves))
+        foreach(inst -> println(io, string(inst)), info.preserves)
+    end
+    println(io, "MemOps: ", length(info.fields))
+    for (offset, field) in zip(info.offsets, info.fields)
+        println(io, "  offset: ", offset)
+        println(io, "  size: ", field.size)
+        println(io, "  hasobjref: ", b(field.hasobjref))
+        println(io, "  hasload: ", b(field.hasload))
+        println(io, "  hasaggr: ", b(field.hasaggr))
+        println(io, "  accesses: ", length(field.accesses))
+        for memop in field.accesses
+            println(io, "    ", string(memop.inst))
+            println(io, "    ", memop.isaggr ? "aggr" : "scalar")
+            println(io, "    ", memop.isobjref ? "objref" : "bits")
+            println(io, "    ", memop.offset)
+            println(io, "    ", memop.size)
+        end
+    end
+end
+
 function add_use!(info::AllocUseInfo, inst::Instruction)
     inst in info.uses && return
     push!(info.uses, inst)
@@ -262,11 +305,15 @@ function alloc_kind(call::Instruction)
     return UInt64(0)
 end
 
+# the pass name of the remarks of the escape analysis (`DEBUG_TYPE` in C++)
+const ESCAPE_REMARKS = "escape-analysis"
+
 # Find out how the allocation `alloc` (a `julia.gc_alloc_obj` call) is used, recording it
 # in `info`, which is emptied first. Uses outside the blocks in `valid_blocks` (if given)
-# are ignored. `remark(name, inst, message)` is called for missed-optimization remarks.
+# are ignored. Missed-optimization remarks are emitted through `remarks` (the analysis
+# manager of a function pass or the analysis results of a loop pass), if given.
 function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunctions,
-                          dl::DataLayout; valid_blocks=nothing, remark=nothing)
+                          dl::DataLayout; valid_blocks=nothing, remarks=nothing)
     empty!(info)
     info.allockind = alloc_kind(alloc)
     # a stack of (instruction, offset, its uses, the index of the next use)
@@ -278,8 +325,12 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
         cur[4] <= length(cur[3]) && push!(stack, cur)
         cur = (inst, offset, collect(inst.uses), 1)
     end
-    function escape!(name, inst, message)
-        remark === nothing || remark(name, inst, message)
+    function escape!(name, inst, message, key)
+        if remarks !== nothing
+            remark!(remarks, :missed, ESCAPE_REMARKS, name, inst) do
+                message, key => string(inst), ")"
+            end
+        end
         info.escaped = true
         return false
     end
@@ -342,14 +393,15 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
                     info.haserror = true
                     return true
                 end
-                return escape!("UnknownCall", inst, "Unknown call, marking escape ($(string(inst)))")
+                return escape!("UnknownCall", inst, "Unknown call, marking escape (", "Call")
             end
             info.haspreserve = true
             return true
         elseif inst isa StoreInst
             # only storing to the object counts, not storing its address
             if use.operand_index != 2
-                return escape!("StoreObjAddr", inst, "Object address is stored somewhere, marking escape ($(string(inst)))")
+                return escape!("StoreObjAddr", inst, "Object address is stored somewhere, marking escape (",
+                               "Store")
             end
             elty = inst.value_operand.value_type
             if offset == UNKNOWN_OFFSET
@@ -360,7 +412,8 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             return true
         elseif inst isa AtomicCmpXchgInst || inst isa AtomicRMWInst
             if use.operand_index != 1
-                return escape!("StoreObjAddr", inst, "Object address is cmpxchg/rmw-ed somewhere, marking escape ($(string(inst)))")
+                return escape!("StoreObjAddr", inst, "Object address is cmpxchg/rmw-ed somewhere, marking escape (",
+                               "Store")
             end
             info.hasload = true
             # the new value of a cmpxchg is its third operand, that of an atomicrmw its second
@@ -388,7 +441,7 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             info.returned = true
             return true
         end
-        return escape!("UnknownInst", inst, "Unknown instruction, marking escape ($(string(inst)))")
+        return escape!("UnknownInst", inst, "Unknown instruction, marking escape (", "Inst")
     end
 
     while true

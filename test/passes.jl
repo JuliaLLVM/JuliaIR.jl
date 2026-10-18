@@ -323,8 +323,12 @@ end
         end
         @test any(r -> r.kind === :passed && r.name == "Dead Allocation", remarks)
         @test any(r -> r.kind === :missed && r.name == "Escaped", remarks)
-        @test any(r -> r.kind === :missed && r.name == "UnknownCall", remarks)
-        @test all(r -> r.pass_name == "alloc-opt", remarks)
+        # the escape analysis has its own pass name, like in C++
+        unknown = only(filter(r -> r.name == "UnknownCall", remarks))
+        @test unknown.kind === :missed && unknown.pass_name == "escape-analysis"
+        @test unknown.message ==
+              "Unknown call, marking escape (  call void @external(ptr addrspace(10) %escaped))"
+        @test all(r -> r.pass_name == "alloc-opt", filter(r -> r !== unknown, remarks))
     end
 end
 

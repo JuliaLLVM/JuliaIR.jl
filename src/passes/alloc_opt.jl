@@ -167,8 +167,7 @@ end
 ## the optimizer
 
 function check_inst!(opt::AllocOpt, alloc::Instruction)
-    escape_analysis!(opt.info, alloc, opt.fns, opt.dl;
-                     remark=(name, inst, msg) -> remark(opt, :missed, name, inst, msg))
+    escape_analysis!(opt.info, alloc, opt.fns, opt.dl; remarks=opt.am)
 end
 
 function optimize_all!(opt::AllocOpt)
