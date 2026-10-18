@@ -385,7 +385,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
         p = CancellationLowering(opts, mod, f, fns, builder, dl,
                                  LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
                                  nothing, nothing, nothing, nothing, nothing, nothing)
-        p.pgcstack = get_pgcstack(fns, dialect, f)
+        p.pgcstack = get_pgcstack(dialect, f, fns.pgcstack_getter, fns.adoptthread)
         p.pgcstack isa Instruction && (p.pgcstack_inst = p.pgcstack)
 
         points = cancellation_points(p)

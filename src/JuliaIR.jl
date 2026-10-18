@@ -13,6 +13,7 @@ include("codegen_shared.jl")
 include("type_lowering.jl")
 
 include("allocations.jl")
+include("gc.jl")
 
 include("passes/remove_ni.jl")
 include("passes/alloc_opt.jl")
