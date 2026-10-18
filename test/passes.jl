@@ -530,14 +530,37 @@ end
 
     @testset "preserved analyses" begin
         # the analyses the pass keeps are those built from scratch for its result
-        pipeline(analysis) = "function(loop-mssa(jl-licm),print<$analysis>)"
-        fresh(analysis) =
-            "function(loop-mssa(jl-licm),invalidate<$analysis>,print<$analysis>)"
-        updated = printed(ir, pipeline("memoryssa"))
+        updated = printed(ir, "function(loop-mssa(jl-licm),print<memoryssa>)")
         @test occursin("call void @llvm.memset", updated)
-        @test updated == printed(ir, fresh("memoryssa"))
-        @test printed(ir, pipeline("scalar-evolution")) ==
-              printed(ir, fresh("scalar-evolution"))
+        @test updated ==
+              printed(ir, "function(loop-mssa(jl-licm),invalidate<memoryssa>,print<memoryssa>)")
+
+        # ScalarEvolution, queried before the pass, forgets what the pass invalidates:
+        # the loop disposition of the address of a field of a hoisted allocation
+        scev_ir = """
+            @tag = external addrspace(10) global {}, align 16
+            declare ptr @julia.get_pgcstack()
+            declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10)) allocsize(1)
+            define void @f(i1 %c) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              br label %loop
+            loop:
+              %i = phi i64 [ 0, %top ], [ %next, %loop ]
+              %local = call noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 16, ptr addrspace(10) @tag)
+              %field = getelementptr i8, ptr addrspace(10) %local, i64 8
+              store i64 %i, ptr addrspace(10) %field
+              %next = add i64 %i, 1
+              br i1 %c, label %exit, label %loop
+            exit:
+              ret void
+            }"""
+        updated = printed(scev_ir, "function(print<scalar-evolution>,loop-mssa(jl-licm)," *
+                                   "print<scalar-evolution>)")
+        @test occursin("LoopDispositions: { %loop: Invariant }", updated)
+        @test updated == printed(scev_ir, "function(print<scalar-evolution>," *
+                                          "loop-mssa(jl-licm),invalidate<scalar-evolution>," *
+                                          "print<scalar-evolution>)")
     end
 
     @testset "errors" begin
