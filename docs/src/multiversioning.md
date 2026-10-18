@@ -104,6 +104,11 @@ The port changes what the C++ pass does where it is wrong (S-D3, S-D22):
   throws a [`JuliaIR.MultiVersioningError`](@ref)
   before it changes the module.
 
+Julia runs the pass after the always-inliner, which removes the `available_externally`
+copies of `alwaysinline` functions that the partitions of an image get from each other.
+Run before it, the pass rejects them when they are relocated: they need a slot, but aren't
+in the partition's function table (the C++ pass reads a garbage index for them).
+
 What the port keeps: functions without a `julia.mv.clones` attribute call the first
 target's version of the functions they call, also when a target has a clone of it; and variadic functions'
 trampolines use `musttail` calls on every architecture, like Julia's release builds
