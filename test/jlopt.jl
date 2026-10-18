@@ -111,6 +111,12 @@ end
         """
     stderr = Pipe()
     cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`
+    # without core dumps: with a core pattern like `%e-pid%p.core`, each run would leave a
+    # core file of several hundred MB in the working directory
+    sh = Sys.iswindows() ? nothing : Sys.which("sh")
+    if sh !== nothing
+        cmd = `$sh -c 'ulimit -c 0 && exec "$@"' sh $cmd`
+    end
     proc = run(pipeline(ignorestatus(cmd); stdin=IOBuffer(ir), stdout=devnull, stderr);
                wait=false)
     close(stderr.in)

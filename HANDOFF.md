@@ -315,6 +315,9 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   Properties: `mod.datalayout`, `mod.triple`, `mod.name`, `v.name`.
 - `JuliaIR.register!` is not `LLVM.register!` (different arity; don't extend LLVM's).
 - `ignorestatus(pipeline(...))` fails before Julia 1.13: use `pipeline(ignorestatus(cmd); ...)`.
+- pegasus writes core files (~500 MB) into the crashing process's working directory: a test
+  that makes a process abort must spawn it under `sh -c 'ulimit -c 0 && exec "$@"'` (S32,
+  `test/jlopt.jl`). lit's `not --crash` already disables them.
 - lit test formats must live in an importable module (`juliair_lit.py`): classes defined
   in a lit config can't be pickled to lit's workers. Run lit with `python -B`, or
   Python 3.14's forkserver workers write `__pycache__` into the source tree. Not with
