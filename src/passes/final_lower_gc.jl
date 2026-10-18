@@ -42,6 +42,36 @@ function declare_runtime_functions!(p::FinalLowerGC)
     return [p.runtime[which] for which in runtime_functions(p.dialect)]
 end
 
+# The C++ pass calls an existing function of a runtime function's name whatever its type,
+# which gives invalid IR. Check what the functions in `functions` will call, before the
+# pass changes anything: the existing declarations, the calls of `julia.queue_gc_root`
+# (which become calls of the runtime's function), and on Julia master the intrinsic that
+# the write barriers call.
+function check_declarations(p::FinalLowerGC, functions)
+    mod = p.mod
+    for which in runtime_functions(p.dialect)
+        name, ft = gc_declaration(p, which)
+        existing = get(mod.functions, name, nothing)
+        existing === nothing || existing.function_type == ft ||
+            throw(DeclarationError(name, string(ft), string(existing.function_type)))
+    end
+    queue_root = get(mod.functions, "julia.queue_gc_root", nothing)
+    queue_root === nothing && return
+    name, ft = gc_declaration(p, :gc_queue_root)
+    if any(name -> has_use(mod, name), write_barrier_names(p.dialect))
+        queue_root.function_type == ft ||
+            throw(DeclarationError(LLVM.name(queue_root), string(ft),
+                                   string(queue_root.function_type)))
+    end
+    for use in LLVM.uses(queue_root)
+        call = LLVM.user(use)
+        call isa LLVM.CallInst && call.called_operand == queue_root || continue
+        LLVM.parent(LLVM.parent(call)) in functions || continue
+        call.called_type == ft ||
+            throw(DeclarationError(name, string(ft), string(call.called_type)))
+    end
+end
+
 # the intrinsics FinalLowerGC lowers
 const FINAL_GC_INTRINSICS = ("julia.new_gc_frame", "julia.get_gc_frame_slot",
                              "julia.push_gc_frame", "julia.pop_gc_frame",
@@ -273,6 +303,10 @@ end
 
 ## the pass
 
+function_gcstack(p::FinalLowerGC, f::LLVM.Function) =
+    get_pgcstack(p.dialect, f, get(p.mod.functions, "julia.get_pgcstack", nothing),
+                 get(p.mod.functions, "julia.get_pgcstack_or_new", nothing))
+
 # Lower the intrinsics in one function. Returns `:skipped` (no GC stack, or on Julia 1.13
 # and later no GC intrinsic in the module), `:changed`, or `:cfg_changed` (blocks were
 # split for write barriers). `declare` declares the runtime functions first, unless the
@@ -280,11 +314,13 @@ end
 function final_lower_gc_function!(p::FinalLowerGC, f::LLVM.Function; declare::Bool)
     dialect = p.dialect
     mod = p.mod
-    p.pgcstack = get_pgcstack(dialect, f, get(mod.functions, "julia.get_pgcstack", nothing),
-                              get(mod.functions, "julia.get_pgcstack_or_new", nothing))
+    p.pgcstack = function_gcstack(p, f)
     p.pgcstack === nothing && return :skipped
     dialect.gc_final_skip_unused && !should_run_final_gc(p) && return :skipped
-    declare && declare_runtime_functions!(p)
+    if declare
+        check_declarations(p, (f,))
+        declare_runtime_functions!(p)
+    end
     p.cfg_modified = false
 
     lookup(name) = get(mod.functions, name, nothing)
@@ -356,6 +392,13 @@ function final_lower_gc_module!(mod::LLVM.Module, am, opts::PassOptions)
     @dispose builder=IRBuilder() begin
         p = FinalLowerGC(dialect, mod, builder)
         functions = [f for f in mod.functions if !isdeclaration(f)]
+        # the functions with a GC stack are lowered (or skipped as a whole on Julia 1.13
+        # and later); check them all before lowering the first
+        lowered = filter(f -> function_gcstack(p, f) !== nothing, functions)
+        if dialect.gc_final_module || !isempty(lowered) &&
+                (!dialect.gc_final_skip_unused || should_run_final_gc(p))
+            check_declarations(p, lowered)
+        end
         if dialect.gc_final_module
             # Julia 1.10 declares the runtime functions in every module, and keeps them
             # from being removed while it runs (`doInitialization`, `doFinalization`)

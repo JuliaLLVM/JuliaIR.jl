@@ -934,6 +934,29 @@ end
         @test string(mod) == before
     end
 
+    # also when the mismatching declaration is not the first one the pass declares, or a
+    # call of `julia.queue_gc_root` comes after an intrinsic the pass already lowered
+    queue_ir = replace(frame_ir, "  call void @julia.safepoint(ptr %page)" =>
+        "  call void @julia.queue_gc_root(ptr %page)") * """
+
+        declare void @julia.queue_gc_root(ptr addrspace(10))"""
+    for (ir, name) in ((frame_ir * "\ndeclare void @ijl_gc_alloc_typed(ptr)", "ijl_gc_alloc_typed"),
+                       (queue_ir, "ijl_gc_queue_root")),
+        kind in (:module, :function)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            before = string(mod)
+            err = try
+                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                nothing
+            catch err
+                err
+            end
+            @test err isa PassException && err.ex isa JuliaIR.DeclarationError
+            @test err isa PassException && err.ex.name == name
+            @test string(mod) == before
+        end
+    end
+
     @testset "pool classes" begin
         # the runtime's size classes: every object up to `GC_MAX_SZCLASS` comes from a pool
         # whose objects fit it and its tag, the pools of larger objects come later
