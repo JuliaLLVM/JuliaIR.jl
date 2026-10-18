@@ -569,7 +569,8 @@ end
         end
     end
 
-    # vararg functions are called with musttail by their trampolines (also on ARM)
+    # vararg functions are called with musttail by their trampolines, also on ARM and
+    # PowerPC (like Julia's release builds; its assertions reject them there)
     vararg_ir = cloning_ir("""
         @a = alias void (i32, ...), ptr @f
         define void @f(i32 %x, ...) #0 {
@@ -577,7 +578,8 @@ end
         }
         attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
         """, ["f"])
-    for triple in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
+    for triple in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+                   "armv7l-unknown-linux-gnueabihf", "powerpc64le-unknown-linux-gnu")
         clone_module("target triple = \"$triple\"\n" * vararg_ir) do mod
             call = last(collect(mod.functions["a"].entry.instructions)).prev
             @test call.tailcall_kind == LLVM.TailCallKind.MustTail
@@ -651,10 +653,14 @@ end
         define void @n() #2 {
           ret void
         }
+        define void @r() #3 {
+          ret void
+        }
         attributes #0 = { "julia.mv.clones"="6" "julia.mv.reloc" }
         attributes #1 = { "julia.mv.clones"="2" }
         attributes #2 = { noinline optnone "julia.mv.clones"="6" }
-        """, ["f", "g", "n"])
+        attributes #3 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        """, ["f", "g", "n", "r"])
     clone_module(group_ir; targets=group_targets) do mod
         fs = mod.functions
         @test haskey(fs, "g.1") && !haskey(fs, "g.2")
@@ -662,10 +668,18 @@ end
         @test any(i -> i isa LoadInst, fs["g.1"].entry.instructions)
         @test haskey(fs["f.2"].function_attributes, :minsize)
         @test !haskey(fs["n.2"].function_attributes, :minsize)
+        # per target: the relocated functions f and r (tagged counts); for target 2, its
+        # base, f and r, which it relocates (tagged), and n, which it only has a clone of
+        tag(x) = "i32 $(reinterpret(Int32, UInt32(x) | 0x80000000))"
+        @test table(mod, "jl_clone_idxs") == [tag(2), "i32 0", "i32 3",
+                                              tag(2), "i32 0", "i32 3",
+                                              "i32 3", "i32 1", tag(0), "i32 2", tag(3)]
+        # target 2 relocates r to target 1's version, as it has none of its own
         if dialect.mv_tables === :offsets
-            @test length(table(mod, "jl_clone_offsets")) == 5
+            @test length(table(mod, "jl_clone_offsets")) == 7
         else
-            @test table(mod, "jl_clone_ptrs") == ["@f.1", "@g.1", "@n.1", "@f.2", "@n.2"]
+            @test table(mod, "jl_clone_ptrs") ==
+                  ["@f.1", "@g.1", "@n.1", "@r.1", "@f.2", "@n.2", "@r.1"]
         end
     end
 
