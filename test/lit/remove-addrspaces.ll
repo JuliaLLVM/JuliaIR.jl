@@ -15,7 +15,7 @@
 ; LEDGER: jlopt jl-remove-addrspaces
 ; LEDGER-NEXT: pass jl-remove-addrspaces julia=
 
-; Identified structs that contain something are recreated, also when nothing in them
+; Identified structs that have a body are recreated, also when nothing in them
 ; changes, and take the name of the old one (which is renamed `.bad` and no longer
 ; appears); opaque structs are kept
 ; CHECK-DAG: %list = type { i64, ptr }

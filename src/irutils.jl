@@ -11,7 +11,7 @@ end
 
 is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 
-# Pointer types, by their reference: LLVM.jl doesn't wrap scalable vector types.
+# Pointer types, by their reference, without wrapping the type of every value.
 function scalar_typeref(ty::API.LLVMTypeRef)
     kind = API.LLVMGetTypeKind(ty)
     vector = kind == API.LLVMVectorTypeKind || kind == API.LLVMScalableVectorTypeKind

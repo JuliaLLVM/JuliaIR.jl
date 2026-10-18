@@ -8,7 +8,7 @@
 # Types can't be changed in place, so every global variable, alias and function is
 # recreated with the mapped types (the old one is renamed `<name>.bad` and deleted at the
 # end), and the bodies, initializers, aliasees and metadata are mapped onto the new ones
-# with one value map. Identified structs that contain something are recreated as well,
+# with one value map. Identified structs that have a body are recreated as well,
 # taking the name of the old one, which is renamed `<name>.bad` (in the whole context).
 
 # The type remapper (C++ `AddrspaceRemoveTypeRemapper`): maps the pointer types in a type,
@@ -304,7 +304,7 @@ intrinsics are renamed after their new types (`llvm.memcpy.p10.p10.i64` becomes
 `llvm.memcpy.p0.p0.i64`).
 
 The pass recreates every global variable, alias and function of the module, and every
-identified struct type that contains something; the old struct types are renamed
+identified struct type that has a body; the old struct types are renamed
 `<name>.bad`, also for other modules of the same context. References to the global
 values of the module taken before the pass are invalid afterwards: look them up by name
 again.

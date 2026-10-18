@@ -41,8 +41,9 @@ array, vector and literal struct types are rebuilt from their mapped elements. A
 identified struct (`%T = type { ... }`) that has a body is always recreated, also when
 nothing in it changes, and the new struct takes the name of the old one, which is renamed
 `%T.bad`. Structs live in the LLVM context, not the module, so other modules of the same
-context that use `%T` then refer to `%T.bad`. Opaque structs and types without pointers in
-them, like target extension types (`target("spirv.Event")`), are kept.
+context that use `%T` then refer to `%T.bad`. Opaque structs and the other kinds of types
+(integers, floating-point types, target extension types like `target("spirv.Event")`, ...)
+are kept.
 
 As every global value is replaced, references to the global values of the module (and to
 anything in them) taken before the pass are invalid afterwards; look them up by name
