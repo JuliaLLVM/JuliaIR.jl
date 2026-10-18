@@ -25,6 +25,7 @@ read it first, including its Log). This file says where things are and how to co
 | S19 CancellationLowering (`jl-cancellation-lowering`) | done, branch `tb/s19-cancellation-lowering` (on S26) | see `git log` |
 | S30 AllocOpt on arrays/vectors of references, stale LLVM.jl API audit, Base corpus run | done, branch `tb/s30-allocopt-eltype` (on S19) | see `git log` |
 | S14 type lowering (`julia_type`, `isboxed`, `julia_struct_type`, `deserves_*`, `check_layout`) | done, branch `tb/s14-type-lowering` (on S32) | see `git log` |
+| S12 differential harness (`test/differential/`) | done, branch `tb/s12-differential` (on S14) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -198,6 +199,33 @@ Base and stdlibs found no difference on any version). The cross-library variant 
 bitcode-carrier test needs LLVM.jl's multi-library support (S11); for now the carrier goes
 between two contexts of Julia's LLVM.
 
+S12 details: `test/differential/` (not part of `Pkg.test()`; docs/src/testing.md has the
+user's view). `run.jl` runs each `PassSpec` of `passes.jl` (C++ pass and port, by Julia's
+name; prefixes from `prefix_pipeline`; optional preparation, remarks, retries for
+nondeterministic C++, `aborts` for the verifier) on every input module, in a worker
+process that the supervisor restarts after a crash or hang (the in-flight job is
+recorded from the worker log). Outputs are compared after removing local names and
+inlining attribute groups. An entry of `exceptions.toml` rewrites one side's output
+(deletes or replaces what its regex matches), and a difference is excepted only if the
+outputs are identical after the rewrites that apply; `canonicalize` names a rewrite in
+`CANONICALIZATIONS` (the GC frame slot order); `accept` entries take differences that
+can't be rewritten away (invalid C++ IR, S-D30's escape analysis) without comparing
+them, counted as `accepted`. A pass compared on nothing fails the run. `corpus.jl` writes the
+`code_llvm` corpus, `gpucompiler/corpus.jl` (own environment: registered GPUCompiler and
+LLVM.jl) the GPU modules, one target per process. `all.sh WORKDIR` does everything for
+every juliaup channel, with core dumps disabled; `run.jl --report --out DIR ...`
+re-reports after editing the exceptions (the worker keeps both outputs of every
+difference). `test/differential` is a workspace project (no new packages); on 1.10/1.11
+all.sh develops JuliaIR into a versioned manifest there. Adding a port: one `PassSpec`
+(one per configuration for a pass with options, like `GCInvariantVerifier<strong>`).
+The differential found CancellationLowering inserting the task field addresses of a GC
+stack argument after the entry's `#dbg_value` records where the C++ (`entry.begin()`,
+which keeps the iterator's head bit when no alloca is skipped) inserts them before;
+fixed on this branch (`test/lit/cancellation-lowering-debug-records.ll`). CI's
+`upstream` job runs the differential on 1.12 and nightly (fixtures, `code_llvm` corpus,
+`inputs/`; no GPUCompiler), about 4.5 minutes locally on 1.12; the `llvm-dev` action
+also strips `test/differential`'s `[sources]` and copies the preferences there.
+
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
 `[sources]` (root and `test/`) and the default `ref` of `.github/actions/llvm-dev`
@@ -304,11 +332,9 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
    to report it with a backtrace, `jl-late-gc-cleanup` throws `UnsupportedInputError`;
    GPUCompiler should turn that into its IR errors.
-3. A differential check like the one used for S4 and S5 (C++ pass vs port, in-process, on
-   every pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found
-   the only real differences, including two C++ bugs; S12 should formalize it with
-   GPUCompiler's kernels. For a verifier-like pass that aborts, run the C++ side in a
-   `bin/jlopt` subprocess for the inputs the port rejects.
+3. The differential (S12, `test/differential/`) replaces the per-item scratch scripts:
+   a new port adds a `PassSpec` to `test/differential/passes.jl`, runs `all.sh`, and
+   records its decided deviations in `exceptions.toml`.
 4. Tim's call: report upstream that PropagateJuliaAddrspaces redeclares `llvm.memset`
    with the value operand's type as the length overload (invalid call), on every version.
 
@@ -454,6 +480,17 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 - Julia's C++ LowerSIMDLoop only reports remarks with
   `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
   "-pass-remarks-analysis=lower_simd_loop")`.
+
+- The differential's worker runs Julia's C++ passes, which abort the process on IR they
+  reject (GCInvariantVerifier) or crash on; an uncaught Julia error in the worker is a
+  harness bug and stops the run (`ERROR: LoadError` in the worker log).
+- GPUCompiler 2.15 segfaults in its own InstCombine run for GCN on Julia 1.10 and 1.11
+  (`gcn.jl:127`), so the GPU corpus is generated one target per process.
+- LLVM.jl's `PassException` wraps a port's error: its `ex` field has the original.
+- `functions`, `parameters`, `blocks`, `instructions`, `isdeclaration` aren't exported by
+  LLVM.jl 10: qualify them (`LLVM.functions(mod)`).
+- The worktree sandbox refuses shell commands that mention `GIT_VERSION_INFO`, or `git`
+  in complex forms; put such Julia code in a script file.
 
 ## Decisions (Tim, 2026-10-17)
 
