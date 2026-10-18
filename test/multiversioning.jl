@@ -394,4 +394,365 @@ flag_count(mod, name) =
     end
 end
 
+
+# An annotated module for cloning: `ir` with the function table `fvars` (and an empty
+# `jl_gvars` for Julia 1.10), for the targets `two_targets` unless the module flags say
+# otherwise
+two_targets = [MultiVersioningTarget("base", "+base"),
+               MultiVersioningTarget("math", "+math"; clone=(:math,))]
+function cloning_ir(ir::String, fvars::Vector{String}; flags::Vector{String}=String[],
+                    tables::Bool=true)
+    entries = join(("ptr @$f" for f in fvars), ", ")
+    head = tables ? """
+        @jl_fvars = hidden constant [$(length(fvars)) x ptr] [$entries]
+        @jl_fvar_idxs = global [1 x i32] zeroinitializer
+        @jl_gvars = hidden constant [0 x ptr] zeroinitializer
+        @jl_gvar_idxs = global [1 x i32] zeroinitializer
+        """ : ""
+    annotated = """!{i32 1, !"julia.mv.annotated", i32 1}"""
+    return head * ir * mv_flags(annotated, flags...)
+end
+
+# Clone a module for the IR of Julia version `d` (by calling the pass's implementation, as
+# the pass itself uses the running Julia's), and return what `f` says about the result.
+function clone_module(f, ir::String, d::Dialect=dialect; targets=two_targets, external=false,
+               datalayout=nothing)
+    @dispose ctx=Context(; opaque_pointers=true) begin
+        mod = parse(LLVM.Module, ir)
+        try
+            datalayout === nothing || (mod.datalayout = datalayout)
+            JuliaIR.set_target_specs!(mod, targets, d)
+            JuliaIR.run_multiversioning!(mod, nothing, d, external, MultiVersioningTarget[])
+            verify(mod)
+            return f(mod)
+        finally
+            dispose(mod)
+        end
+    end
+end
+
+# the elements of an array initializer, as text (global values by name)
+function table(mod, name)
+    init = mod.globals[name].initializer
+    elements = (Value(LLVM.API.LLVMGetAggregateElement(init, i))
+                for i in 0:init.value_type.length-1)
+    return [e isa GlobalValue ? "@" * e.name : string(e) for e in elements]
+end
+
+@testset "cloning" begin
+    # `f` is cloned and called by `g`; `h` is in a global initializer
+    ir = cloning_ir("""
+        @gv = global { i64, ptr } { i64 1, ptr @h }
+        define void @f() #0 {
+          ret void
+        }
+        define void @g() #1 {
+          call void @f()
+          ret void
+        }
+        define void @h() #2 {
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        attributes #1 = { "julia.mv.clones"="0" }
+        attributes #2 = { "julia.mv.clones"="2" "julia.mv.fvar" }
+        """, ["f", "g", "h"])
+    for d in dialects
+        clone_module(ir, d) do mod
+            fs = mod.functions
+            @test haskey(fs, "f.1") && haskey(fs, "h.1") && !haskey(fs, "g.1")
+            @test attribute(fs["f.1"], "target-cpu") == "math"
+            @test attribute(fs["f.1"], "julia.mv.clone") == "1"
+            @test attribute(fs["f"], "target-features") == "+base"
+            # g calls f through its slot, which the loader fills in with f or f.1
+            slot = mod.globals["f.reloc_slot"]
+            @test any(i -> i isa LoadInst && i.operands[1] == slot,
+                      fs["g"].entry.instructions)
+            # Julia 1.12 and later initialize the runtime when the slot is called first
+            if d.mv_autoinit
+                @test slot.initializer == fs["f.autoinit_trampoline"]
+            else
+                @test LLVM.isnull(slot.initializer)
+            end
+            # the global is written by the loader too
+            @test string(mod.globals["gv"].initializer) == "{ i64, ptr } { i64 1, ptr null }"
+            if d.mv_tables === :offsets
+                @test haskey(mod.aliases, "jl_fvar_base")
+                @test table(mod, "jl_fvar_offsets")[1:2] == ["i32 3", "i32 0"]
+                @test table(mod, "jl_gvar_offsets") == ["i32 0"]
+                @test length(table(mod, "jl_clone_offsets")) == 2
+                @test !haskey(mod.globals, "jl_gvars")
+            else
+                @test mod.globals["jl_fvar_count"].initializer == ConstantInt(Int64(3))
+                @test table(mod, "jl_fvar_ptrs") == ["@f", "@g", "@h"]
+                @test table(mod, "jl_clone_ptrs") == ["@f.1", "@h.1"]
+                @test haskey(mod.globals, "jl_gvars")   # not a table there
+            end
+            # two relocations (the slot of f, and the global's pointer to h at offset 8)
+            slots = table(mod, "jl_clone_slots")
+            @test slots[1] == "i32 2" && slots[2] == "i32 0" && slots[4] == "i32 2"
+            @test occursin("i64 8", slots[5])
+            # target 0 lists the relocated functions, target 1 its base and its clones,
+            # with the relocated ones tagged
+            tag(i) = "i32 $(reinterpret(Int32, 0x80000000 | UInt32(i)))"
+            @test table(mod, "jl_clone_idxs") == [tag(2), "i32 0", "i32 2",
+                                                  "i32 2", "i32 0", tag(0), tag(2)]
+        end
+    end
+
+    # with a suffix, the tables are named after it
+    suffixed = replace(ir, "!llvm.module.flags = !{" => "!llvm.module.flags = !{!99, ") *
+               """!99 = !{i32 1, !"julia.mv.suffix", !"_sfx"}\n"""
+    clone_module(suffixed) do mod
+        @test haskey(mod.globals, "jl_clone_idxs_sfx") && haskey(mod.globals, "jl_fvar_idxs_sfx")
+        @test !haskey(mod.globals, "jl_clone_idxs")
+    end
+
+    # Julia 1.10 truncates the offsets of 32-bit IR when it runs on a 64-bit host, which is
+    # invalid IR; the port goes by the module's pointer size
+    clone_module(ir, dialects[1]; datalayout="e-p:32:32-i64:64-n8:16:32-S128") do mod
+        @test !any(occursin("trunc", e) for e in table(mod, "jl_clone_offsets"))
+        @test !any(occursin("trunc", e) for e in table(mod, "jl_clone_slots"))
+    end
+
+    # aliases become trampolines that call through the slot, with the calling convention
+    # and the attributes of the function (also before Julia 1.13), and their uses call
+    # the trampoline
+    alias_ir = cloning_ir("""
+        @a = alias void (ptr), ptr @f
+        define cc 10 void @f(ptr byval(i64) "julia.return_roots"="1" %x) #0 {
+          ret void
+        }
+        define void @user(ptr %p) #1 {
+          call cc 10 void @a(ptr byval(i64) %p)
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        attributes #1 = { "julia.mv.clones"="0" }
+        """, ["f", "user"])
+    for d in dialects
+        clone_module(alias_ir, d) do mod
+            a = mod.functions["a"]
+            @test attribute(a, "julia.mv.alias") == ""
+            @test !haskey(mod.aliases, "a")
+            call = last(collect(a.entry.instructions)).prev
+            @test call.callconv == 10
+            @test haskey(call.argument_attributes[1], :byval)
+            @test !haskey(call.argument_attributes[1], "julia.return_roots")
+            user_call = first(mod.functions["user"].entry.instructions)
+            @test user_call isa CallInst && user_call.called_operand == a
+        end
+    end
+
+    # vararg functions are called with musttail by their trampolines (also on ARM)
+    vararg_ir = cloning_ir("""
+        @a = alias void (i32, ...), ptr @f
+        define void @f(i32 %x, ...) #0 {
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        """, ["f"])
+    for triple in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
+        clone_module("target triple = \"$triple\"\n" * vararg_ir) do mod
+            call = last(collect(mod.functions["a"].entry.instructions)).prev
+            @test call.tailcall_kind == LLVM.TailCallKind.MustTail
+        end
+    end
+
+    # Uses through constant expressions and aggregates become instructions, and phi
+    # operands are loaded in the incoming block.
+    uses_ir = cloning_ir("""
+        define void @f() #0 {
+          ret void
+        }
+        define ptr @user(i1 %c, ptr %p) #1 {
+        top:
+          store i64 add (i64 ptrtoint (ptr @f to i64), i64 1), ptr %p
+          store { ptr, i64 } { ptr @f, i64 1 }, ptr %p
+          store <2 x ptr> <ptr null, ptr @f>, ptr %p
+          br i1 %c, label %a, label %b
+        a:
+          br label %join
+        b:
+          br label %join
+        join:
+          %r = phi ptr [ @f, %a ], [ null, %b ]
+          ret ptr %r
+        }
+        attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        attributes #1 = { "julia.mv.clones"="0" }
+        """, ["f", "user"])
+    clone_module(uses_ir) do mod
+        user = mod.functions["user"]
+        slot = mod.globals["f.reloc_slot"]
+        loads = [i for bb in user.blocks for i in bb.instructions
+                 if i isa LoadInst && i.operands[1] == slot]
+        @test length(loads) == 4
+        @test any(i -> i isa InsertValueInst, user.entry.instructions)
+        @test any(i -> i isa InsertElementInst, user.entry.instructions)
+        @test any(i -> i isa PtrToIntInst, user.entry.instructions)
+        a = only(bb for bb in user.blocks if bb.name == "a")
+        @test first(a.instructions) isa LoadInst
+        @test all(u -> !(u.user isa Instruction), mod.functions["f"].uses)
+    end
+
+    # functions that are declared get slots of their own, which the loader fills in
+    extern_ir = cloning_ir("""
+        declare void @ext() #0
+        define void @user() #1 {
+          call void @ext()
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+        attributes #1 = { "julia.mv.clones"="0" }
+        """, ["user"])
+    clone_module(extern_ir) do mod
+        @test isdeclaration(mod.functions["ext.1"])
+        @test isdeclaration(mod.globals["ext.reloc_slot"])
+    end
+
+    # targets that clone everything, and targets based on them
+    group_targets = [MultiVersioningTarget("base", ""),
+                     MultiVersioningTarget("all", ""; clone_all=true),
+                     MultiVersioningTarget("part", ""; base=1, min_size=true, clone=(:math,))]
+    group_ir = cloning_ir("""
+        define void @f() #0 {
+          ret void
+        }
+        define void @g() #1 {
+          call void @f()
+          ret void
+        }
+        define void @n() #2 {
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="6" "julia.mv.reloc" }
+        attributes #1 = { "julia.mv.clones"="2" }
+        attributes #2 = { noinline optnone "julia.mv.clones"="6" }
+        """, ["f", "g", "n"])
+    clone_module(group_ir; targets=group_targets) do mod
+        fs = mod.functions
+        @test haskey(fs, "g.1") && !haskey(fs, "g.2")
+        # g.1 calls f.1 or f.2 through the slot
+        @test any(i -> i isa LoadInst, fs["g.1"].entry.instructions)
+        @test haskey(fs["f.2"].function_attributes, :minsize)
+        @test !haskey(fs["n.2"].function_attributes, :minsize)
+        if dialect.mv_tables === :offsets
+            @test length(table(mod, "jl_clone_offsets")) == 5
+        else
+            @test table(mod, "jl_clone_ptrs") == ["@f.1", "@g.1", "@n.1", "@f.2", "@n.2"]
+        end
+    end
+
+    # `external`: entries of the function table that aren't definitions are left out
+    # (the C++ pass leaves out every entry after the first of them), and modules without
+    # a table are only annotated
+    external_ir = cloning_ir("""
+        declare void @decl()
+        define void @f() #0 {
+          ret void
+        }
+        define void @g() #0 {
+          ret void
+        }
+        attributes #0 = { "julia.mv.clones"="2" }
+        """, ["f", "decl", "g"])
+    @test_throws "entry that is not a function" clone_module(identity, replace(external_ir, "ptr @decl" => "ptr null"))
+    clone_module(external_ir, dialects[2]; external=true) do mod
+        @test table(mod, "jl_fvar_ptrs") == ["@f", "@g"]
+    end
+    no_table = cloning_ir("define void @f() #0 {\n  ret void\n}\n" *
+                          """attributes #0 = { "julia.mv.clones"="2" }\n""", String[];
+                          tables=false)
+    @test_throws "jl_fvars is missing" clone_module(identity, no_table)
+    clone_module(no_table; external=true) do mod
+        @test !haskey(mod.functions, "f.1")
+    end
+end
+
+@testset "malformed input" begin
+    # nothing changes before the error
+    function rejects(msg, ir::String, d::Dialect=dialect; targets=two_targets)
+        @dispose ctx=Context(; opaque_pointers=true) begin
+            mod = parse(LLVM.Module, ir)
+            JuliaIR.set_target_specs!(mod, targets, d)
+            before = string(mod)
+            err = try
+                JuliaIR.run_multiversioning!(mod, nothing, d, false, MultiVersioningTarget[])
+                nothing
+            catch err
+                err
+            end
+            @test err isa MultiVersioningError && occursin(msg, err.msg)
+            @test string(mod) == before
+            dispose(mod)
+        end
+    end
+    f_ir(attrs="\"julia.mv.clones\"=\"2\" \"julia.mv.reloc\"") = """
+        define void @f() #0 {
+          ret void
+        }
+        attributes #0 = { $attrs }
+        """
+
+    rejects("jl_fvar_idxs is missing",
+            replace(cloning_ir(f_ir(), ["f"]), r"@jl_fvar_idxs = .*\n" => ""))
+    rejects("jl_gvars is missing",
+            replace(cloning_ir(f_ir(), ["f"]), r"@jl_gvars = .*\n" => ""), dialects[1])
+    rejects("jl_fvars is used",
+            cloning_ir(f_ir() * "@user = global ptr @jl_fvars\n", ["f"]))
+    rejects("is zero-initialized",
+            replace(cloning_ir(f_ir(), ["f"]), "[ptr @f]" => "zeroinitializer"))
+    rejects("not a string", replace(cloning_ir(f_ir(), ["f"]),
+        "!llvm.module.flags = !{" => "!llvm.module.flags = !{!99, ") *
+        """!99 = !{i32 1, !"julia.mv.suffix", i32 1}\n""")
+    rejects("julia.mv.reloc attribute, but no julia.mv.clones",
+            cloning_ir(f_ir("\"julia.mv.reloc\""), ["f"]))
+    rejects("f needs a relocation, but is not in the table",
+            cloning_ir(f_ir() * "define void @g() {\n  ret void\n}\n", ["g"]))
+
+    # every function needs a version for targets that clone everything
+    all_targets = [MultiVersioningTarget("base", ""),
+                   MultiVersioningTarget("all", ""; clone_all=true)]
+    rejects("f is not cloned for target 1 (all)",
+            cloning_ir(f_ir("\"julia.mv.fvar\""), ["f"]); targets=all_targets)
+
+    # calls from cloned functions go through the slot of the callee
+    rejects("f is called by g, which is cloned, but has no julia.mv.reloc",
+            cloning_ir(f_ir("\"julia.mv.clones\"=\"2\"") * """
+                define void @g() #1 {
+                  call void @f()
+                  ret void
+                }
+                attributes #1 = { "julia.mv.clones"="2" }
+                """, ["f", "g"]))
+
+    # global values that refer to a cloned function
+    rejects("through a constant that changes its address",
+            cloning_ir(f_ir() * "@gv = global i64 add (i64 ptrtoint (ptr @f to i64), i64 1)\n",
+                       ["f"]))
+    rejects("a constant global variable",
+            cloning_ir(f_ir() * "@gv = constant ptr @f\n", ["f"]))
+    rejects("used by llvm.compiler.used", cloning_ir(f_ir() *
+        "@llvm.compiler.used = appending global [1 x ptr] [ptr @f], section \"llvm.metadata\"\n",
+        ["f"]))
+    rejects("an alias, and has no julia.mv.reloc",
+            cloning_ir(f_ir("\"julia.mv.clones\"=\"2\"") * "@a = alias void (), ptr @f\n",
+                       ["f"]))
+    rejects("an alias, and has vector arguments",
+            cloning_ir("""
+                define <4 x float> @f(<4 x float> %x) #0 {
+                  ret <4 x float> %x
+                }
+                attributes #0 = { "julia.mv.clones"="2" "julia.mv.reloc" }
+                @a = alias <4 x float> (<4 x float>), ptr @f
+                """, ["f"]))
+    rejects("neither a global variable nor an alias",
+            cloning_ir(f_ir() * """
+                define void @p() personality ptr @f {
+                  ret void
+                }
+                """, ["f", "p"]))
+end
+
 end

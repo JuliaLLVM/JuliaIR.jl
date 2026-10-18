@@ -559,6 +559,797 @@ function annotate!(mod::LLVM.Module, sets::CloneSets, has_veccall_flag::Bool)
 end
 
 
+## checks
+
+# Whether a module has a table like `jl_fvars` that the `external` option accepts: one
+# with an array of constants (which rules out a zero initializer, like the C++ pass).
+function has_table(mod::LLVM.Module, name::String)
+    gv = get(mod.globals, name, nothing)
+    gv === nothing && return false
+    API.LLVMGetInitializer(gv) != C_NULL || return false
+    return API.LLVMIsAConstantArray(API.LLVMGetInitializer(gv)) != C_NULL
+end
+
+function check_table(mod::LLVM.Module, name::String, external::Bool, functions::Bool)
+    err(what) = throw(MultiVersioningError("the table $name $what"))
+    gv = get(mod.globals, name, nothing)
+    gv === nothing && err("is missing")
+    init = API.LLVMGetInitializer(gv)
+    init == C_NULL && err("has no initializer")
+    API.LLVMGetTypeKind(API.LLVMTypeOf(init)) == API.LLVMArrayTypeKind ||
+        err("is not an array")
+    API.LLVMGetFirstUse(gv) == C_NULL || err("is used")
+    if API.LLVMIsAConstantArray(init) == C_NULL
+        API.LLVMIsNull(init) != 0 || err("is not an array of constants")
+        API.LLVMGetArrayLength(API.LLVMTypeOf(init)) == 0 ||
+            err("is zero-initialized, so it has entries that are not functions")
+        return
+    end
+    functions || return
+    for i in 0:API.LLVMGetNumOperands(init)-1
+        val = Value(API.LLVMExtraStripPointerCasts(API.LLVMGetOperand(init, i)))
+        val isa LLVM.Function || external ||
+            err("has an entry that is not a function (entry $i)")
+    end
+end
+
+# The checks for what the C++ pass asserts or crashes on, before the module is changed
+# (S-D22). Returns whether to clone the module, rather than only annotate it, which
+# `external` does for modules without a usable `jl_fvars` table.
+function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
+                       sets::CloneSets, dialect::Dialect, external::Bool)
+    offsets = dialect.mv_tables === :offsets
+    if external && !(has_table(mod, "jl_fvars") && (!offsets || has_table(mod, "jl_gvars")))
+        return false
+    end
+    check_table(mod, "jl_fvars", external, true)
+    offsets && check_table(mod, "jl_gvars", external, false)
+
+    fvars = Set(LLVM.Function[f for f in table_elements(mod.globals["jl_fvars"], external)])
+    if !(external && isempty(fvars))
+        haskey(mod.globals, "jl_fvar_idxs") ||
+            throw(MultiVersioningError("the table jl_fvar_idxs is missing"))
+        offsets && !haskey(mod.globals, "jl_gvar_idxs") &&
+            throw(MultiVersioningError("the table jl_gvar_idxs is missing"))
+        suffix = module_flag(mod, "julia.mv.suffix")
+        suffix === nothing || suffix.value isa MDString ||
+            throw(MultiVersioningError("the module flag julia.mv.suffix is not a string"))
+    end
+
+    function_index(f) = f in fvars ||
+        throw(MultiVersioningError("$(f.name) needs a relocation, but is not in the table jl_fvars"))
+    for f in sets.reloc
+        haskey(sets.clones, f) ||
+            throw(MultiVersioningError("$(f.name) has a julia.mv.reloc attribute, but no julia.mv.clones attribute"))
+        isdeclaration(f) || function_index(f)
+    end
+
+    # the functions that targets that clone everything need a version of
+    for (i, t) in enumerate(targets)
+        i > 1 && t.clone_all || continue
+        uncloned(f) = !get(sets.clones, f, falses(i))[i]
+        for f in mod.functions
+            (!isdeclaration(f) || haskey(sets.clones, f) || f in fvars) && uncloned(f) &&
+                throw(MultiVersioningError("$(f.name) is not cloned for target $(i-1) ($(t.cpu)), which clones every function"))
+        end
+    end
+
+    for (f, clones) in sets.clones
+        # uses by instructions of versions that call the version the image loader picks
+        # (`fix_inst_uses`)
+        if any(clones[i] && !targets[i].clone_all for i in 2:length(targets)) &&
+           !(f in sets.reloc)
+            walk = constant_uses(f, mod, Instruction)
+            while !isdone(walk)
+                user_f = use_info(walk).user.parent.parent
+                haskey(sets.clones, user_f) &&
+                    throw(MultiVersioningError("$(f.name) is called by $(user_f.name), which is cloned, but has no julia.mv.reloc attribute"))
+                next!(walk)
+            end
+        end
+        # uses by global values other than the tables, which cloning takes out of the
+        # module first (`fix_gv_uses`)
+        walk = constant_uses(f, mod, GlobalValue)
+        while !isdone(walk)
+            info = use_info(walk)
+            user = info.user
+            if user.name == "jl_fvars" || offsets && user.name == "jl_gvars"
+                next!(walk)
+                continue
+            end
+            what = "$(f.name) is cloned, but used by $(user.name)"
+            info.samebits ||
+                throw(MultiVersioningError("$what through a constant that changes its address"))
+            if user isa GlobalAlias
+                f in sets.reloc ||
+                    throw(MultiVersioningError("$what, an alias, and has no julia.mv.reloc attribute"))
+                is_vector_function(API.LLVMGlobalGetValueType(f)) &&
+                    throw(MultiVersioningError("$what, an alias, and has vector arguments or results"))
+            elseif user isa GlobalVariable
+                user.constant &&
+                    throw(MultiVersioningError("$what, a constant global variable"))
+                user.name in ("llvm.used", "llvm.compiler.used") &&
+                    throw(MultiVersioningError("$what"))
+                function_index(f)
+            else
+                throw(MultiVersioningError("$what, which is neither a global variable nor an alias"))
+            end
+            next!(walk)
+        end
+    end
+    return true
+end
+
+
+## cloning
+
+# A target and its value map, which maps the functions of its group's base to the target's
+# clones of them (and, once cloned, their contents).
+struct CloneTarget
+    idx::Int
+    vmap::ValueMap
+end
+
+# The first target or one that clones every function, and the targets that clone some
+# functions and otherwise use its versions.
+struct CloneGroup
+    base::CloneTarget
+    clones::Vector{CloneTarget}
+end
+
+# a value map entry, treating the identity entries that cloning adds for the global values
+# it doesn't change as missing (`map_get`)
+function map_get(vmap::ValueMap, @nospecialize(key::Value))
+    val = get(vmap, key, nothing)
+    return val === nothing || val == key ? nothing : val
+end
+
+# the group's version of a function
+base_func(grp::CloneGroup, f::LLVM.Function) =
+    grp.base.idx == 0 ? f : grp.base.vmap[f]::LLVM.Function
+
+has_subtarget_clone(grp::CloneGroup, f::LLVM.Function) =
+    any(t -> map_get(t.vmap, base_func(grp, f)) !== nothing, grp.clones)
+
+mutable struct CloneCtx
+    mod::LLVM.Module
+    dialect::Dialect
+    tbaa_const::MDNode
+    targets::Vector{MultiVersioningTarget}
+    sets::CloneSets
+    groups::Vector{CloneGroup}
+    # the targets by index (from 1): a group base or a clone in a group
+    linearized::Vector{CloneTarget}
+    # the group of each target
+    group_of::Vector{CloneGroup}
+    # the function table `jl_fvars`, and the index of each of its functions (from 1)
+    fvars::Vector{LLVM.Function}
+    func_ids::Dict{LLVM.Function,Int}
+    # Julia 1.10: the global variable table `jl_gvars`
+    gvars::Vector{Constant}
+    T_size::LLVMType
+    # the functions with a body or clones, in module order
+    orig_funcs::Vector{LLVM.Function}
+    # addresses in global initializers to write the address of a function to, with the
+    # function's index in `fvars` (from 0)
+    gv_relocs::Vector{Tuple{Constant,Int}}
+    # the relocation slots of functions defined in the module, by index in `fvars` (from
+    # 0), and of functions defined elsewhere
+    const_relocs::Dict{Int,GlobalVariable}
+    extern_relocs::Dict{LLVM.Function,GlobalVariable}
+    external::Bool
+    builder::IRBuilder
+end
+
+function target_groups(targets::Vector{MultiVersioningTarget})
+    groups = CloneGroup[CloneGroup(CloneTarget(0, ValueMap()), CloneTarget[])]
+    group_of = Vector{CloneGroup}(undef, length(targets))
+    group_of[1] = groups[1]
+    for i in 2:length(targets)
+        t = targets[i]
+        if t.clone_all
+            push!(groups, CloneGroup(CloneTarget(i - 1, ValueMap()), CloneTarget[]))
+            group_of[i] = groups[end]
+        else
+            group_of[i] = group_of[t.base+1]
+            push!(group_of[i].clones, CloneTarget(i - 1, ValueMap()))
+        end
+    end
+    linearized = Vector{CloneTarget}(undef, length(targets))
+    for grp in groups
+        for t in grp.clones
+            linearized[t.idx+1] = t
+        end
+        linearized[grp.base.idx+1] = grp.base
+    end
+    return groups, linearized, group_of
+end
+
+# The elements of a table like `jl_fvars` (an array of pointers), with casts stripped. With
+# `external`, entries that aren't function definitions are left out, as happens in reduced
+# test cases (the C++ pass drops every entry after the first such one; S-D22(5)).
+function table_elements(gv::GlobalVariable, external::Bool)
+    init = gv.initializer
+    n = init.value_type.length
+    API.LLVMIsNull(init) != 0 &&
+        return Constant[null(init.value_type.element_type) for _ in 1:n]
+    elements = Constant[]
+    for i in 0:n-1
+        val = Value(API.LLVMExtraStripPointerCasts(API.LLVMGetOperand(init, i)))::Constant
+        external && !(val isa LLVM.Function && !isdeclaration(val)) && continue
+        push!(elements, val)
+    end
+    return elements
+end
+
+# take a table out of the module, so that it doesn't show up as a use (`consume_gv`)
+function consume_table!(gv::GlobalVariable)
+    init = gv.initializer
+    erase!(gv)
+    if API.LLVMIsNull(init) == 0 && API.LLVMGetFirstUse(init) == C_NULL
+        API.LLVMDestroyConstant(init)
+    end
+    return
+end
+
+function CloneCtx(mod::LLVM.Module, targets::Vector{MultiVersioningTarget}, sets::CloneSets,
+                  dialect::Dialect, external::Bool, builder::IRBuilder)
+    groups, linearized, group_of = target_groups(targets)
+    fvars_gv = mod.globals["jl_fvars"]
+    fvars = LLVM.Function[f for f in table_elements(fvars_gv, external)]
+    consume_table!(fvars_gv)
+    gvars = Constant[]
+    if dialect.mv_tables === :offsets
+        gvars_gv = mod.globals["jl_gvars"]
+        gvars = table_elements(gvars_gv, false)
+        consume_table!(gvars_gv)
+    end
+    func_ids = Dict{LLVM.Function,Int}(f => i for (i, f) in enumerate(fvars))
+    orig_funcs = [f for f in mod.functions if !isdeclaration(f) || haskey(sets.clones, f)]
+    return CloneCtx(mod, dialect, tbaa_const(), targets, sets, groups, linearized, group_of,
+                    fvars, func_ids, gvars, intptr(mod.datalayout), orig_funcs,
+                    Tuple{Constant,Int}[], Dict{Int,GlobalVariable}(),
+                    Dict{LLVM.Function,GlobalVariable}(), external, builder)
+end
+
+function dispose_maps(ctx::CloneCtx)
+    for grp in ctx.groups
+        dispose(grp.base.vmap)
+        foreach(t -> dispose(t.vmap), grp.clones)
+    end
+end
+
+# the index of a function in `fvars`, from 0 (`get_func_id`)
+func_id(ctx::CloneCtx, f::LLVM.Function) = ctx.func_ids[f] - 1
+
+reloc_slot(ctx::CloneCtx, f::LLVM.Function) =
+    isdeclaration(f) ? ctx.extern_relocs[f] : ctx.const_relocs[func_id(ctx, f)]
+
+remove_fn_attribute!(f::LLVM.Function, kind::String) =
+    API.LLVMRemoveStringAttributeAtIndex(f, FUNCTION_INDEX, kind, length(kind))
+
+function load_slot!(ctx::CloneCtx, ty::LLVMType, slot::GlobalVariable)
+    load = load!(ctx.builder, ty, slot)
+    load.metadata[LLVM.MD_tbaa] = ctx.tbaa_const
+    load.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
+    return load
+end
+
+# A function that calls `f` through its relocation slot (`create_trampoline`), after
+# initializing the runtime if `autoinit`. The call has the calling convention and the
+# return and parameter attributes of `f`, except `julia.return_roots` (the trampoline has
+# no GC frame, and its caller roots what it passes on). Julia 1.13 introduced that; the
+# port does it for every version (S-D22(2)), as calls that don't match the ABI of `f`, e.g.
+# for `byval` and `sret` parameters, pass their arguments wrong.
+function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariable;
+                            autoinit::Bool=false)
+    ft = f.function_type
+    trampoline = LLVM.Function(ctx.mod, "", ft)
+    copy_attributes!(trampoline, f)
+    trampoline.visibility = LLVM.API.LLVMHiddenVisibility
+    trampoline.dso_local = true
+    remove_fn_attribute!(trampoline, "julia.mv.reloc")
+    remove_fn_attribute!(trampoline, "julia.mv.clones")
+
+    builder = ctx.builder
+    position!(builder, LLVM.at_end(BasicBlock(trampoline, "top")))
+    builder.debug_location = nothing
+    if autoinit
+        init_ft = LLVM.FunctionType(LLVM.PointerType())
+        init = get(ctx.mod.functions, "ijl_autoinit_and_adopt_thread", nothing)
+        init === nothing &&
+            (init = LLVM.Function(ctx.mod, "ijl_autoinit_and_adopt_thread", init_ft))
+        call!(builder, init_ft, init)
+    end
+    ptr = load_slot!(ctx, f.value_type, slot)
+    call = call!(builder, ft, ptr, collect(trampoline.parameters))
+    call.callconv = f.callconv
+    append!(call.return_attributes, collect(f.return_attributes))
+    for i in 1:length(ft.parameters), attr in collect(f.parameter_attributes[i])
+        attr isa StringAttribute && attr.kind == "julia.return_roots" && continue
+        push!(call.argument_attributes[i], attr)
+    end
+    # musttail isn't supported on ARM and PowerPC, which the C++ asserts; release builds
+    # emit it anyway, which the port follows (S-D22(7))
+    call.tailcall_kind = isvararg(ft) ? LLVM.TailCallKind.MustTail : LLVM.TailCallKind.Tail
+    ft.return_type == LLVM.VoidType() ? ret!(builder) : ret!(builder, call)
+    return trampoline
+end
+
+# a relocation slot for every function marked `julia.mv.reloc` (`prepare_slots`)
+function prepare_slots!(ctx::CloneCtx)
+    for f in ctx.orig_funcs
+        f in ctx.sets.reloc || continue
+        slot = GlobalVariable(ctx.mod, f.value_type, f.name * ".reloc_slot")
+        slot.visibility = LLVM.API.LLVMHiddenVisibility
+        slot.dso_local = true
+        if isdeclaration(f)
+            ctx.extern_relocs[f] = slot
+        else
+            ctx.const_relocs[func_id(ctx, f)] = slot
+            if ctx.dialect.mv_autoinit
+                # entry points can be called through their slot before the image loader
+                # filled it in, so that has to initialize the runtime
+                trampoline = create_trampoline!(ctx, f, slot; autoinit=true)
+                trampoline.name = f.name * ".autoinit_trampoline"
+                slot.initializer = trampoline
+            else
+                slot.initializer = null(f.value_type)
+            end
+        end
+    end
+end
+
+# the declarations of the clones of every function (`clone_decls`)
+function clone_decls!(ctx::CloneCtx)
+    for f in ctx.orig_funcs
+        clones = get(ctx.sets.clones, f, nothing)
+        clones === nothing && continue
+        for i in 2:length(ctx.targets)
+            clones[i] || continue
+            new_f = LLVM.Function(ctx.mod, f.name * "." * string(i - 1), f.function_type)
+            new_f.linkage = f.linkage
+            copy_attributes!(new_f, f)
+            new_f.visibility = f.visibility
+            new_f.dso_local = true
+            target = ctx.targets[i]
+            base = target.clone_all ? f : base_func(ctx.group_of[target.base+1], f)
+            ctx.linearized[i].vmap[base] = new_f
+        end
+    end
+end
+
+function clone_function!(f::LLVM.Function, new_f::LLVM.Function, vmap::ValueMap)
+    for (src, dst) in zip(f.parameters, new_f.parameters)
+        dst.name = src.name
+        vmap[src] = dst
+    end
+    clone_into!(new_f, f; value_map=vmap,
+                changes=API.LLVMCloneFunctionChangeTypeGlobalChanges)
+end
+
+# Map the compile units to themselves in the value maps of the targets that clone from a
+# group's versions, as cloning would otherwise duplicate them (`prepare_vmap`). The C++
+# pass does this before every function it clones; the entries don't change in between, and
+# Julia's images have a compile unit per function.
+function prepare_vmaps!(ctx::CloneCtx)
+    cus = get(ctx.mod.metadata, "llvm.dbg.cu", nothing)
+    cus === nothing && return
+    units = collect(cus.operands)
+    for grp in ctx.groups, target in grp.clones, cu in units
+        target.vmap.metadata[cu] = cu
+    end
+end
+
+function add_features!(f::LLVM.Function, target::MultiVersioningTarget)
+    attrs = f.function_attributes
+    features = string_attribute(f, "target-features")
+    push!(attrs, StringAttribute("target-features",
+        features === nothing ? target.features : features * "," * target.features))
+    push!(attrs, StringAttribute("target-cpu", target.cpu))
+    if !haskey(attrs, :optnone)
+        if target.opt_size
+            push!(attrs, EnumAttribute("optsize"))
+        elseif target.min_size
+            push!(attrs, EnumAttribute("minsize"))
+        end
+    end
+end
+
+set_clone_index!(f::LLVM.Function, idx::Int) =
+    push!(f.function_attributes, StringAttribute("julia.mv.clone", string(idx)))
+
+# The bodies of the clones (`clone_bodies`): per function, the clone for each group base,
+# and from that the clones of the group's other targets. The original functions get the
+# features of the first target only at the end, as aliases of them are replaced by
+# trampolines with their attributes.
+function clone_bodies!(ctx::CloneCtx)
+    prepare_vmaps!(ctx)
+    for f in ctx.orig_funcs
+        for (i, grp) in enumerate(ctx.groups)
+            group_f = f
+            if i != 1
+                group_f = base_func(grp, f)
+                isdeclaration(f) || clone_function!(f, group_f, grp.base.vmap)
+            end
+            for target in grp.clones
+                target_f = map_get(target.vmap, group_f)
+                target_f === nothing && continue
+                isdeclaration(f) || clone_function!(group_f, target_f, target.vmap)
+                add_features!(target_f, ctx.targets[target.idx+1])
+                set_clone_index!(target_f, target.idx)
+            end
+            if i != 1
+                add_features!(group_f, ctx.targets[grp.base.idx+1])
+                set_clone_index!(group_f, grp.base.idx)
+            end
+        end
+    end
+end
+
+
+## uses of the cloned functions
+
+# a constant expression or aggregate like `val`, with other operands
+function rebuild_constant(val::API.LLVMValueRef, args::Vector{API.LLVMValueRef})
+    if API.LLVMIsAConstantExpr(val) != C_NULL
+        return API.LLVMExtraConstantExprGetWithOperands(val, args, length(args), C_NULL,
+                                                        C_NULL)
+    elseif API.LLVMIsAConstantArray(val) != C_NULL
+        return API.LLVMConstArray(API.LLVMGetElementType(API.LLVMTypeOf(val)), args,
+                                  length(args))
+    elseif API.LLVMIsAConstantStruct(val) != C_NULL
+        return API.LLVMConstNamedStruct(API.LLVMTypeOf(val), args, length(args))
+    else
+        return API.LLVMConstVector(args, length(args))
+    end
+end
+
+# The initializer of a global that a use walk reached the function from, with null for the
+# function (`rewrite_gv_init`): that puts the global in a writable section, and the image
+# loader writes the address of the right version there.
+function rewrite_gv_init(stack::Vector{UseFrame})
+    res = API.LLVMConstPointerNull(API.LLVMTypeOf(stack[1].val))
+    for frame in @view stack[2:end]
+        idx = API.LLVMExtraGetOperandNo(frame.use)
+        n = API.LLVMGetNumOperands(frame.val)
+        args = API.LLVMValueRef[i == idx ? res : API.LLVMGetOperand(frame.val, i)
+                                for i in 0:n-1]
+        res = rebuild_constant(frame.val, args)
+    end
+    return Value(res)::Constant
+end
+
+# replace an alias of a function by a trampoline that calls it through its relocation slot
+# (`rewrite_alias`)
+function rewrite_alias!(ctx::CloneCtx, alias::GlobalAlias, f::LLVM.Function)
+    trampoline = create_trampoline!(ctx, f, reloc_slot(ctx, f))
+    push!(trampoline.function_attributes, StringAttribute("julia.mv.alias", ""))
+    alias_name = alias.name
+    alias.name = ""
+    trampoline.name = alias_name
+    trampoline.linkage = alias.linkage
+    trampoline.visibility = alias.visibility
+    trampoline.dso_local = alias.dso_local
+    trampoline.dllstorage = alias.dllstorage
+    # the C++ pass erases the alias with its uses, which leaves them dangling
+    replace_uses!(alias, trampoline)
+    erase!(alias)
+end
+
+# Make the uses of cloned functions in global initializers relocations, which the image
+# loader fills in with the right version (`fix_gv_uses`), and replace the aliases of
+# cloned functions by trampolines.
+function fix_gv_uses!(ctx::CloneCtx)
+    for f in ctx.orig_funcs
+        haskey(ctx.sets.clones, f) || continue
+        changed = true
+        while changed
+            changed = false
+            walk = constant_uses(f, ctx.mod, GlobalValue)
+            while !isdone(walk)
+                changed = true
+                info = use_info(walk)
+                if info.user isa GlobalAlias
+                    rewrite_alias!(ctx, info.user, f)
+                else
+                    gv = info.user::GlobalVariable
+                    addr = const_ptrtoint(gv, ctx.T_size)
+                    if info.offset != 0
+                        addr = const_add(addr, ConstantInt(ctx.T_size, info.offset))
+                    end
+                    push!(ctx.gv_relocs, (addr, func_id(ctx, f)))
+                    gv.initializer = rewrite_gv_init(walk.stack)
+                end
+                next!(walk)
+            end
+        end
+    end
+end
+
+function finalize_orig_clone_attr!(ctx::CloneCtx)
+    for f in ctx.orig_funcs
+        haskey(ctx.sets.clones, f) && set_clone_index!(f, 0)
+    end
+end
+
+# The value that a use walk reaches an instruction with, with `replace` for the function
+# (`rewrite_inst_use`): the constant expressions on the way become instructions, and the
+# aggregates are built with `insertvalue` and `insertelement`.
+function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value,
+                          pos::LLVM.InsertionPoint)
+    builder = ctx.builder
+    for frame in @view stack[2:end]
+        val = Value(frame.val)
+        idx = Int(API.LLVMExtraGetOperandNo(frame.use))
+        if val isa ConstantExpr
+            old = Value(API.LLVMGetOperand(frame.val, idx))
+            inst = Instruction(pos, val)
+            ops = inst.operands
+            for i in 1:length(ops)
+                ops[i] == old && (ops[i] = replace)
+            end
+            replace = inst
+            continue
+        end
+        n = API.LLVMGetNumOperands(frame.val)
+        args = API.LLVMValueRef[
+            i == idx ? API.LLVMGetUndef(API.LLVMTypeOf(API.LLVMGetOperand(frame.val, i))) :
+                       API.LLVMGetOperand(frame.val, i) for i in 0:n-1]
+        agg = Value(rebuild_constant(frame.val, args))
+        position!(builder, pos)
+        builder.debug_location = nothing
+        replace = if val isa ConstantVector
+            insert_element!(builder, agg, replace, ConstantInt(ctx.T_size, idx))
+        else
+            insert_value!(builder, agg, replace, idx)
+        end
+    end
+    return replace
+end
+
+# Replace the uses of `f` by instructions for which `slot_of` returns a slot by a load from
+# that slot (`replaceUsesWithLoad`).
+function replace_uses_with_load!(ctx::CloneCtx, f::LLVM.Function, slot_of)
+    builder = ctx.builder
+    changed = true
+    while changed
+        changed = false
+        walk = constant_uses(f, ctx.mod, Instruction)
+        while !isdone(walk)
+            info = use_info(walk)
+            user = info.user::Instruction
+            slot = slot_of(user)
+            if slot !== nothing
+                opno = API.LLVMExtraGetOperandNo(info.use)
+                pos = if user isa LLVM.PHIInst
+                    block = BasicBlock(API.LLVMGetIncomingBlock(user, opno))
+                    LLVM.before(block.terminator)
+                else
+                    LLVM.before(user)
+                end
+                position!(builder, pos)
+                builder.debug_location = nothing
+                ptr = load_slot!(ctx, f.value_type, slot)
+                new = rewrite_inst_use(ctx, walk.stack, ptr, pos)
+                API.LLVMSetOperand(user, opno, new)
+                changed = true
+            end
+            next!(walk)
+        end
+    end
+end
+
+# Make the uses of functions by the instructions of the versions of a group that has
+# targets with clones of them go through the functions' relocation slots, so that they
+# call the version the image loader picked (`fix_inst_uses`). Uses by the clones of the
+# group's other targets refer to the clones directly.
+function fix_inst_uses!(ctx::CloneCtx)
+    for grp in ctx.groups
+        grpidx = string(grp.base.idx)
+        for orig_f in ctx.orig_funcs
+            has_subtarget_clone(grp, orig_f) || continue
+            f = base_func(grp, orig_f)
+            replace_uses_with_load!(ctx, f, function (inst)
+                use_f = inst.parent.parent::LLVM.Function
+                string_attribute(use_f, "julia.mv.clone") == grpidx || return nothing
+                return reloc_slot(ctx, orig_f)
+            end)
+        end
+    end
+end
+
+finalize_orig_features!(ctx::CloneCtx) =
+    foreach(f -> add_features!(f, ctx.targets[1]), ctx.orig_funcs)
+
+
+## tables
+
+const JL_SYSIMG_TAG_MASK = UInt32(1) << 31
+
+# A 32-bit offset from `base` to a pointer or address (`get_ptrdiff32`). Julia 1.10 decides
+# whether to truncate from the pointer size of the host; the port decides from the module's,
+# like later versions do (S-D3).
+function ptrdiff32(ctx::CloneCtx, ptr::Constant, base::Constant)
+    ptr.value_type isa LLVM.PointerType && (ptr = const_ptrtoint(ptr, ctx.T_size))
+    diff = const_sub(ptr, base)
+    return ctx.T_size.width > 32 ? const_trunc(diff, LLVM.Int32Type()) : diff
+end
+
+function hidden_global!(ctx::CloneCtx, ty::LLVMType, name::String, init;
+                        constant::Bool=true)
+    gv = GlobalVariable(ctx.mod, ty, name)
+    gv.constant = constant
+    init === nothing || (gv.initializer = init)
+    gv.visibility = LLVM.API.LLVMHiddenVisibility
+    gv.dso_local = true
+    return gv
+end
+
+# Julia 1.11 and later: the number of entries of a table, and its pointers (`emit_table`)
+function emit_table!(ctx::CloneCtx, vars::Vector, name::String, suffix::String)
+    ptr = LLVM.PointerType()
+    hidden_global!(ctx, ctx.T_size, name * "_count" * suffix,
+                   ConstantInt(ctx.T_size, length(vars)))
+    ptrs = Constant[const_bitcast(v, ptr) for v in vars]
+    hidden_global!(ctx, LLVM.ArrayType(ptr, length(ptrs)), name * "_ptrs" * suffix,
+                   ConstantArray(ptr, ptrs); constant=false)
+    return
+end
+
+# Julia 1.10: a base address, and the number of entries and their offsets from it
+# (`emit_offset_table`)
+function emit_offset_table!(ctx::CloneCtx, vars::Vector, name::String, suffix::String)
+    i32 = LLVM.Int32Type()
+    base = if isempty(vars)
+        hidden_global!(ctx, ctx.T_size, name * "_base" * suffix, null(ctx.T_size))
+    else
+        b = const_bitcast(vars[1], LLVM.PointerType())
+        ga = GlobalAlias(ctx.mod, ctx.T_size, b, name * "_base" * suffix)
+        ga.visibility = LLVM.API.LLVMHiddenVisibility
+        ga.dso_local = true
+        b
+    end
+    vbase = const_ptrtoint(base, ctx.T_size)
+    offsets = Constant[ConstantInt(i32, length(vars))]
+    if !isempty(vars)
+        push!(offsets, ConstantInt(i32, 0))
+        append!(offsets, (ptrdiff32(ctx, v, vbase) for v in @view vars[2:end]))
+    end
+    hidden_global!(ctx, LLVM.ArrayType(i32, length(offsets)), name * "_offsets" * suffix,
+                   ConstantArray(i32, offsets))
+    return vbase
+end
+
+# The tables with which the image loader finds the functions, their clones for each target,
+# and the relocations to fill in with the versions it picks (`emit_metadata`).
+function emit_metadata!(ctx::CloneCtx)
+    nfvars = length(ctx.fvars)
+    # an image without functions can't be loaded, but this is for reduced test cases
+    ctx.external && nfvars == 0 && return
+    mod = ctx.mod
+    suffix_flag = module_flag(mod, "julia.mv.suffix")
+    suffix = suffix_flag === nothing ? "" : convert(String, suffix_flag.value::MDString)
+    i32 = LLVM.Int32Type()
+
+    offsets = ctx.dialect.mv_tables === :offsets
+    if offsets
+        fbase = emit_offset_table!(ctx, ctx.fvars, "jl_fvar", suffix)
+        gbase = emit_offset_table!(ctx, ctx.gvars, "jl_gvar", suffix)
+        mod.globals["jl_fvar_idxs"].name = "jl_fvar_idxs" * suffix
+        mod.globals["jl_gvar_idxs"].name = "jl_gvar_idxs" * suffix
+    else
+        emit_table!(ctx, ctx.fvars, "jl_fvar", suffix)
+        mod.globals["jl_fvar_idxs"].name = "jl_fvar_idxs" * suffix
+    end
+
+    # `jl_clone_slots`: the number of relocations, then per relocation the index of the
+    # function and the offset of the address to write it to. Julia 1.10 has the offsets
+    # relative to the global variables, later versions relative to the table. The C++ pass
+    # sorts the relocations by function with `std::sort`, whose order for one function
+    # isn't specified; the port keeps the order in which it found them.
+    shared_relocs = Set{Int}()
+    sort!(ctx.gv_relocs; by=last, alg=Base.Sort.DEFAULT_STABLE)
+    values = Constant[ConstantInt(i32, 0)]
+    k = 1
+    for id in 0:nfvars-1
+        while k <= length(ctx.gv_relocs) && ctx.gv_relocs[k][2] == id
+            push!(shared_relocs, id)
+            push!(values, ConstantInt(i32, id), ctx.gv_relocs[k][1])
+            k += 1
+        end
+        slot = get(ctx.const_relocs, id, nothing)
+        if slot !== nothing
+            push!(shared_relocs, id)
+            push!(values, ConstantInt(i32, id), slot)
+        end
+    end
+    values[1] = ConstantInt(i32, length(values) ÷ 2)
+    slots_gv = hidden_global!(ctx, LLVM.ArrayType(i32, length(values)),
+                              "jl_clone_slots" * suffix, nothing)
+    offsets || (gbase = const_ptrtoint(slots_gv, ctx.T_size))
+    for i in 3:2:length(values)
+        values[i] = ptrdiff32(ctx, values[i], gbase)
+    end
+    slots_gv.initializer = ConstantArray(i32, values)
+
+    # `jl_clone_idxs`: per target, the number of functions it has its own version of, with
+    # the tag bit for targets that clone everything, then for the others its base, then the
+    # indices of the functions, with the tag bit for those that need relocation (the first
+    # target and those that clone everything only list those). `jl_clone_ptrs` (or
+    # `jl_clone_offsets`) has the versions.
+    idxs = UInt32[]
+    fptrs = Constant[]
+    for (i, target) in enumerate(ctx.targets)
+        tgt = ctx.linearized[i]
+        len_idx = length(idxs) + 1
+        push!(idxs, 0)
+        count = UInt32(0)
+        if i == 1 || target.clone_all
+            grp = ctx.group_of[i]
+            count = JL_SYSIMG_TAG_MASK
+            for j in 0:nfvars-1
+                if j in shared_relocs
+                    count += UInt32(1)
+                    push!(idxs, j)
+                end
+                i != 1 && push!(fptrs, base_func(grp, ctx.fvars[j+1]))
+            end
+        else
+            push!(idxs, target.base)
+            grp = ctx.group_of[target.base+1]
+            for j in 0:nfvars-1
+                base_f = base_func(grp, ctx.fvars[j+1])
+                f = map_get(tgt.vmap, base_f)
+                if j in shared_relocs
+                    count += UInt32(1)
+                    push!(idxs, JL_SYSIMG_TAG_MASK | UInt32(j))
+                    push!(fptrs, something(f, base_f))
+                elseif f !== nothing
+                    count += UInt32(1)
+                    push!(idxs, j)
+                    push!(fptrs, f)
+                end
+            end
+        end
+        idxs[len_idx] = count
+    end
+    hidden_global!(ctx, LLVM.ArrayType(i32, length(idxs)), "jl_clone_idxs" * suffix,
+                   ConstantDataArray(i32, idxs))
+    if offsets
+        offs = Constant[ptrdiff32(ctx, f, fbase) for f in fptrs]
+        hidden_global!(ctx, LLVM.ArrayType(i32, length(offs)), "jl_clone_offsets" * suffix,
+                       ConstantArray(i32, offs))
+    else
+        ptr = LLVM.PointerType()
+        ptrs = Constant[const_bitcast(f, ptr) for f in fptrs]
+        hidden_global!(ctx, LLVM.ArrayType(ptr, length(ptrs)), "jl_clone_ptrs" * suffix,
+                       ConstantArray(ptr, ptrs))
+    end
+    return
+end
+
+function clone_module!(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
+                       sets::CloneSets, dialect::Dialect, external::Bool)
+    @dispose builder=IRBuilder() begin
+        ctx = CloneCtx(mod, targets, sets, dialect, external, builder)
+        try
+            prepare_slots!(ctx)
+            clone_decls!(ctx)
+            clone_bodies!(ctx)
+            fix_gv_uses!(ctx)
+            finalize_orig_clone_attr!(ctx)
+            fix_inst_uses!(ctx)
+            finalize_orig_features!(ctx)
+            emit_metadata!(ctx)
+        finally
+            dispose_maps(ctx)
+        end
+    end
+    return
+end
+
+
 ## pass
 
 function run_multiversioning!(mod::LLVM.Module, am, dialect::Dialect, external::Bool,
@@ -573,13 +1364,13 @@ function run_multiversioning!(mod::LLVM.Module, am, dialect::Dialect, external::
                        annotate_module_clones(mod, am, targets, dialect)
     has_veccall_flag = !annotated && sets.has_veccall && check_veccall_flag(mod)
     skipcloning = module_flag(mod, "julia.mv.skipcloning") !== nothing
-    if !skipcloning
-        throw(MultiVersioningError("cloning is not implemented yet"))
-    end
+    clone = !skipcloning && check_cloning(mod, targets, sets, dialect, external)
 
     add_specs && set_target_specs!(mod, targets, dialect)
     annotated || annotate!(mod, sets, has_veccall_flag)
-    return add_specs || !annotated
+    clone || return add_specs || !annotated
+    clone_module!(mod, targets, sets, dialect, external)
+    return true
 end
 
 function multiversioning!(mod::LLVM.Module, am, opts::PassOptions)
@@ -589,7 +1380,7 @@ function multiversioning!(mod::LLVM.Module, am, opts::PassOptions)
 end
 
 const MULTIVERSIONING = define_pass("jl-multiversioning", :module, multiversioning!;
-                                    required=true, cpp_name="",
+                                    required=true, cpp_name="JuliaMultiVersioning",
                                     extra=(; external=false,
                                            targets=MultiVersioningTarget[]))
 
@@ -614,8 +1405,9 @@ fast or fused floating-point math, CPU feature queries, `half` or `bfloat` value
 target says) and the functions between them in the call graph.
 
 `external` (`jl-multiversioning<external>`, Julia's `JuliaMultiVersioning<external>`)
-tolerates a missing or malformed `jl_fvars` table, as bugpoint produces; the module is then
-only annotated. Input the image loader couldn't handle raises a
+tolerates a missing or malformed `jl_fvars` table, as bugpoint produces: without a table,
+the module is only annotated, and entries of the table that aren't function definitions are
+left out. Input the image loader couldn't handle raises a
 [`JuliaIR.MultiVersioningError`](@ref) before the module is changed. Like Julia's C++ pass,
 this pass is required (it also runs on `optnone` functions' modules).
 """

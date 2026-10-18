@@ -189,12 +189,27 @@ status = "override"
 patch = "derived/1.10/remove-addrspaces.ll.patch"
 reason = "its RUN lines use typed pointers, but the file already has the checks for opaque pointers; the derived copy runs them in an opaque context"
 
+[fixtures."multiversioning-annotate-only.ll"]
+kind = "port"
+ports = ["JuliaMultiVersioning"]
+status = "run"
+
+[fixtures."multiversioning-clone-only.ll"]
+kind = "port"
+ports = ["JuliaMultiVersioning"]
+status = "run"
+
+[fixtures."multiversioning-x86.ll"]
+kind = "port"
+ports = ["JuliaMultiVersioning", "CPUFeatures"]
+status = "run"
+
 
 ## ported passes together with CPU-only ones
 
 [fixtures."parsing.ll"]
 kind = "mixed"
-ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "CPUFeatures", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerPTLSPass", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "CPUFeatures", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "JuliaMultiVersioning", "LowerPTLSPass", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
 ledger_empty = ["jl-lower-simdloop"]  # the module has no loops
@@ -283,10 +298,9 @@ ports = ["LateLowerGCFrame"]
 status = "run"
 
 [fixtures."multiversioning-abi.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["JuliaMultiVersioning", "LateLowerGCFrame"]
 status = "run"
-reason = "Julia's JuliaMultiVersioning followed by LateLowerGCFrame (only on Julia's LLVM)"
 
 [fixtures."refinements.ll"]
 kind = "port"
@@ -323,21 +337,6 @@ kind = "port"
 ports = ["LowerExcHandlers"]
 status = "run"
 
-[fixtures."multiversioning-annotate-only.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "JuliaMultiVersioning is CPU-only"
-
-[fixtures."multiversioning-clone-only.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "JuliaMultiVersioning is CPU-only"
-
-[fixtures."multiversioning-x86.ll"]
-kind = "mixed"
-ports = ["CPUFeatures"]
-status = "run"
-reason = "Julia's JuliaMultiVersioning followed by CPUFeatures (only on Julia's LLVM)"
 
 [fixtures."pipeline-prints.ll"]
 kind = "cpu"
