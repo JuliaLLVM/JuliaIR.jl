@@ -104,7 +104,12 @@ function collect_inputs(paths)
             error("input $path does not exist")
         end
     end
+    isempty(inputs) && error("no .ll files in $(join(paths, ", "))")
     sort!(inputs; by=i -> i.id)
+    for (a, b) in zip(inputs, inputs[2:end])
+        a.id == b.id && error("inputs $(a.path) and $(b.path) have the same name $(a.id)")
+    end
+    return inputs
 end
 
 struct Job
@@ -135,6 +140,11 @@ function collect_jobs(opts)
                 push!(jobs, Job(spec, input, prefix, plabel, vlabel, key))
             end
         end
+    end
+    names = Dict{String,String}()
+    for job in jobs
+        other = get!(names, output_name(job), job.key)
+        other == job.key || error("jobs $other and $(job.key) would share their output files")
     end
     return jobs, skipped
 end
@@ -229,21 +239,21 @@ function run_side(spec::PassSpec, text::String, pipeline::String)
     return out
 end
 
-# the module after the prefix and the preparation, or a status if there is nothing to
-# compare
+# the module after the prefix and the preparation, or a status (and why) if there is
+# nothing to compare
 function prepared_input(job::Job)
     text = read(job.input.path, String)
     @dispose ctx=Context(; opaque_pointers=true) begin
         mod = try
             parse(LLVM.Module, text)
         catch
-            return :unparsable
+            return :unparsable => ""
         end
         try
             try
                 verify(mod)
             catch
-                return :invalid_input
+                return :invalid_input => ""
             end
             prefix = prefix_pipeline(job.prefix)
             if !isempty(prefix)
@@ -255,8 +265,8 @@ function prepared_input(job::Job)
                     end
                     tm === nothing || dispose(tm)
                     verify(mod)
-                catch
-                    return :prefix_failed
+                catch err
+                    return :prefix_failed => one_line(sprint(showerror, err), 300)
                 end
             end
             prepare = Dict(job.spec.prepare)[job.prepare]
@@ -301,7 +311,7 @@ status_only(out) =
     join(["! ok"; filter(l -> startswith(l, "! invalid IR"), split(out, '\n'))], '\n')
 
 function record!(paths::Paths, job::Job, status::Symbol; changed::Bool=false,
-                 cpp::String="", port::String="")
+                 cpp::String="", port::String="", note::String="")
     file = ""
     if status === :compared
         # when only one side failed, the other's module is not what differs, but whether
@@ -320,7 +330,8 @@ function record!(paths::Paths, job::Job, status::Symbol; changed::Bool=false,
         end
     end
     open(paths.results, "a") do io
-        println(io, join([job.key, status, changed ? "changed" : "", file], '\t'))
+        println(io, join([job.key, status, changed ? "changed" : "", file,
+                          replace(note, '\t' => ' ')], '\t'))
     end
 end
 
@@ -333,15 +344,16 @@ function worker(opts::Options)
                                    for k in ("", "-missed", "-analysis")]...)
     jobs, _ = collect_jobs(opts)
     done = Set(first(split(l, '\t')) for l in eachline(paths.results))
-    cache = Dict{Tuple{String,String,String},Any}()
+    cache = Dict{Tuple{String,String,Any},Any}()
     for job in jobs
         job.key in done && continue
         mark!(paths, job, "prefix")
-        before = get!(cache, (job.input.id, job.prefix, job.prepare)) do
+        prepare = Dict(job.spec.prepare)[job.prepare]
+        before = get!(cache, (job.input.id, job.prefix, prepare)) do
             prepared_input(job)
         end
-        if before isa Symbol
-            record!(paths, job, before)
+        if before isa Pair
+            record!(paths, job, first(before); note=last(before))
             continue
         end
         if !occursin(job.spec.inputs, before)
@@ -431,7 +443,7 @@ function supervise(opts::Options, jobs)
         occursin("ERROR: LoadError", what) &&
             error("the worker failed on $key ($side):\n$what")
         if side == "prefix"
-            record!(paths, job, :prefix_failed)
+            record!(paths, job, :prefix_failed; note=what)
         elseif side == "port"
             record!(paths, job, :compared; changed=true, cpp="! not run",
                     port="! crashed | " * what)
@@ -558,12 +570,17 @@ function report(opts::Options, jobs, skipped)
         fields = split(line, '\t')
         results[fields[1]] = fields
     end
-    counts = Dict{String,Dict{Symbol,Int}}()
+    counts = Dict(spec.name => Dict{Symbol,Int}() for spec in PASS_SPECS
+                  if (isempty(opts.passes) || spec.name in opts.passes) &&
+                     !(spec.name in skipped))
     findings = Tuple{Job,String,String}[]
+    prefix_failures = Dict{Tuple{String,String},String}()
     for job in jobs
         fields = results[job.key]
         status = Symbol(fields[2])
-        c = get!(counts, job.spec.name, Dict{Symbol,Int}())
+        c = counts[job.spec.name]
+        status === :prefix_failed &&
+            (prefix_failures[(job.input.id, job.prefix)] = get(fields, 5, ""))
         if status === :different
             base = joinpath(paths.diffs, fields[4])
             candidates = [i for i in eachindex(exceptions) if applies(exceptions[i], job)]
@@ -597,6 +614,16 @@ function report(opts::Options, jobs, skipped)
     isempty(skipped) || println("not in this Julia: ", join(skipped, ", "))
     println("`changed`: the C++ pass changed the module (of identical, excepted and different)")
 
+    # a pass that was compared on nothing is a broken test, not a passing one
+    uncompared = [name for (name, c) in counts
+                  if sum(k -> get(c, k, 0), (:identical, :excepted, :different)) == 0]
+    for name in sort(uncompared)
+        println("no comparisons for $name")
+    end
+    for ((input, prefix), why) in sort(collect(prefix_failures))
+        println("prefix $prefix failed on $input: $why")
+    end
+
     for (i, e) in enumerate(exceptions)
         used[i] && continue
         any(job -> applies(e, job), jobs) || continue
@@ -614,7 +641,7 @@ function report(opts::Options, jobs, skipped)
             length(lines) > 80 && println("[... $(length(lines) - 80) more lines]")
         end
     end
-    return isempty(findings)
+    return isempty(findings) && isempty(uncompared)
 end
 
 function main(args)
