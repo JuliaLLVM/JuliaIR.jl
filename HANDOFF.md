@@ -348,8 +348,8 @@ beyond `parsing.ll`; `test/lit/lower-ptls.ll` covers every mode and architecture
 differentials (C++ vs port, in-process: a `code_llvm` corpus brought to LowerPTLS's input
 by Julia's C++ prefix pipeline, the fixtures with getter calls, synthetic cases, triple
 spellings) agree at every version up to the documented deviations. DemoteFloat16 asks
-`LLVM.Triple` too, instead of a table of architecture names. Validated: `Pkg.test()`
-1.10 488, 1.11 488, 1.12 485, 1.13 453, nightly 451; mode A 20/21/22/24/27 and `--cpp`
+`LLVM.Triple` too, instead of a table of architecture names. Validated after the review
+(sol, `s16-review`): `Pkg.test()` 1.10 498, 1.11 498, 1.12 495, 1.13 463, nightly 461; mode A 20/21/22/24/27 and `--cpp`
 28/32/33/35/40 + 2 unsupported (unchanged); corpus differential 187/187/190/190/199 equal,
 the 2 others per version being AMDGPU's `late-lower-gc-addrspaces.ll`, which the port
 rejects (no thread pointer) where the C++ emits x86 asm.
@@ -464,7 +464,8 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 - LLVM.jl's `split_block_and_insert_if_then_else!` refuses a phi as the split point: to
   split right after a call and put a phi there, split before the instruction after the
   call (the same IR). `LLVM.called_operand!` replaces the callee but not the call's
-  function type. `GlobalVariable(mod, T, name)` is in address space 0, not the data
+  function type, and refuses a callee of another pointer type (address space), which
+  `setCalledOperand` accepts; LowerPTLS sets the last operand instead. `GlobalVariable(mod, T, name)` is in address space 0, not the data
   layout's globals address space that C++'s `new GlobalVariable` uses (`G1` on AMDGPU).
 - `julia +nightly` moves: the master fixtures must be checked out at its commit
   (`Base.GIT_VERSION_INFO.commit`), or `run.jl` refuses them.
