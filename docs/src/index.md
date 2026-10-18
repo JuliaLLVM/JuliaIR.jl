@@ -57,6 +57,12 @@ Differences with Julia's C++ passes:
   For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
   instead of the alloca address space (Julia master), and not walking the uses of
   constant data (Julia master).
+- AllocOpt takes the size and alignment of the reference slots of split allocations
+  from the module's data layout (the store size and ABI alignment of a pointer in
+  address space 10), where the C++ pass uses the host's pointer size. For IR that Julia
+  generates for its own host the result is the same; for IR of a target with another
+  pointer size (e.g. a 32-bit target processed by a 64-bit Julia) the port is correct
+  where the C++ pass is not.
 - Bugs that no Julia version has fixed yet: PropagateJuliaAddrspaces declares
   `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
   value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass

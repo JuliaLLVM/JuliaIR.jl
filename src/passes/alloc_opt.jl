@@ -201,7 +201,8 @@ function optimize_all!(opt::AllocOpt)
             has_unboxed |= field.hasunboxed
             if field.hasobjref
                 has_ref = true
-                if field.hasaggr || field.multiloc || field.size != sizeof(Ptr{Cvoid})
+                if field.hasaggr || field.multiloc ||
+                   field.size != storage_size(opt.dl, opt.T_prjlvalue)
                     has_refaggr = true
                     break
                 end
@@ -744,7 +745,8 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
         refs = Value[]
         for slot in slots
             slot.isref || continue
-            ref = load!(builder, opt.T_prjlvalue, slot.slot; align=sizeof(Ptr{Cvoid}))
+            ref = load!(builder, opt.T_prjlvalue, slot.slot;
+                        align=abi_alignment(opt.dl, opt.T_prjlvalue))
             push!(refs, ref)
         end
         return refs
@@ -838,7 +840,7 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                                                     opt.T_prjlvalue)
                             end
                             store = store!(builder, ptr, slot.slot)
-                            store.alignment = sizeof(Ptr{Cvoid})
+                            store.alignment = abi_alignment(opt.dl, opt.T_prjlvalue)
                             continue
                         end
                         ptr_slot = slot.slot
