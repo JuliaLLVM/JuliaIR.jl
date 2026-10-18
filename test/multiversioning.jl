@@ -727,6 +727,23 @@ end
                 attributes #1 = { "julia.mv.clones"="2" }
                 """, ["f", "g"]))
 
+    # a load from the slot can't come before an exception handling pad (the C++ pass emits
+    # invalid IR)
+    rejects("used by an exception handling instruction of g",
+            cloning_ir(f_ir() * """
+                declare i32 @personality(...)
+                declare void @throws()
+                define void @g() #1 personality ptr @personality {
+                  invoke void @throws() to label %ok unwind label %pad
+                ok:
+                  ret void
+                pad:
+                  %lp = landingpad { ptr, i32 } catch ptr @f
+                  ret void
+                }
+                attributes #1 = { "julia.mv.clones"="0" }
+                """, ["f", "g"]))
+
     # global values that refer to a cloned function
     rejects("through a constant that changes its address",
             cloning_ir(f_ir() * "@gv = global i64 add (i64 ptrtoint (ptr @f to i64), i64 1)\n",

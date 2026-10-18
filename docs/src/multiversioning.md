@@ -96,7 +96,9 @@ The port changes what the C++ pass does where it is wrong (S-D3, S-D22):
   doesn't clone everything, a cloned function in a constant global, in `llvm.used`, under
   an expression that changes its address (including a cast to an integer of another
   size, where the loader would write a full pointer over what follows), or used by a
-  global value other than a global variable or an alias, ...), the port throws a [`JuliaIR.MultiVersioningError`](@ref)
+  global value other than a global variable or an alias, a cloned function's exception
+  handling instruction that would have to load a function from its slot, ...), the port
+  throws a [`JuliaIR.MultiVersioningError`](@ref)
   before it changes the module.
 
 What the port keeps: functions that aren't cloned call the first target's version of the

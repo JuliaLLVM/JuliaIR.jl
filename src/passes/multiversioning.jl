@@ -561,6 +561,10 @@ end
 
 ## checks
 
+# the instructions that have to come first in their block
+const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
+                    LLVM.CatchSwitchInst}
+
 # Whether a module has a table like `jl_fvars` that the `external` option accepts: one
 # with an array of constants (which rules out a zero initializer, like the C++ pass).
 function has_table(mod::LLVM.Module, name::String)
@@ -637,13 +641,18 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
     for (f, clones) in sets.clones
         # uses by instructions of versions that call the version the image loader picks
         # (`fix_inst_uses`)
-        if any(clones[i] && !targets[i].clone_all for i in 2:length(targets)) &&
-           !(f in sets.reloc)
+        if any(clones[i] && !targets[i].clone_all for i in 2:length(targets))
             walk = constant_uses(f, mod, Instruction)
             while !isdone(walk)
-                user_f = use_info(walk).user.parent.parent
-                haskey(sets.clones, user_f) &&
-                    throw(MultiVersioningError("$(f.name) is called by $(user_f.name), which is cloned, but has no julia.mv.reloc attribute"))
+                user = use_info(walk).user
+                user_f = user.parent.parent
+                if haskey(sets.clones, user_f)
+                    f in sets.reloc ||
+                        throw(MultiVersioningError("$(f.name) is called by $(user_f.name), which is cloned, but has no julia.mv.reloc attribute"))
+                    # the load from the slot would have to come before the pad
+                    user isa EHPad &&
+                        throw(MultiVersioningError("$(f.name) is used by an exception handling instruction of $(user_f.name), which is cloned, so it can't be loaded from its relocation slot there"))
+                end
                 next!(walk)
             end
         end
