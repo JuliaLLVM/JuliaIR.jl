@@ -8,6 +8,9 @@ LLVM_utils_unified_jll = "0def2053-1a45-54bc-bfc1-6427e7aae702"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+[sources]
+LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "tb/loop-passes"}
+
 [compat]
 Aqua = "0.8"
 FileCheck = "1.2"

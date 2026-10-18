@@ -7,7 +7,11 @@ description: >
 inputs:
   ref:
     description: The LLVM.jl branch, tag or commit.
-    default: main
+    # the unmerged LLVM.jl branch with the custom loop passes the passes need
+    # (JuliaLLVM/LLVM.jl#670); the same branch as `[sources]` in Project.toml and
+    # test/Project.toml. Move both to the top of whatever LLVM.jl stack JuliaIR needs, back
+    # to `main` once it is merged.
+    default: tb/loop-passes
   projects:
     description: >
       The environments to develop LLVM.jl into, besides the package's (e.g. `test` for a
@@ -30,7 +34,19 @@ runs:
       env:
         PROJECTS: ${{ inputs.projects }}
       run: |
-        using Pkg
+        using Pkg, TOML
+        # the checkout is developed instead of the `[sources]` entry of the projects, which
+        # Pkg 1.11 refuses to replace by a path ("`path` and `url` are conflicting")
+        for project in (".", "test", "docs")
+            file = joinpath(project, "Project.toml")
+            isfile(file) || continue
+            toml = TOML.parsefile(file)
+            sources = get(toml, "sources", Dict())
+            haskey(sources, "LLVM") || continue
+            delete!(sources, "LLVM")
+            isempty(sources) && delete!(toml, "sources")
+            open(io -> TOML.print(io, toml), file, "w")
+        end
         Pkg.activate("LLVM.jl"); Pkg.instantiate()  # build_ci.jl reads its manifest
         Pkg.activate("."); Pkg.develop(path="LLVM.jl")
         # with workspaces, the other environments share the package's manifest
