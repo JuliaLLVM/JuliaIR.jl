@@ -22,7 +22,9 @@ const RUNTIME_FACTS = (
     reset_ctx_eh = "the offset of `eh` in `jl_reset_ctx_t`",
     reset_ctx_mctx = "the offset of `mctx` in `jl_reset_ctx_t`",
     tls_elf_support = "whether the runtime accesses thread-local storage with ELF TLS (`jl_tls_elf_support`)",
-    tp_asm = "the inline assembly that reads the thread pointer",
+    tls_offset = "the offset of the GC stack's thread-local variable from the thread pointer, or -1 if code can't address it (`jl_tls_offset`)",
+    pgcstack_getter = "the address of the function that returns the GC stack (from `jl_pgcstack_getkey`)",
+    pgcstack_key = "the key of the GC stack's thread-local variable (from `jl_pgcstack_getkey`)",
     smalltag_shift = "the position of `smalltag` in the `flags` of a `jl_datatype_t`",
     max_small_tag = "the number of small type tags (`jl_max_tags`)",
     task_world_age = "the offset of `world_age` in `jl_task_t`",
@@ -32,8 +34,10 @@ const RUNTIME_FACTS = (
 
 # the option that gives a fact explicitly, with the value that means "not given"
 function fact_option_default(name::Symbol)
-    name in (:setjmp, :tp_asm) && return ""
+    name === :setjmp && return ""
     name in (:tls_elf_support, :cfunction_cache) && return :auto
+    name === :tls_offset && return Optional{Int}()
+    name in (:pgcstack_getter, :pgcstack_key) && return Optional{UInt}()
     return 0
 end
 
@@ -86,8 +90,8 @@ running_julia() = "Julia $(VERSION.major).$(VERSION.minor)"
 
 function runtime_fact(rt::RuntimeFacts, name::Symbol)
     overrides = getfield(rt, :overrides)
-    given = get(overrides, name, nothing)
-    if given !== nothing && given != fact_option_default(name)
+    given = option_value(get(overrides, name, nothing))
+    if given !== nothing && given != option_value(fact_option_default(name))
         if name === :tls_elf_support
             given === :yes && return true
             given === :no && return false
@@ -121,7 +125,9 @@ The facts about the runtime of Julia `dialect` that passes processing `mod` need
 - exception handlers: `handler_size` and `handler_align` (of `jl_handler_t`) and the name
   of the runtime's `setjmp`; from Julia 1.14 on, the reset context (`reset_ctx_size`,
   `reset_ctx_align` and the offsets `reset_ctx_gcstack`, `reset_ctx_eh`, `reset_ctx_mctx`);
-- thread-local storage: `tls_elf_support` and the thread-pointer assembly `tp_asm`;
+- thread-local storage: `tls_elf_support`, the offset `tls_offset` of the GC stack from
+  the thread pointer, and the getter function of the GC stack and its key
+  (`pgcstack_getter` and `pgcstack_key`, process addresses);
 - small type tags, which objects of the runtime's builtin types carry in their header
   instead of the address of their type (`smalltag << 4`): where a `DataType`'s `flags`
   hold its tag (`smalltag_shift`), and how many tags there are (`max_small_tag`);
@@ -173,7 +179,8 @@ const FACT_PROBES = (
     handler_size = :handler, handler_align = :handler, setjmp = :handler,
     reset_ctx_size = :cancel, reset_ctx_align = :cancel,
     reset_ctx_gcstack = :cancel, reset_ctx_eh = :cancel, reset_ctx_mctx = :cancel,
-    tls_elf_support = :tls, tp_asm = :safepoint,
+    tls_elf_support = :tls, tls_offset = :tls,
+    pgcstack_getter = :pgcstack_getkey, pgcstack_key = :pgcstack_getkey,
     smalltag_shift = :smalltag, max_small_tag = :smalltag,
     task_world_age = :world_age, cfunction_cache = :cfunction, cfuncdata_size = :cfunction,
 )
@@ -266,7 +273,17 @@ function run_probe(::Val{:gc_state})
 end
 
 function run_probe(::Val{:tls})
-    return (; tls_elf_support=unsafe_load(cglobal(:jl_tls_elf_support, Cint)) != 0)
+    return (; tls_elf_support=unsafe_load(cglobal(:jl_tls_elf_support, Cint)) != 0,
+            tls_offset=unsafe_load(cglobal(:jl_tls_offset, Int)))
+end
+
+# what Julia's code generator calls when it can't read the GC stack from the thread pointer
+function run_probe(::Val{:pgcstack_getkey})
+    getter = Ref{Ptr{Cvoid}}(C_NULL)
+    key = Ref{UInt}(0)
+    ccall(:jl_pgcstack_getkey, Cvoid, (Ptr{Ptr{Cvoid}}, Ptr{UInt}), getter, key)
+    getter[] == C_NULL && throw(RuntimeError("`jl_pgcstack_getkey` returned no getter"))
+    return (; pgcstack_getter=UInt(getter[]), pgcstack_key=key[])
 end
 
 # The small type tag of `Int64`, read from the header of a boxed `Int64`, is the field of
@@ -416,34 +433,25 @@ end
 
 # A safepoint is a volatile load from the page that the thread-local state's `safepoint`
 # points to, and the thread-local state is loaded from the task's `ptls`, at an offset
-# from the task's `pgcstack`. Where the JIT reads the thread pointer inline, that is the
-# inline assembly at the root.
+# from the task's `pgcstack`.
 function run_probe(::Val{:safepoint})
     with_probe_ir(probe_safepoint, Tuple{}, "`GC.safepoint()`") do mod
         dl = mod.datalayout
         # (code coverage adds other volatile accesses)
-        polls = Set{Tuple{Int,Int,Union{Nothing,String}}}()
+        polls = Set{Tuple{Int,Int}}()
         for inst in instructions(mod)
             (inst isa LLVM.LoadInst && LLVM.API.LLVMGetVolatile(inst) != 0) || continue
             page = inst.operands[1]
             page isa LLVM.LoadInst || continue
             ptls, safepoint = base_offset(page.operands[1], dl)
             ptls isa LLVM.LoadInst || continue
-            pgcstack, ptls_offset = base_offset(ptls.operands[1], dl)
-            tp_asm = nothing
-            if pgcstack isa LLVM.LoadInst
-                tp, _ = base_offset(pgcstack.operands[1], dl)
-                if tp isa LLVM.CallInst && tp.called_operand isa LLVM.InlineAsm
-                    m = match(r"asm(?: \w+)* \"([^\"]*)\"", string(tp.called_operand))
-                    m === nothing || (tp_asm = String(m[1]))
-                end
-            end
-            push!(polls, (ptls_offset, safepoint, tp_asm))
+            _, ptls_offset = base_offset(ptls.operands[1], dl)
+            push!(polls, (ptls_offset, safepoint))
         end
         length(polls) == 1 || return nothing
-        ptls_offset, safepoint, tp_asm = only(polls)
+        ptls_offset, safepoint = only(polls)
         gcstack = native_probe(:task).task_gcstack
-        return (; task_ptls=gcstack + ptls_offset, tls_safepoint=safepoint, tp_asm)
+        return (; task_ptls=gcstack + ptls_offset, tls_safepoint=safepoint)
     end
 end
 

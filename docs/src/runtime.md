@@ -4,8 +4,9 @@ Some of Julia's passes lower the IR to code that works with Julia's runtime dire
 load the thread-local state from the current task, or set up exception handlers. To do
 so, they need facts that the IR doesn't spell out: the offsets of fields in the runtime's
 task and thread-local state, the size of an exception handler (which contains the C
-library's `jmp_buf`), the name of the runtime's `setjmp`, and how to read the thread
-pointer. Julia's C++ passes compile these facts in from Julia's headers.
+library's `jmp_buf`), the name of the runtime's `setjmp`, and where the runtime keeps
+the current task's GC stack in thread-local storage. Julia's C++ passes compile these
+facts in from Julia's headers, or read them from the process they run in.
 
 JuliaIR.jl processes the IR of the Julia version it runs on, so the ports take these
 facts from the running Julia. Like the C++ passes, they use them whatever target the
@@ -26,7 +27,9 @@ A fact is looked up when a pass reads it, so IR that doesn't need it (e.g. a fun
 without exception handlers) is processed without:
 
 1. A pass option of the same name gives the fact explicitly, e.g.
-   `jl-lower-exc-handlers<handler-size=264;setjmp=__sigsetjmp>`.
+   `jl-lower-exc-handlers<handler-size=264;setjmp=__sigsetjmp>` or
+   `jl-lower-ptls<tls-offset=-8>` (see [`JuliaIR.Optional`](@ref) for the options that
+   can be negative or are addresses).
 2. Otherwise, the fact is read from the running Julia, whose IR the passes process.
 3. When the running Julia doesn't have the fact (e.g. the reset context of cancellation
    points before Julia 1.14) or it can't be read, the pass throws a
@@ -45,8 +48,9 @@ read the first time a pass needs it, once per process:
 | `task_gcstack` | the task's `pgcstack` (`jl_get_pgcstack`) relative to the current task |
 | `task_eh` | the field of the current task that changes inside a `try` and is restored after it |
 | `tls_gc_state` | the byte of the thread-local state that becomes `JL_GC_STATE_SAFE` across `jl_gc_safe_enter` |
-| `tls_elf_support` | the runtime's `jl_tls_elf_support` |
-| `task_ptls`, `tls_safepoint`, `tp_asm` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it; the inline assembly that reads the thread pointer, where Julia's JIT uses one (not on macOS or Windows) |
+| `tls_elf_support`, `tls_offset` | the runtime's `jl_tls_elf_support` and `jl_tls_offset` |
+| `pgcstack_getter`, `pgcstack_key` | the runtime's `jl_pgcstack_getkey` |
+| `task_ptls`, `tls_safepoint` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it |
 | `handler_size`, `handler_align`, `setjmp` | the code Julia generates for a `try`: the stack buffer that `setjmp` is called on (lowered by Julia's LowerExcHandlers up to Julia 1.12, emitted by its code generator later) |
 | `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.14 and later) |
 | `smalltag_shift` | the header of a boxed `Int64`, whose small type tag is a field of `Int64.flags` |
@@ -69,3 +73,11 @@ The package tests compare every fact with an independent check where one exists 
 runtime's `jl_get_ptls_states`, the C library's `setjmp`, the pool offsets Julia emits for
 an allocation against `jl_gc_classify_pools`, ...), and with the values measured on
 x86-64 Linux at each Julia version.
+
+`tls_offset`, `pgcstack_getter` and `pgcstack_key` are properties of the process rather
+than of the Julia version: the offset depends on where the runtime library was loaded
+(-1 where code can't read the thread-local variable directly, as on macOS and Windows),
+and the getter and key are addresses in the process. Code that embeds them, like
+[LowerPTLS](lower_ptls.md)'s JIT mode, only works in the process that compiled it. Like
+every fact, they are read when a pass first needs them, never while the package is
+precompiled.
