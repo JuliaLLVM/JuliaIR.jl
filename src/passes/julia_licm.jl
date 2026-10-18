@@ -101,14 +101,6 @@ function make_loop_invariant!(p::JuliaLICM, @nospecialize(v::Value))
     return true
 end
 
-# whether `make_loop_invariant!` would succeed, without changing anything
-function can_make_loop_invariant(loop::Loop, @nospecialize(v::Value))
-    v isa Instruction || return true
-    is_loop_invariant(loop, v) && return true
-    hoistable(v) || return false
-    return all(op -> can_make_loop_invariant(loop, op), v.operands)
-end
-
 # The instruction at the first insertion point of `bb`, or `nothing` if there is none (a
 # block with only a `catchswitch`).
 function exit_insertion_inst(bb::BasicBlock)
@@ -189,7 +181,8 @@ field_barrier_slots(call::Instruction) =
     collect(call.arguments)[FIELD_WB_SLOT_ARG:2:end]
 
 # Replace a field barrier by an object barrier with the same parent and children in the
-# preheader (`hoistAsObjectBarrier`).
+# preheader (`hoistAsObjectBarrier`). Throws, leaving the barrier as it is, if the module
+# declares the object barrier with another type (the C++ pass emits an invalid call).
 function hoist_as_object_barrier!(p::JuliaLICM, call::Instruction)
     f = get_or_declare_object_write_barrier!(p.mod)
     is_write_barrier(p.fns, f) || (p.fns = JuliaFunctions(p.mod, p.dialect))
@@ -277,45 +270,27 @@ function hoist_allocation!(p::JuliaLICM, call::Instruction)
     return
 end
 
-# Throw before changing anything if a field barrier of the loop would be demoted to an
-# object barrier that the module declares with another type (the C++ pass emits an
-# invalid call).
-function check_demotions(loop::Loop, mod::LLVM.Module, fns::JuliaFunctions,
-                         dialect::Dialect)
-    dialect.barrier_flavour === :object_field || return
-    (is_snapshot_barrier(dialect) || is_field_precise_barrier(dialect)) && return
-    isempty(fns.field_write_barriers) && return
-    f = get(mod.functions, "julia.object_write_barrier", nothing)
-    f === nothing && return
-    LLVM.function_type(f) == object_write_barrier_type() && return
-    for bb in loop.blocks, inst in bb.instructions
-        inst isa CallInst && is_field_write_barrier(fns, inst.called_operand) || continue
-        can(v) = can_make_loop_invariant(loop, v)
-        can(first(inst.arguments)) && all(can, write_barrier_children(fns, inst)) ||
-            continue
-        all(can, field_barrier_slots(inst)) && continue
-        check_object_write_barrier(f)
-    end
-    return
-end
-
 function run_julia_licm!(p::JuliaLICM)
     fns = p.fns
-    # hoist the begins of a loop before sinking its ends
-    for bb in reverse_postorder(p.loop, p.li), inst in bb.instructions
-        inst isa CallInst || continue
-        callee = inst.called_operand
-        if callee == fns.gc_preserve_begin
-            hoist_preserve_begin!(p, inst)
-        elseif callee == fns.gc_preserve_end
-            sink_preserve_end!(p, inst)
-        elseif is_write_barrier(p.fns, callee)
-            hoist_write_barrier!(p, inst)
-        elseif callee == fns.alloc_obj
-            hoist_allocation!(p, inst)
+    try
+        # hoist the begins of a loop before sinking its ends
+        for bb in reverse_postorder(p.loop, p.li), inst in bb.instructions
+            inst isa CallInst || continue
+            callee = inst.called_operand
+            if callee == fns.gc_preserve_begin
+                hoist_preserve_begin!(p, inst)
+            elseif callee == fns.gc_preserve_end
+                sink_preserve_end!(p, inst)
+            elseif is_write_barrier(p.fns, callee)
+                hoist_write_barrier!(p, inst)
+            elseif callee == fns.alloc_obj
+                hoist_allocation!(p, inst)
+            end
         end
+    finally
+        # also when a demotion throws, as the hoists before it stay
+        p.changed && forget_loop_dispositions!(p.se)
     end
-    p.changed && forget_loop_dispositions!(p.se)
     return p.changed
 end
 
@@ -329,7 +304,6 @@ function julia_licm!(loop::Loop, ar::LoopAnalysisResults, opts::PassOptions)
     # an end needs a begin, so modules with only ends are skipped
     fns.gc_preserve_begin === nothing && isempty(fns.write_barriers) &&
         fns.alloc_obj === nothing && return PreservedAnalyses(AllAnalyses)
-    check_demotions(loop, mod, fns, dialect)
 
     mssa = get(ar, MemorySSA, nothing)
     changed = @dispose builder=IRBuilder() begin

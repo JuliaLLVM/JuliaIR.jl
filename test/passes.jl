@@ -541,39 +541,55 @@ end
     end
 
     @testset "errors" begin
-        # a declaration of the object barrier of another type is rejected before the
-        # loop changes, here before the barrier's child is hoisted
-        bad = """
-            declare void @julia.object_write_barrier(ptr)
-            declare void @julia.field_write_barrier.p11(ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...)
-            define void @f(ptr addrspace(10) %parent, ptr addrspace(10) %child, i64 %n, i1 %c) {
-            top:
-              br label %loop
-            loop:
-              %i = phi i64 [ 0, %top ], [ %i.next, %loop ]
-              %child.cast = getelementptr i8, ptr addrspace(10) %child, i64 0
-              %slot = getelementptr ptr addrspace(10), ptr addrspace(10) %parent, i64 %i
-              %slot.derived = addrspacecast ptr addrspace(10) %slot to ptr addrspace(11)
-              call void (ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...) @julia.field_write_barrier.p11(ptr addrspace(10) %parent, ptr addrspace(11) %slot.derived, ptr addrspace(10) %child.cast)
-              %i.next = add i64 %i, 1
-              br i1 %c, label %exit, label %loop
-            exit:
-              ret void
-            }"""
-        object_barriers && @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
-            before = string(mod)
-            err = try
-                @dispose pb=PassBuilder() begin
-                    JuliaIR.register!(pb)
-                    add!(pb, "function(loop(jl-licm))")
-                    run!(pb, mod)
+        # A declaration of the object barrier with another type is rejected when a field
+        # barrier is to be demoted to it, here after the allocation that is the barrier's
+        # child was hoisted: the barrier stays, and the IR is valid. A field barrier that
+        # keeps its slots doesn't need the declaration.
+        function run_bad(slot, child)
+            bad = """
+                @tag = external addrspace(10) global {}
+                declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+                declare void @julia.object_write_barrier(ptr)
+                declare void @julia.field_write_barrier.p11(ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...)
+                define void @f(ptr %task, ptr addrspace(10) %parent, ptr addrspace(10) %other, i1 %c) {
+                top:
+                  br label %loop
+                loop:
+                  %i = phi i64 [ 0, %top ], [ %i.next, %loop ]
+                  %child = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag)
+                  %slot = getelementptr ptr addrspace(10), ptr addrspace(10) $slot
+                  %slot.derived = addrspacecast ptr addrspace(10) %slot to ptr addrspace(11)
+                  call void (ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...) @julia.field_write_barrier.p11(ptr addrspace(10) %parent, ptr addrspace(11) %slot.derived, ptr addrspace(10) $child)
+                  %i.next = add i64 %i, 1
+                  br i1 %c, label %exit, label %loop
+                exit:
+                  ret void
+                }"""
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
+                err = try
+                    @dispose pb=PassBuilder() begin
+                        JuliaIR.register!(pb)
+                        add!(pb, "function(loop-mssa(jl-licm))")
+                        run!(pb, mod)
+                    end
+                    nothing
+                catch err
+                    err
                 end
-                nothing
-            catch err
-                err
+                verify(mod)
+                # the block of the call of `callee`
+                block(callee) = only(LLVM.name(bb) for bb in mod.functions["f"].blocks
+                                     for inst in bb.instructions
+                                     if inst isa CallInst && LLVM.name(inst.called_operand) == callee)
+                return err, block("julia.field_write_barrier.p11"), block("julia.gc_alloc_obj")
             end
+        end
+        if object_barriers
+            err, barrier_block, alloc_block = run_bad("%parent, i64 %i", "%child")
             @test err isa PassException && err.ex isa ArgumentError
-            @test string(mod) == before
+            @test (barrier_block, alloc_block) == ("loop", "top")
+            # the slot varies with an allocation, which is hoisted first
+            @test run_bad("%child, i64 0", "%other") == (nothing, "top", "top")
         end
     end
 end

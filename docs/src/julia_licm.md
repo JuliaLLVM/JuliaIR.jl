@@ -76,7 +76,7 @@ The port follows Julia master on every version where the C++ differs or fails:
 | D1 | before Julia 1.13, an allocation whose address is the value operand of an atomic store or `atomicrmw` is hoisted (the escape analysis took it for a store into the object) | master's escape analysis on every version: it stays in the loop |
 | D2 | before Julia 1.12.8, an end is sunk to the exits of the outermost loop being processed, so a token can be used outside the loop that defines it (invalid IR once the loop is cloned) | master's rule (JuliaLang/julia#63036) on every version |
 | D3 | an end whose token isn't an instruction (`token none`) is cast to one, which crashes the pass on Julia master | the end stays where it is |
-| D4 | a field barrier is demoted to a call of a `julia.object_write_barrier` that the module declares with another type, which is invalid IR | an `ArgumentError`, raised before the loop is changed |
+| D4 | a field barrier is demoted to a call of a `julia.object_write_barrier` that the module declares with another type, which is invalid IR | an `ArgumentError` when the barrier is demoted: the barrier stays as it was, what was hoisted before it (its operands, earlier calls of the loop) stays hoisted |
 | D5 | an exit block without an insertion point (a `catchswitch`) crashes the pass | that exit is skipped; Julia doesn't emit funclets |
 | D6 | the uses of an `AllocUseInfo` beyond 16 are printed in pointer order | in the order they were found |
 
