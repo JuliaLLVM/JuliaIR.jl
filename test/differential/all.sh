@@ -22,6 +22,9 @@
 # unexplained differences or failed to run.
 
 set -uo pipefail
+# Julia's C++ passes abort on some inputs, and GPUCompiler crashes for some targets: no
+# core dumps of any of it
+ulimit -c 0
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DIFF=$ROOT/test/differential
@@ -105,6 +108,11 @@ for ch in "${CHANNELS[@]}"; do
                     echo "GPUCompiler failed for $target on Julia $minor (see $dir/gpucompiler.log)"
             done
             [ -d "$dir/gpucompiler" ] && inputs+=("$dir/gpucompiler")
+            # a target that GPUCompiler can't compile for shows here, not as a failure
+            gpu=$(for t in ptx gcn spirv metal native; do
+                      printf '%s %s, ' "$t" "$(ls "$dir/gpucompiler/$t" 2>/dev/null | wc -l)"
+                  done)
+            echo "GPUCompiler modules: ${gpu%, }" | tee -a "$WORK/summary.txt"
         else
             echo "no GPUCompiler corpus for Julia $minor"
         fi
@@ -112,7 +120,7 @@ for ch in "${CHANNELS[@]}"; do
 
     jl "$ch" --project="$DIFF" "$DIFF/run.jl" --quiet --out "$dir/out" "${inputs[@]}" \
         > "$dir/report.txt" 2>&1 || status=1
-    sed -n '/^Julia /,/^`changed`/p;/^unused exception/p;/unexplained difference/p' "$dir/report.txt"
+    sed -n '/^Julia /,/^`changed`/p;/^unused exception/p;/^no comparisons/p;/^prefix .* failed on/p;/unexplained difference/p' "$dir/report.txt"
     sed -n '/^Julia /,/^`changed`/p' "$dir/report.txt" >> "$WORK/summary.txt"
 done
 exit $status

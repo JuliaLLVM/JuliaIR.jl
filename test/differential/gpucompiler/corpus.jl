@@ -1,6 +1,7 @@
 # Write a corpus of unoptimized GPUCompiler modules (`GPUCompiler.compile(:llvm, job)` with
-# `optimize=false`): the IR GPUCompiler hands to its optimization pipeline, which runs
-# Julia's passes (or JuliaIR's ports) on it. One module per kernel and target (PTX, GCN,
+# `optimize=false, cleanup=false`): close to the IR GPUCompiler hands to its optimization
+# pipeline, which runs Julia's passes (or JuliaIR's ports) on it, except that the target's
+# `finish_ir!`, which follows the optimizer, has run too. One module per kernel and target (PTX, GCN,
 # SPIR-V, Metal, and native code without the Julia runtime), in OUTDIR/<target>/.
 #
 #   julia --project=test/differential/gpucompiler test/differential/gpucompiler/corpus.jl OUTDIR [TARGET...]
@@ -165,7 +166,7 @@ function main(out, targets=sort(collect(keys(TARGETS))))
             name = string(nameof(f))
             source = methodinstance(typeof(f), Tuple{types...})
             config = CompilerConfig(target(), Params(); kernel=true, optimize=false,
-                                    validate=false)
+                                    cleanup=false, validate=false)
             job = CompilerJob(source, config)
             ir = try
                 JuliaContext() do ctx
