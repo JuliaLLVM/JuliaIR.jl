@@ -93,6 +93,20 @@ jobs:
         run: julia --project=test test/upstream/run.jl julia-src --mode A
       - name: Run the fixtures with Julia's passes
         run: julia --project=test test/upstream/run.jl julia-src --cpp
+      # the ports against Julia's C++ passes (test/differential) on the fixtures and a
+      # code_llvm corpus, on 1.12 and master (test/differential/all.sh covers every
+      # version, and GPUCompiler's IR, locally)
+      - name: Compare the ports with Julia's passes
+        if: startsWith(matrix.version, '1.12') || matrix.version == 'nightly'
+        run: |
+          julia --project=test/differential test/differential/corpus.jl corpus
+          julia --project=test/differential test/differential/run.jl --quiet --out differential julia-src/test/llvmpasses corpus test/differential/inputs
+      # the diffs and the worker log of a failing comparison
+      - uses: actions/upload-artifact@v4
+        if: failure() && (startsWith(matrix.version, '1.12') || matrix.version == 'nightly')
+        with:
+          name: differential-${{ matrix.version }}
+          path: differential
 
   docs:
     name: Documentation

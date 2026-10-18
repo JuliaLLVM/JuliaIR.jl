@@ -37,7 +37,7 @@ runs:
         using Pkg, TOML
         # the checkout is developed instead of the `[sources]` entry of the projects, which
         # Pkg 1.11 refuses to replace by a path ("`path` and `url` are conflicting")
-        for project in (".", "test", "docs")
+        for project in (".", "test", "docs", "test/differential")
             file = joinpath(project, "Project.toml")
             isfile(file) || continue
             toml = TOML.parsefile(file)
@@ -73,7 +73,8 @@ runs:
       run: julia --project=LLVM.jl/deps LLVM.jl/deps/build_ci.jl
 
     # the build is selected through LLVM.jl's preferences, which are read from the active
-    # project: the package itself for Pkg.test, test/ and docs/ when run directly
+    # project: the package itself for Pkg.test, test/, docs/ and test/differential/ when
+    # run directly
     - name: Use the LLVMExtra build
       shell: bash
-      run: for dir in . test docs; do cp LLVM.jl/LocalPreferences.toml $dir/; done
+      run: for dir in . test docs test/differential; do cp LLVM.jl/LocalPreferences.toml $dir/; done

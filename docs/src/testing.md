@@ -206,6 +206,10 @@ summarizes the counts in `WORKDIR/summary.txt`. While JuliaIR needs an unrelease
 LLVM.jl, `LLVMEXTRA_BUILDS` names a directory of `libLLVMExtra` builds per LLVM version,
 which it sets as the preference for each run.
 
+CI runs the comparison on Julia 1.12 and on nightly, in the `upstream` job: on the
+fixtures that job checks out, a fresh `code_llvm` corpus and `test/differential/inputs`,
+without the GPUCompiler modules. Any unexplained difference fails the job.
+
 To compare another port, add a `PassSpec` to `test/differential/passes.jl`: Julia's name
 of the pass, whether it is a module, function or loop pass, the prefixes to run it
 behind, and, if needed, a regex that finds what the pass works on in a module (only for
