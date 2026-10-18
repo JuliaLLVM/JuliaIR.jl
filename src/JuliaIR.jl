@@ -4,6 +4,7 @@ using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
 using LLVM: API, DataLayout, storage_size, abi_size, abi_alignment, intptr
 
 include("dialect.jl")
+include("runtime.jl")
 include("registration.jl")
 include("jlopt.jl")
 include("irutils.jl")

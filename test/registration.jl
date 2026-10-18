@@ -23,6 +23,15 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test_throws "is a flag" parse_options("strong=1"; extra)
     @test_throws "requires a value" parse_options("mode"; extra)
     @test_throws "requires a value" parse_options("no-mode"; extra)
+    let extra = (; size=0, name="")
+        @test parse_options("size=264;name=__sigsetjmp"; extra).extra ==
+              (; size=264, name="__sigsetjmp")
+        @test options_string(parse_options("julia=1.12.0;size=8;name=a_b-c"; extra)) ==
+              "julia=1.12.0;size=8;name=a_b-c"
+        @test_throws "non-negative integer" parse_options("size=x"; extra)
+        @test_throws "non-negative integer" parse_options("size=-1"; extra)
+        @test_throws "requires a value" parse_options("name"; extra)
+    end
 
     # round trip
     for str in ["julia=1.12.0", "julia=1.14.0-DEV.3782;fp16=demote",
