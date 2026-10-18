@@ -30,12 +30,14 @@ records them in the flag.
 
 1. **Annotation.** Julia annotates its modules before it runs the pass (which marks them
    with the `julia.mv.annotated` flag); for other modules, the pass does it. Each function
-   gets a `julia.mv.clones` attribute, the set of targets to clone it for: every target
+   that is cloned gets a `julia.mv.clones` attribute, the set of targets to clone it for:
+   every target
    that clones everything, and the targets one of whose categories the function has
    (loops, vector arguments or results, fast or fused floating-point math, queries of
    CPU features, `half` or `bfloat` values, as the target says), together with the
-   functions in between such functions in the call graph. Functions that some targets
-   clone and that instructions use, or that aliases name, get a *relocation slot*
+   functions in between such functions in the call graph. Functions that a target which
+   doesn't clone everything clones and that instructions use, or that aliases name, get a
+   *relocation slot*
    (`julia.mv.reloc`); other functions in global initializers are marked
    `julia.mv.fvar`. With the `julia.mv.skipcloning`
    flag, the pass stops here.
@@ -102,7 +104,7 @@ The port changes what the C++ pass does where it is wrong (S-D3, S-D22):
   throws a [`JuliaIR.MultiVersioningError`](@ref)
   before it changes the module.
 
-What the port keeps: functions that aren't cloned call the first target's version of the
-functions they call, also when a target has a clone of it; and variadic functions'
+What the port keeps: functions without a `julia.mv.clones` attribute call the first
+target's version of the functions they call, also when a target has a clone of it; and variadic functions'
 trampolines use `musttail` calls on every architecture, like Julia's release builds
 (builds with assertions reject them on ARM and PowerPC).

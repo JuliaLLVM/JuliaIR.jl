@@ -50,8 +50,8 @@ which the original functions are kept.
 - `clone`: for a target that doesn't clone every function, the categories of functions it
   clones, those that contain: `:loop` (loops), `:simd` (vectors), `:math` (fused or fast
   floating-point math), `:cpu` (queries of CPU features), `:float16` (`half` values),
-  `:bfloat16` (`bfloat` values, Julia 1.11 and later). Julia 1.14 always clones the first
-  two of them.
+  `:bfloat16` (`bfloat` values, Julia 1.11 and later). Julia 1.14 always clones loops and
+  CPU feature queries.
 - `opt_size`, `min_size`: optimize the functions cloned for this target for size, or for
   minimal size.
 
@@ -467,8 +467,11 @@ function annotate_module_clones(mod::LLVM.Module, am, targets::Vector{MultiVersi
         end
     end
 
-    # With a single target, nothing is relocated. With a target that clones everything,
-    # uses by instructions still have to be redirected to the right version.
+    # Functions cloned for a target that only clones some functions need a slot when
+    # instructions use them, as the image loader picks the version their callers in the
+    # same group call. Functions that aliases name need one for the trampolines that
+    # replace the aliases, and other functions in global initializers only an entry in
+    # the function table. With a single target, nothing needs either.
     reloc = Set{LLVM.Function}()
     fvar = Set{LLVM.Function}()
     if ntargets > 1

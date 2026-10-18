@@ -392,10 +392,10 @@ S20's. The dialect fields are
 flags are read and added through the `llvm.module.flags` named metadata, as LLVM's C API
 can't represent `Max` flags (LLVM.jl's `mod.flags` iteration and assignment are unsafe for
 them). The `targets` keyword is vector-valued, which `custom_pass` now supports (not
-settable in a pipeline). Deviations (S-D22) are on `docs/src/multiversioning.md`. All four
-`multiversioning-*.ll` fixtures run with the port at every pin (`-x86.ll` with the
-CPUFeatures port behind it, `-abi.ll` behind the LateLowerGCFrame port). Validated: `Pkg.test()` 1.10
-742, 1.11 742, 1.12 739, 1.13 707, nightly 705; mode A 23/24/25/27/30 (+3 each), `--cpp`
+settable in a pipeline). Deviations (S-D22) are on `docs/src/multiversioning.md`. The
+annotate-only, clone-only and x86 fixtures run with the port at every pin (`-x86.ll` with
+the CPUFeatures port behind it), `-abi.ll` from 1.13 (behind the LateLowerGCFrame port).
+Validated: `Pkg.test()` 1.10 742, 1.11 742, 1.12 739, 1.13 707, nightly 705; mode A 23/24/25/27/30 (+3 each), `--cpp`
 28/32/33/35/40 + 2 unsupported (unchanged). The in-process differential against the C++
 (fixtures, the lit module, a module with every kind of use) is identical except for the
 trampolines' ABI on 1.10–1.12 (S-D22(2)); the audit's probes give identical output, an
