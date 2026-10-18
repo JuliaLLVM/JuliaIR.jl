@@ -28,6 +28,7 @@ module LoweringCorpus
     struct NestedPad; a::Int8; t::Tuple{Int8,Int32}; c::Int8; end
     struct WithLP; a::Int8; p::Core.LLVMPtr{Float32,5}; end
     struct WithLP3; a::Int8; p::Core.LLVMPtr{Float32,3}; end
+    struct PaddedLP3; p::Core.LLVMPtr{Int8,3}; x::Int64; end
     struct WithPtr; a::Int8; p::Ptr{Int}; end
     struct BoolPair; a::Bool; b::Bool; end
     struct VEU; v::VecElement{Union{Int8,Nothing}}; end
@@ -47,7 +48,7 @@ module LoweringCorpus
         VecElement{Tuple{Int,Int}}, VecElement{String}, VEU, Tuple{Int8,Int64}, Tuple{Int,Nothing},
         Tuple{Int,Tuple{}}, Tuple{Tuple{},Int8,Nothing}, NTuple{2,Ptr{Int}},
         Pad, WithRef, WithUnion, WithUnion2, I128, Outer, WithGhost, Mut, HasMut, Hetero, VE8,
-        UHi, Uninit, AbsField, U3, UGhosts, UGhostInt, NestedPad, WithLP, WithLP3, WithPtr,
+        UHi, Uninit, AbsField, U3, UGhosts, UGhostInt, NestedPad, WithLP, WithLP3, PaddedLP3, WithPtr,
         BoolPair, P24Pair, MutUnion, Tuple{String,Int}, Tuple{Symbol,Symbol},
         Tuple{Union{Nothing,String},Int}, Any, Int, Integer, Union{Int,Nothing},
         Base.RefValue{Int}, ComplexF64, Complex{Bool}, Some{Int}, Some{Nothing}, String, Symbol,
@@ -317,7 +318,8 @@ end
               Set(julia_int128_16 ? String[] : filter(!=(string(C.WithUnion2)), int128))
 
         # AMDGPU's local and private pointers are 4 bytes (Julia's `LLVMPtr` 8)
-        amdgpu_ptr = [string(Core.LLVMPtr{Int8,3}), string(C.WithLP), string(C.WithLP3)]
+        amdgpu_ptr = [string(Core.LLVMPtr{Int8,3}), string(C.WithLP), string(C.WithLP3),
+                      string(C.PaddedLP3)]
         @test diverging(gpu_datalayouts.amdgpu) ==
               Set(julia_int128_16 ? [int128; amdgpu_ptr] : amdgpu_ptr)
         @test diverging(gpu_datalayouts.air) == Set(julia_int128_16 ? int128 : String[])
@@ -326,6 +328,16 @@ end
         divs = JuliaIR.check_layout(C.WithLP, LLVM.DataLayout(gpu_datalayouts.amdgpu))
         @test any(d -> d.path == "$(C.WithLP).p" && d.property === :offset &&
                        d.julia == 8 && d.llvm == 4, divs)
+
+        # a field that is narrower in LLVM, hidden by padding
+        divs = JuliaIR.check_layout(C.PaddedLP3, LLVM.DataLayout(gpu_datalayouts.amdgpu))
+        @test any(d -> d.path == "$(C.PaddedLP3).p" && d.property === :size &&
+                       d.julia == 8 && d.llvm == 4, divs)
+        if isdefined(Core, :GenericMemoryRef)
+            divs = JuliaIR.check_layout(MemoryRef{Int}, LLVM.DataLayout("e-p:32:32-p10:64:64"))
+            @test any(d -> d.path == "$(MemoryRef{Int}).ptr_or_offset" &&
+                           d.property === :size, divs)
+        end
     end
 end
 

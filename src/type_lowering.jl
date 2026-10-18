@@ -400,8 +400,9 @@ Base.show(io::IO, d::LayoutDivergence) =
 Compare the layout the running Julia uses for values of type `T` with the layout that the
 data layout `dl` gives the LLVM type [`JuliaIR.julia_type`](@ref) lowers `T` to, and return
 the differences: the size, allocation size and alignment of `T`, and the offset of every
-field that occupies memory (recursively for inline fields). An empty result means that
-code generated for `dl` addresses values of type `T` like Julia does.
+field that occupies memory, with the size and alignment of the field's value (recursively
+for inline fields). An empty result means that code generated for `dl` addresses values
+of type `T` like Julia does.
 
 Julia's code generator addresses fields by byte offsets that it maps onto the LLVM type's
 elements, so a divergence means that Julia's C++ also generates wrong code for that type
@@ -413,22 +414,10 @@ function check_layout(@nospecialize(T), dl::DataLayout)
     require_opaque_context()
     out = LayoutDivergence[]
     l = lower_type(T, false, DIALECT)
-    name = string(T)
     if l.boxed
-        check_pointer!(out, name, dl)
-    elseif !is_ghost(l.type)
-        jsize = datatype_size(T)
-        jalign = Base.datatype_alignment(T)
-        # Julia's size can include padding that LLVM doesn't store (`<3 x float>`) or
-        # allocate (odd-size primitives before Julia master), but must cover what LLVM
-        # stores and fit in what it allocates
-        store, alloc = storage_size(dl, l.type), abi_size(dl, l.type)
-        jsize < store && compare!(out, name, :size, jsize, store)
-        jsize > alloc && compare!(out, name, :size, jsize, alloc)
-        compare!(out, name, :allocation_size, cld(jsize, jalign) * jalign,
-                 abi_size(dl, l.type))
-        compare!(out, name, :alignment, jalign, abi_alignment(dl, l.type))
-        check_fields!(out, name, T, l.type, dl)
+        check_pointer!(out, string(T), dl)
+    else
+        check_value!(out, string(T), T, l.type, dl)
     end
     return out
 end
@@ -439,67 +428,75 @@ compare!(out, path, property, julia, llvm) =
 check_pointer!(out, path, dl) =
     compare!(out, path, :pointer_size, sizeof(Ptr{Cvoid}), storage_size(dl, PointerType(10)))
 
-# Compare the offsets of the fields of `T` (lowered to `lty`) relative to the start of `T`,
-# following the lowering's choices: dropped ghost fields, inline unions spread over several
-# elements, homogeneous fields as arrays or vectors, `VecElement` unwrapped.
-function check_fields!(out, path, @nospecialize(T), @nospecialize(lty::LLVMType), dl)
-    T isa DataType && !isprimitivetype(T) || return
-    n = fieldcount(T)
-    n == 0 && return
+# a value of type `T` stored inline as `lty`, at the top or in a field: its size and
+# alignment, and the layout of its fields
+function check_value!(out, path, @nospecialize(T), @nospecialize(lty::LLVMType), dl)
+    is_ghost(lty) && return
+    jsize = datatype_size(T)
+    jalign = Base.datatype_alignment(T)
+    # Julia's size can include padding that LLVM doesn't store (`<3 x float>`) or
+    # allocate (odd-size primitives before Julia master), but must cover what LLVM
+    # stores and fit in what it allocates
+    store, alloc = storage_size(dl, lty), abi_size(dl, lty)
+    jsize < store && compare!(out, path, :size, jsize, store)
+    jsize > alloc && compare!(out, path, :size, jsize, alloc)
+    compare!(out, path, :allocation_size, cld(jsize, jalign) * jalign, alloc)
+    compare!(out, path, :alignment, jalign, abi_alignment(dl, lty))
+    T isa DataType && !isprimitivetype(T) && fieldcount(T) > 0 || return
     if is_vecelement_type(T) && !(fieldtype(T, 1) isa Union)
-        return check_field!(out, string(path, ".", fieldname(T, 1)), T, 1, lty, dl)
-    end
-    is_genericmemoryref_type(T) && return check_struct_offsets!(out, path, T, lty, dl, 1:2)
-    if lty isa ArrayType || lty isa VectorType
-        E = lty.element_type
-        for i in 1:n
-            fpath = string(path, ".", fieldname(T, i))
-            compare!(out, fpath, :offset, fieldoffset(T, i), (i - 1) * abi_size(dl, E))
-            check_field!(out, fpath, T, i, E, dl)
-        end
+        check_field!(out, path, T, 1, lty, dl)
+    elseif lty isa ArrayType || lty isa VectorType
+        check_sequence_fields!(out, path, T, lty, dl)
     elseif lty isa StructType
-        idx = 1
-        desc = Base.DataTypeFieldDesc(T)
-        for i in 1:n
-            fpath = string(path, ".", fieldname(T, i))
-            F = fieldtype(T, i)
-            fd = desc[i]
-            joff = Int(fd.offset)
-            if !fd.isptr && F isa Union
-                # the data (after an alignment marker), then the selector byte
-                elts = push_union_field!(LLVMType[], F, Int(fd.size))
-                first = elts[1] isa ArrayType ? 2 : 1
-                if length(elts) > first
-                    compare!(out, fpath, :offset, joff, LLVM.offsetof(dl, lty, idx + first - 1))
-                end
-                compare!(out, string(fpath, " (selector)"), :offset, joff + Int(fd.size) - 1,
-                         LLVM.offsetof(dl, lty, idx + length(elts) - 1))
-                idx += length(elts)
-                continue
-            end
-            E = fd.isptr ? PointerType(10) : lower_struct(F, false, DIALECT).type
-            is_ghost(E) && continue
-            compare!(out, fpath, :offset, joff, LLVM.offsetof(dl, lty, idx))
-            check_field!(out, fpath, T, i, lty.elements[idx], dl)
-            idx += 1
-        end
+        check_struct_fields!(out, path, T, lty, dl)
     end
     return
 end
 
-function check_struct_offsets!(out, path, T, lty, dl, fields)
-    for (idx, i) in enumerate(fields)
-        compare!(out, string(path, ".", fieldname(T, i)), :offset, fieldoffset(T, i),
-                 LLVM.offsetof(dl, lty, idx))
+# a field of `T` stored as an element of type `E`: a reference, or an inline value
+function check_field!(out, path, T::DataType, i::Int, @nospecialize(E::LLVMType), dl)
+    fpath = string(path, ".", fieldname(T, i))
+    if Base.DataTypeFieldDesc(T)[i].isptr
+        check_pointer!(out, fpath, dl)
+    else
+        check_value!(out, fpath, fieldtype(T, i), E, dl)
     end
 end
 
-# a field of `T` stored as an element of type `E`: a reference, or an inline value whose
-# own fields are checked
-function check_field!(out, path, T::DataType, i::Int, @nospecialize(E::LLVMType), dl)
-    if Base.DataTypeFieldDesc(T)[i].isptr
-        check_pointer!(out, path, dl)
-    else
-        check_fields!(out, path, fieldtype(T, i), E, dl)
+# fields lowered to the elements of an array or vector, one each
+function check_sequence_fields!(out, path, T::DataType, lty, dl)
+    E = lty.element_type
+    for i in 1:fieldcount(T)
+        compare!(out, string(path, ".", fieldname(T, i)), :offset, fieldoffset(T, i),
+                 (i - 1) * abi_size(dl, E))
+        check_field!(out, path, T, i, E, dl)
+    end
+end
+
+# fields lowered to the elements of a struct: fields without data are dropped, an
+# inline union takes several elements
+function check_struct_fields!(out, path, T::DataType, lty, dl)
+    idx = 1     # the element of the field
+    desc = Base.DataTypeFieldDesc(T)
+    for i in 1:fieldcount(T)
+        fpath = string(path, ".", fieldname(T, i))
+        F = fieldtype(T, i)
+        fd = desc[i]
+        offset = Int(fd.offset)
+        if !fd.isptr && F isa Union
+            # the data (after an alignment marker, if any), then the selector byte
+            elts = push_union_field!(LLVMType[], F, Int(fd.size))
+            data = elts[1] isa ArrayType ? 2 : 1
+            if length(elts) > data
+                compare!(out, fpath, :offset, offset, LLVM.offsetof(dl, lty, idx + data - 1))
+            end
+            compare!(out, string(fpath, " (selector)"), :offset, offset + Int(fd.size) - 1,
+                     LLVM.offsetof(dl, lty, idx + length(elts) - 1))
+            idx += length(elts)
+        elseif fd.isptr || !is_ghost(lower_struct(F, false, DIALECT).type)
+            compare!(out, fpath, :offset, offset, LLVM.offsetof(dl, lty, idx))
+            check_field!(out, path, T, i, lty.elements[idx], dl)
+            idx += 1
+        end
     end
 end
