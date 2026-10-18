@@ -1,0 +1,6 @@
+[deps]
+GPUCompiler = "61eb1bfa-7361-4325-ad38-22787b887f55"
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+
+[compat]
+GPUCompiler = "2"

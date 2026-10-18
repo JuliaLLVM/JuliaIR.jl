@@ -1,6 +1,7 @@
 # Testing
 
-The passes are tested at three levels.
+The passes are tested at three levels: the package tests, Julia's own pass tests, and a
+differential test against Julia's C++ passes, which is not part of `Pkg.test()`.
 
 ## Package tests
 
@@ -110,3 +111,84 @@ development version's entries apply to whatever master is current: when the nigh
 build moves on and a fixture appears or changes in a way the manifest doesn't account for
 (an override that no longer applies, a fixture of a port that now passes), the harness
 fails, and the manifest needs updating.
+
+## Differential test against Julia's C++ passes
+
+`test/differential/run.jl` compares each port with the C++ pass it ports, both running in
+the same process on the running Julia's LLVM, on many modules: for every module and pass,
+it runs the C++ pass and the port on independent copies of the module, behind the same
+pipeline of Julia's C++ passes (a *prefix*: e.g. none, or what precedes the pass in
+Julia's pipeline), and compares the results. Since the passes process the running
+Julia's IR, each Julia version compares its own C++ passes with the ports, on IR it
+generated itself.
+
+The comparison is of the printed module, after removing the names of local values (so
+that LLVM numbers them) and replacing the numbers of attribute groups by their contents;
+of whether the module verifies; of the errors either side throws (the C++ passes abort
+the process on some inputs, so they run in a worker process that is restarted after a
+crash, and a pass that runs for too long counts as hung); and, for the passes that emit
+optimization remarks, of the remarks. A pass with a verdict instead of output
+(GCInvariantVerifier) is compared by the messages of the C++ pass, which aborts, and of
+the port's exception.
+
+Each comparison is one of:
+
+- *identical*;
+- *excepted*: the outputs differ only in ways recorded in
+  `test/differential/exceptions.toml`. An entry there names the pass, optionally the
+  inputs (a glob), Julia versions and prefix it applies to, a regex, the reason and the
+  plan decision behind it. A difference is excepted only if every changed line (of the
+  C++ output or the port's, including the status lines for errors and invalid IR)
+  matches an entry that applies to the input, so a recorded difference can't hide a new
+  one in the same module;
+- *different*: a finding, reported with the diff, which makes the run fail.
+
+Inputs that don't parse or verify, and inputs in which (after the prefix) nothing names
+what the pass works on, are counted but not compared. The report also counts how often
+the C++ pass changed the module at all, and lists entries of `exceptions.toml` that
+matched nothing.
+
+The inputs are `.ll` files or directories of them:
+
+- Julia's own pass tests (`test/llvmpasses` of the checkout pinned for the Julia version
+  in `test/upstream/manifest.toml`, or of the nightly build's commit), every one that
+  parses;
+- `test/differential/corpus.jl` writes the unoptimized IR that the running Julia
+  generates (`code_llvm(...; optimize=false, raw=true, dump_module=true)`) for a list of
+  functions with GC stacks, allocations and write barriers, `@simd` loops,
+  `GC.@preserve`, atomics, exceptions, `Float16` arithmetic and closures, with and
+  without debug information;
+- `test/differential/gpucompiler/corpus.jl` writes GPUCompiler's modules for PTX, GCN,
+  SPIR-V, Metal and native code without the Julia runtime, before optimization
+  (`GPUCompiler.compile(:llvm, job)` with `optimize=false`), the IR on which GPUCompiler
+  runs Julia's passes. It has its own environment, `test/differential/gpucompiler`, as
+  GPUCompiler brings its own LLVM.jl; only the IR text crosses over;
+- `test/differential/inputs`: hand-written modules for what the generated IR lacks, like
+  GC invariant violations for GCInvariantVerifier.
+
+```
+julia +1.12 --project=test/differential test/differential/corpus.jl corpus
+julia +1.12 --project=test/differential/gpucompiler -e 'using Pkg; Pkg.instantiate()'
+julia +1.12 --project=test/differential/gpucompiler test/differential/gpucompiler/corpus.jl gpu
+julia +1.12 --project=test/differential test/differential/run.jl --out results \
+    julia-src/test/llvmpasses corpus gpu test/differential/inputs
+```
+
+`run.jl --pass AllocOpt` restricts the run to one pass (Julia's name), and the diffs of
+all differences, excepted or not, are in `results/diffs`; `run.jl --report --out results
+...` reports an earlier run again, e.g. after editing `exceptions.toml`. On Julia 1.10 and 1.11, which
+have no workspaces, develop the package into the environment first
+(`Pkg.develop(path=".")`, and LLVM.jl from the package's `[sources]`).
+
+`test/differential/all.sh WORKDIR` does all of this for every Julia version (juliaup
+channels 1.10 to nightly, or those given): it checks out the fixtures, sets up the
+environments, generates the corpora and runs the comparison, one version at a time, and
+summarizes the counts in `WORKDIR/summary.txt`. While JuliaIR needs an unreleased
+LLVM.jl, `LLVMEXTRA_BUILDS` names a directory of `libLLVMExtra` builds per LLVM version,
+which it sets as the preference for each run.
+
+To compare another port, add a `PassSpec` to `test/differential/passes.jl`: Julia's name
+of the pass, a regex that finds what the pass works on in a module, the prefixes to run
+it behind, and, if needed, a preparation of the inputs (e.g. the GPU-like inputs of
+`jl-late-gc-cleanup`), the names of its remarks, or that the C++ pass aborts on rejected
+input.

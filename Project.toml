@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Tim Besard <tim.besard@gmail.com>"]
 
 [workspace]
-projects = ["test", "docs"]
+projects = ["test", "docs", "test/differential"]
 
 [deps]
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
