@@ -350,6 +350,30 @@ flag_count(mod, name) =
         @test result["loop2"][2] == :none
     end
 
+    # a function passed to a callee with `!callback` metadata is called by it, like LLVM's
+    # call graph says: `cb` is called by and calls the loop, so it is cloned too
+    callback_ir(callback) = """
+        declare $(callback ? "!callback !0 " : "")void @broker(ptr, i32)
+        define void @loop(i32 %n) {
+        top:
+          br label %body
+        body:
+          call void @broker(ptr @cb, i32 %n)
+          %c = icmp eq i32 %n, 0
+          br i1 %c, label %exit, label %body
+        exit:
+          ret void
+        }
+        define void @cb() {
+          call void @loop(i32 0)
+          ret void
+        }
+        !0 = !{!1}
+        !1 = !{i64 0, i1 false}
+        """ * mv_flags(SKIPCLONING)
+    @test multiversion(annotations, callback_ir(true); targets=loop_targets)["cb"][1] == [1]
+    @test multiversion(annotations, callback_ir(false); targets=loop_targets)["cb"][1] == []
+
     # relocation slots and the function table
     reloc_ir = """
         @gv = global ptr @in_global

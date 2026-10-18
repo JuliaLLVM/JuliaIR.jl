@@ -189,8 +189,7 @@ add_module_flag!(mod::LLVM.Module, behavior::Int, name::String, value::Integer) 
 function metadata_integer(md)
     md isa ValueAsMetadata || return nothing
     val = Value(md)
-    val isa ConstantInt && API.LLVMGetIntTypeWidth(API.LLVMTypeOf(val)) <= 64 ||
-        return nothing
+    val isa ConstantInt && val.value_type.width <= 64 || return nothing
     return convert(UInt64, val)
 end
 
@@ -271,25 +270,11 @@ end
 
 ## annotation
 
+is_vector(@nospecialize(ty::LLVMType)) = ty isa LLVM.VectorType || ty isa LLVM.ScalableVectorType
+
 # whether a function type has a vector result or parameter (`is_vector`)
-function is_vector_function(fty::API.LLVMTypeRef)
-    is_vector_type(API.LLVMGetReturnType(fty)) && return true
-    params = Vector{API.LLVMTypeRef}(undef, API.LLVMCountParamTypes(fty))
-    API.LLVMGetParamTypes(fty, params)
-    return any(is_vector_type, params)
-end
-
-# the function a call calls, if it calls one directly with its own type (C++'s
-# `CallBase::getCalledFunction`)
-function called_function_ref(call::API.LLVMValueRef)
-    callee = API.LLVMGetCalledValue(call)
-    API.LLVMIsAFunction(callee) == C_NULL && return nothing
-    API.LLVMGlobalGetValueType(callee) == API.LLVMGetCalledFunctionType(call) ||
-        return nothing
-    return callee
-end
-
-ref_name(ref::API.LLVMValueRef) = unsafe_string(API.LLVMGetValueName2(ref, Ref{Csize_t}()))
+is_vector_function(ft::LLVM.FunctionType) =
+    is_vector(LLVM.return_type(ft)) || any(is_vector, LLVM.parameters(ft))
 
 # The categories of a function, and whether it has a vector signature or calls a function
 # with one (`collect_func_info`).
@@ -298,22 +283,21 @@ function collect_func_info(f::LLVM.Function, am, triple::LLVM.Triple, dialect::D
     has_veccall = false
     li = am[f][LoopInfo]
     iterate(li) === nothing || (flag |= clone_bit(:loop))
-    if is_vector_function(API.LLVMGlobalGetValueType(f))
+    if is_vector_function(f.function_type)
         flag |= clone_bit(:simd)
         has_veccall = true
     end
     all_flags = clone_mask((:simd, :math, :cpu, :float16)) |
                 (dialect.mv_bf16 ? clone_bit(:bfloat16) : UInt32(0))
     for bb in f.blocks, inst in bb.instructions
-        ref = inst.ref
-        if API.LLVMIsACallInst(ref) != C_NULL
-            if is_vector_function(API.LLVMGetCalledFunctionType(ref))
+        if inst isa CallInst
+            if is_vector_function(inst.called_type)
                 has_veccall = true
                 flag |= clone_bit(:simd)
             end
-            callee = called_function_ref(ref)
+            callee = inst.called_function
             if callee !== nothing
-                name = ref_name(callee)
+                name = callee.name
                 if startswith(name, "llvm.muladd.") || startswith(name, "llvm.fma.")
                     flag |= clone_bit(:math)
                 elseif startswith(name, "julia.cpu.")
@@ -323,21 +307,19 @@ function collect_func_info(f::LLVM.Function, am, triple::LLVM.Triple, dialect::D
                     end
                 end
             end
-        elseif API.LLVMIsAStoreInst(ref) != C_NULL
-            if is_vector_type(API.LLVMTypeOf(API.LLVMGetOperand(ref, 0)))
-                flag |= clone_bit(:simd)
-            end
-        elseif is_vector_type(API.LLVMTypeOf(ref))
+        elseif inst isa StoreInst
+            is_vector(inst.operands[1].value_type) && (flag |= clone_bit(:simd))
+        elseif is_vector(inst.value_type)
             flag |= clone_bit(:simd)
         end
-        if API.LLVMCanValueUseFastMathFlags(ref) != 0 && API.LLVMGetFastMathFlags(ref) != 0
+        if LLVM.supports_fast_math(inst) && any(values(NamedTuple(LLVM.fast_math(inst))))
             flag |= clone_bit(:math)
         end
-        for i in 0:API.LLVMGetNumOperands(ref)-1
-            kind = API.LLVMGetTypeKind(API.LLVMTypeOf(API.LLVMGetOperand(ref, i)))
-            if kind == API.LLVMHalfTypeKind
+        for op in inst.operands
+            ty = op.value_type
+            if ty isa LLVM.HalfType
                 flag |= clone_bit(:float16)
-            elseif kind == API.LLVMBFloatTypeKind && dialect.mv_bf16
+            elseif ty isa LLVM.BFloatType && dialect.mv_bf16
                 flag |= clone_bit(:bfloat16)
             end
         end
@@ -350,42 +332,32 @@ end
 # graph: direct calls (with the callee's own type), and the callbacks of `!callback`
 # metadata of callees. Edges to declarations don't matter here (declarations call no other
 # function of the module), so they are left out.
-function callees(f::LLVM.Function, callback_kind::Cuint)
-    result = API.LLVMValueRef[]
+function callees(f::LLVM.Function)
+    result = LLVM.Function[]
     for bb in f.blocks, inst in bb.instructions
-        ref = inst.ref
-        API.LLVMIsACallInst(ref) == C_NULL && API.LLVMIsAInvokeInst(ref) == C_NULL &&
-            API.LLVMIsACallBrInst(ref) == C_NULL && continue
-        callee = called_function_ref(ref)
+        inst isa CallBase || continue
+        callee = inst.called_function
         callee === nothing && continue
-        API.LLVMIsDeclaration(callee) == 0 && push!(result, callee)
-        for idx in callback_callee_indices(callee, callback_kind)
-            idx < API.LLVMGetNumArgOperands(ref) || continue
-            cb = API.LLVMExtraStripPointerCasts(API.LLVMGetOperand(ref, idx))
-            API.LLVMIsAFunction(cb) != C_NULL && API.LLVMIsDeclaration(cb) == 0 &&
-                push!(result, cb)
+        isdeclaration(callee) || push!(result, callee)
+        args = inst.arguments
+        for idx in callback_callee_indices(callee)
+            idx < length(args) || continue
+            cb = strip_pointer_casts(args[idx+1])
+            cb isa LLVM.Function && !isdeclaration(cb) && push!(result, cb)
         end
     end
     return result
 end
 
-# the argument indices of the callees of a function's `!callback` encodings
-function callback_callee_indices(f::API.LLVMValueRef, kind::Cuint)
-    n = Ref{Csize_t}()
-    entries = API.LLVMGlobalCopyAllMetadata(f, n)
+# the argument indices (from 0) of the callees of a function's `!callback` encodings
+function callback_callee_indices(f::LLVM.Function)
+    node = get(f.metadata, "callback", nothing)
+    node === nothing && return Int[]
     indices = Int[]
-    try
-        for i in 0:Int(n[])-1
-            API.LLVMValueMetadataEntriesGetKind(entries, i) == kind || continue
-            node = Metadata(API.LLVMValueMetadataEntriesGetMetadata(entries, i))
-            for encoding in node.operands
-                encoding isa MDNode && !isempty(encoding.operands) || continue
-                idx = metadata_integer(encoding.operands[1])
-                idx === nothing || push!(indices, Int(idx))
-            end
-        end
-    finally
-        entries == C_NULL || API.LLVMDisposeValueMetadataEntries(entries)
+    for encoding in node.operands
+        encoding isa MDNode && !isempty(encoding.operands) || continue
+        idx = metadata_integer(encoding.operands[1])
+        idx === nothing || push!(indices, Int(idx))
     end
     return indices
 end
@@ -419,11 +391,6 @@ function parse_clones(f::LLVM.Function, str::String, ntargets::Int)
     return BitVector([(x >> (i - 1)) & 1 == 1 for i in 1:ntargets])
 end
 
-const FUNCTION_INDEX = reinterpret(API.LLVMAttributeIndex, API.LLVMAttributeFunctionIndex)
-
-has_fn_attribute(f::LLVM.Function, kind::String) =
-    API.LLVMGetStringAttributeAtIndex(f, FUNCTION_INDEX, kind, length(kind)) != C_NULL
-
 # the clone sets of an annotated module, from the attributes of its functions
 function clone_sets(mod::LLVM.Module, ntargets::Int)
     clones = Dict{LLVM.Function,BitVector}()
@@ -432,8 +399,8 @@ function clone_sets(mod::LLVM.Module, ntargets::Int)
     for f in mod.functions
         str = string_attribute(f, "julia.mv.clones")
         str === nothing || (clones[f] = parse_clones(f, str, ntargets))
-        has_fn_attribute(f, "julia.mv.reloc") && push!(reloc, f)
-        has_fn_attribute(f, "julia.mv.fvar") && push!(fvar, f)
+        haskey(f.function_attributes, "julia.mv.reloc") && push!(reloc, f)
+        haskey(f.function_attributes, "julia.mv.fvar") && push!(fvar, f)
     end
     return CloneSets(clones, reloc, fvar, false)
 end
@@ -463,9 +430,8 @@ function annotate_module_clones(mod::LLVM.Module, am, targets::Vector{MultiVersi
     graph = nothing
     function call_graph()
         graph === nothing || return graph
-        index = Dict(f.ref => j for (j, f) in enumerate(orig_funcs))
-        kind = API.LLVMGetMDKindIDInContext(context(mod), "callback", 8)
-        graph = [unique!([index[c] for c in callees(f, kind)]) for f in orig_funcs]
+        index = Dict(f => j for (j, f) in enumerate(orig_funcs))
+        graph = [unique!([index[c] for c in callees(f)]) for f in orig_funcs]
         return graph
     end
 
@@ -535,7 +501,7 @@ function check_veccall_flag(mod::LLVM.Module)
     flag = module_flag(mod, "julia.mv.veccall")
     flag === nothing && return false
     flag.behavior == MODULE_FLAG_MAX && metadata_integer(flag.value) == 1 &&
-        API.LLVMGetIntTypeWidth(API.LLVMTypeOf(Value(flag.value))) == 32 ||
+        Value(flag.value).value_type == LLVM.Int32Type() ||
         throw(MultiVersioningError("the module already has a julia.mv.veccall flag, which differs from the one the annotation adds (i32 1, behavior Max)"))
     return true
 end
@@ -682,7 +648,7 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
             if user isa GlobalAlias
                 f in sets.reloc ||
                     throw(MultiVersioningError("$what, an alias, and has no julia.mv.reloc attribute"))
-                is_vector_function(API.LLVMGlobalGetValueType(f)) &&
+                is_vector_function(f.function_type) &&
                     throw(MultiVersioningError("$what, an alias, and has vector arguments or results"))
             elseif user isa GlobalVariable
                 user.constant &&
@@ -844,9 +810,6 @@ func_id(ctx::CloneCtx, f::LLVM.Function) = ctx.func_ids[f] - 1
 reloc_slot(ctx::CloneCtx, f::LLVM.Function) =
     isdeclaration(f) ? ctx.extern_relocs[f] : ctx.const_relocs[func_id(ctx, f)]
 
-remove_fn_attribute!(f::LLVM.Function, kind::String) =
-    API.LLVMRemoveStringAttributeAtIndex(f, FUNCTION_INDEX, kind, length(kind))
-
 function load_slot!(ctx::CloneCtx, ty::LLVMType, slot::GlobalVariable)
     load = load!(ctx.builder, ty, slot)
     load.metadata[LLVM.MD_tbaa] = ctx.tbaa_const
@@ -867,8 +830,8 @@ function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariabl
     copy_attributes!(trampoline, f)
     trampoline.visibility = LLVM.API.LLVMHiddenVisibility
     trampoline.dso_local = true
-    remove_fn_attribute!(trampoline, "julia.mv.reloc")
-    remove_fn_attribute!(trampoline, "julia.mv.clones")
+    delete!(trampoline.function_attributes, "julia.mv.reloc")
+    delete!(trampoline.function_attributes, "julia.mv.clones")
 
     builder = ctx.builder
     position!(builder, LLVM.at_end(BasicBlock(trampoline, "top")))
