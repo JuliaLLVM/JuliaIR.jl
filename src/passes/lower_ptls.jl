@@ -167,6 +167,12 @@ end
 restores_gc_state(f::LLVM.Function) =
     CountTrackedPointers(Base.unsafe_convert(TypeRef, LLVM.return_type(f.function_type))).count == 0
 
+# Call another function (`CallBase::setCalledOperand`), which may be in another address
+# space than the getter: the callee is the last operand of a call. (LLVM.jl's
+# `called_operand!` insists on the same pointer type.)
+set_called_operand!(call::Instruction, @nospecialize(callee::Value)) =
+    (LLVM.operands(call)[end] = callee)
+
 # Lower one call of a getter (`fix_pgcstack_use`).
 function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Function, or_new::Bool)
     builder = p.builder
@@ -254,7 +260,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             replace_uses!(call, phi)
             move!(call, LLVM.before(slow_term))
             position_before!(builder, call; debug=true)
-            LLVM.called_operand!(call, load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT))
+            set_called_operand!(call, load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT))
             set_pgcstack_attrs!(call)
             push!(phi.incoming, (fast_tls, fast_tls.parent))
             push!(phi.incoming, (call, call.parent))
@@ -271,7 +277,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             erase!(call)
             call = new_call
         else
-            LLVM.called_operand!(call, getter_ptr)
+            set_called_operand!(call, getter_ptr)
         end
         set_pgcstack_attrs!(call)
     elseif !p.tls_getters && layout(p).tls_offset != -1
@@ -289,7 +295,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             erase!(call)
             call = new_call
         else
-            LLVM.called_operand!(call, target)
+            set_called_operand!(call, target)
         end
         set_pgcstack_attrs!(call)
     else
@@ -299,7 +305,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             resolved = LLVM.Function(p.mod, PGCSTACK_RESOLVED,
                                      LLVM.FunctionType(LLVM.VoidType()))
         end
-        LLVM.called_operand!(call, resolved)
+        set_called_operand!(call, resolved)
         set_pgcstack_attrs!(call)
     end
     return

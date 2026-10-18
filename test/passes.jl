@@ -693,6 +693,22 @@ end
             }""", "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
         @test occursin("call addrspace(1) ptr @$(dialect.ptls_adopt_thread)()", out)
         @test occursin("declare ptr @$(dialect.ptls_adopt_thread)() addrspace(1)", out)
+        # the getter's replacements are in the default address space
+        as1_ir = """
+            target triple = "x86_64-unknown-linux-gnu"
+            declare ptr @julia.get_pgcstack() addrspace(1)
+            define ptr @f() {
+              %pgcstack = call addrspace(1) ptr @julia.get_pgcstack()
+              ret ptr %pgcstack
+            }"""
+        _, out = lower(as1_ir, "imaging;tls-elf-support=yes")
+        @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
+        _, out = lower(as1_ir, "imaging;tls-elf-support=no")
+        @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
+        _, out = lower(as1_ir, "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        @test occursin(dialect.ptls_jit_getter === :resolved ?
+                       "call ptr @jl_get_pgcstack_resolved()" :
+                       "call ptr inttoptr (i64 4096 to ptr)()", out)
     end
 
     # the thread pointer of the host, as Julia's own code reads it (in JIT mode)
