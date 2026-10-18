@@ -322,8 +322,6 @@ address space becomes 0. Otherwise the pass works like
 """
 RemoveAddrspacesPass(; kwargs...) = custom_pass(REMOVE_ADDRSPACES; kwargs...)
 function RemoveAddrspacesPass(asmap; kwargs...)
-    def = REMOVE_ADDRSPACES
     impl = (mod, am, opts) -> remove_addrspaces!(mod, am, asmap)
-    return custom_pass(PassDefinition(def.name, def.kind, def.required, impl, def.extra,
-                                      def.cpp_name); kwargs...)
+    return custom_pass(with_impl(REMOVE_ADDRSPACES, impl); kwargs...)
 end
