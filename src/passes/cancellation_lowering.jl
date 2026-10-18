@@ -150,14 +150,21 @@ function compute_reset_ctx_ptr!(p::CancellationLowering)
     if p.pgcstack_inst !== nothing
         position_before!(builder, LLVM.next(p.pgcstack_inst); debug=true)
     else
+        entry = first(p.f.blocks)
         pos = nothing
-        for inst in first(p.f.blocks).instructions
+        for inst in entry.instructions
             inst isa LLVM.AllocaInst && continue
             pos = inst
             break
         end
         # an entry block of only allocas has no terminator: not valid IR
-        position_before!(builder, pos; debug=true)
+        if pos == first(entry.instructions)
+            # `entry.begin()`, before the debug records of the first instruction; an
+            # iterator advanced past allocas comes after the records
+            position!(builder, LLVM.at_begin(entry))
+        else
+            position_before!(builder, pos; debug=true)
+        end
     end
     rt = runtime_layout(p)
     T_int8 = LLVM.Int8Type()
