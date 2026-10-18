@@ -777,7 +777,7 @@ end
 
     # a load from the slot can't come before an exception handling pad (the C++ pass emits
     # invalid IR)
-    rejects("used by an exception handling instruction of g",
+    rejects("the load would come before an exception handling instruction",
             cloning_ir(f_ir() * """
                 declare i32 @personality(...)
                 declare void @throws()
@@ -788,6 +788,25 @@ end
                 pad:
                   %lp = landingpad { ptr, i32 } catch ptr @f
                   ret void
+                }
+                attributes #1 = { "julia.mv.clones"="0" }
+                """, ["f", "g"]))
+    # also for a phi, whose load goes at the end of the incoming block
+    rejects("the load would come before an exception handling instruction",
+            cloning_ir(f_ir() * """
+                declare i32 @personality(...)
+                declare void @throws()
+                define void @g() #1 personality ptr @personality {
+                  invoke void @throws() to label %ok unwind label %dispatch
+                ok:
+                  ret void
+                dispatch:
+                  %cs = catchswitch within none [label %handler] unwind to caller
+                handler:
+                  %p = phi ptr [ @f, %dispatch ]
+                  %cp = catchpad within %cs [ptr null, i32 64, ptr null]
+                  call void %p() [ "funclet"(token %cp) ]
+                  catchret from %cp to label %ok
                 }
                 attributes #1 = { "julia.mv.clones"="0" }
                 """, ["f", "g"]))

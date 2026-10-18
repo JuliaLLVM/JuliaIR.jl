@@ -629,8 +629,8 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
                     f in sets.reloc ||
                         throw(MultiVersioningError("$(f.name) is called by $(user_f.name), which is cloned, but has no julia.mv.reloc attribute"))
                     # the load from the slot would have to come before the pad
-                    user isa EHPad &&
-                        throw(MultiVersioningError("$(f.name) is used by an exception handling instruction of $(user_f.name), which is cloned, so it can't be loaded from its relocation slot there"))
+                    load_position(user, Use(use_info(walk).use)) isa EHPad &&
+                        throw(MultiVersioningError("$(f.name) can't be loaded from its relocation slot in $(user_f.name), which is cloned: the load would come before an exception handling instruction"))
                 end
                 next!(walk)
             end
@@ -1093,6 +1093,12 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
     return replace
 end
 
+# Where a use of a function by an instruction gets the load from the function's slot
+# (`replaceUsesWithLoad`): before the instruction, or for a phi, at the end of the block the
+# function comes from.
+load_position(user::Instruction, use::Use) =
+    user isa LLVM.PHIInst ? LLVM.incoming(user)[use.operand_index][2].terminator : user
+
 # Replace the uses of `f` by instructions for which `slot_of` returns a slot by a load from
 # that slot (`replaceUsesWithLoad`).
 function replace_uses_with_load!(ctx::CloneCtx, f::LLVM.Function, slot_of)
@@ -1107,12 +1113,7 @@ function replace_uses_with_load!(ctx::CloneCtx, f::LLVM.Function, slot_of)
             slot = slot_of(user)
             if slot !== nothing
                 opno = API.LLVMExtraGetOperandNo(info.use)
-                pos = if user isa LLVM.PHIInst
-                    block = BasicBlock(API.LLVMGetIncomingBlock(user, opno))
-                    LLVM.before(block.terminator)
-                else
-                    LLVM.before(user)
-                end
+                pos = LLVM.before(load_position(user, Use(info.use)))
                 position!(builder, pos)
                 builder.debug_location = nothing
                 ptr = load_slot!(ctx, f.value_type, slot)
