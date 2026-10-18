@@ -71,6 +71,10 @@ module LoweringCorpus
         @eval struct P7Pair; a::P7; b::Int8; end
         append!(TYPES, [P7, P17, P7Pair, NTuple{4,VecElement{P7}}])
     end
+    if isdefined(Core, :TypeEq)
+        # the kinds of `Type{T}` objects (Julia master)
+        append!(TYPES, [Core.TypeEq, Core.TypeEgal, Core.TypeEgal{Int}])
+    end
 end
 
 using .LoweringCorpus: TYPES
@@ -126,13 +130,15 @@ end
     d = JuliaIR.DIALECT
     @dispose ctx=Context(; opaque_pointers=true) begin
         lower(T) = string(JuliaIR.julia_type(T; allow_boxed=true))
-        @test lower(Int) == "i64"
+        lower_unboxed(T) = string(JuliaIR.julia_type(T; no_boxing=true))
+        iword = "i$(8sizeof(Int))"
+        @test lower(Int) == iword
         @test lower(Bool) == "i8"
         @test lower(C.Pad) == "{ i8, i64, i16 }"
-        @test lower(C.WithRef) == "{ i64, ptr addrspace(10) }"
+        @test lower(C.WithRef) == "{ $iword, ptr addrspace(10) }"
         @test lower(C.Mut) == "ptr addrspace(10)"
         @test lower(C.Ghost) == "void"
-        @test lower(C.WithGhost) == "{ i64, float }"
+        @test lower(C.WithGhost) == "{ $iword, float }"
         @test lower(NTuple{3,VecElement{Float32}}) == "<3 x float>"
         @test lower(NTuple{2,VecElement{C.P24}}) == "[2 x i24]"
         @test lower(C.Hetero) == "[2 x i32]"
@@ -142,28 +148,29 @@ end
 
         # Julia's own types change between versions
         @test lower(Ptr{Int}) == (d.cpointer_type === :pointer ? "ptr" :
-                                  "i$(8sizeof(Ptr{Cvoid}))")
+                                  iword)
         @test lower(Type{Union{}}) ==
               (d.bottom_aliases === :bottom ? "ptr addrspace(10)" : "void")
         @test lower(Union) == (d.boxes_kinds ? "ptr addrspace(10)" : "[2 x ptr addrspace(10)]")
         if isdefined(Core, :GenericMemoryRef)
             @test lower(MemoryRef{Int}) == "{ ptr, ptr addrspace(10) }"
             @test lower(MemoryRef{Union{Int,Nothing}}) ==
-                  "{ i$(8sizeof(Int)), ptr addrspace(10) }"
+                  "{ $iword, ptr addrspace(10) }"
         end
         if isdefined(Core, :bitsizeof)
             @test lower(C.P7) == "i7"
         end
 
-        # an inline union: data as integers of its alignment, then the selector byte
-        @test lower(C.WithUnion2) == (JuliaIR.max_align() >= 16 ? "{ i128, i8 }" :
-                                      "{ i64, i64, i8 }")
+        # an inline union: data as integers of its alignment (at most `MAX_ALIGN`), then
+        # the selector byte
+        al = min(16, JuliaIR.max_align())
+        @test lower(C.WithUnion2) == "{ $(join(fill("i$(8al)", 16 ÷ al), ", ")), i8 }"
         # an alignment marker where the union is aligned more than `MAX_ALIGN`
         @test startswith(lower(C.UHi), "{ i8, [0 x <32 x i8>], ")
 
         # boxing
         @test_throws "boxed type" JuliaIR.julia_type(C.Mut)
-        @test JuliaIR.julia_type(C.Mut; no_boxing=true) == LLVM.ArrayType(LLVM.Int64Type(), 1)
+        @test lower_unboxed(C.Mut) == "[1 x $iword]"
         @test JuliaIR.isboxed(Any) && !JuliaIR.isboxed(Int) && !JuliaIR.isboxed(C.Uninit)
     end
 end
@@ -221,8 +228,12 @@ llvmcall_rdrand() = ccall("llvm.x86.rdrand.32", llvmcall, LoweringCorpus.Hetero,
                  [Int32, Int32]),
                 (llvmcall_ctpop, (NTuple{4,VecElement{Bool}},), "llvm.ctpop.v4i1",
                  NTuple{4,VecElement{Bool}}, [NTuple{4,VecElement{Bool}}]),
-                (llvmcall_ptrmask, (Core.LLVMPtr{Int8,3},), "llvm.ptrmask.p3.i64",
-                 Core.LLVMPtr{Int8,3}, [Core.LLVMPtr{Int8,3}, Int64])]
+               ]
+    if Sys.WORD_SIZE == 64
+        # the mask must have the width of the host's pointers
+        push!(cases, (llvmcall_ptrmask, (Core.LLVMPtr{Int8,3},), "llvm.ptrmask.p3.i64",
+                      Core.LLVMPtr{Int8,3}, [Core.LLVMPtr{Int8,3}, Int64]))
+    end
     if Sys.ARCH === :x86_64
         push!(cases, (llvmcall_rdrand, (), "llvm.x86.rdrand.32", C.Hetero, []))
     end
@@ -240,33 +251,47 @@ end
 
 @noinline sink(x) = (Base.donotdelete(x); nothing)
 
+# the parameters of `sink` compiled for an argument of type `T`, after the GC stack
+function sink_parameters(@nospecialize(T))
+    mod = julia_module(sink, (T,))
+    f = only(f for f in mod.functions
+             if startswith(f.name, "julia_sink") && !isdeclaration(f))
+    params = collect(f.function_type.parameters)[2:end]
+    dispose(mod)
+    return params
+end
+
 # how the functions Julia compiles receive arguments: boxed (`ptr addrspace(10)`), by value
 # or reference to a copy, or not at all (ghosts)
 @testset "calling convention" begin
     @dispose ctx=Context(; opaque_pointers=true) begin
         for T in TYPES
             (T isa DataType && isconcretetype(T)) || T isa Union || continue
-            # constant types are omitted before Julia master, which passes them boxed
-            Base.isType(T) && continue
-            mod = julia_module(sink, (T,))
-            f = only(f for f in mod.functions
-                     if startswith(f.name, "julia_sink") && !isdeclaration(f))
-            # after the GC stack, the argument (and for some aggregates, its roots)
-            params = collect(f.function_type.parameters)
+            # the argument (and for some aggregates, its roots)
+            params = sink_parameters(T)
             lowered = JuliaIR.julia_type(T; allow_boxed=true)
-            if length(params) == 1
+            if isempty(params)
                 @test JuliaIR.deserves_stack(T)
                 @test lowered isa LLVM.VoidType
             else
                 # a tracked pointer is a box, or an unboxed value lowered to one
                 # (`VecElement{String}`)
-                arg = params[2]
+                arg = params[1]
                 tracked = arg isa LLVM.PointerType && arg.addrspace == 10
                 @test JuliaIR.deserves_argbox(T) ==
                       (tracked && (JuliaIR.isboxed(T) || lowered != arg))
                 @test JuliaIR.deserves_retbox(T) == JuliaIR.deserves_argbox(T)
             end
-            dispose(mod)
+        end
+
+        # a constant type is boxed, but Julia omits the argument before master (which
+        # passes it as a `Core.TypeEq` object)
+        @test JuliaIR.deserves_argbox(Type{Int})
+        params = sink_parameters(Type{Int})
+        if isdefined(Core, :TypeEq)
+            @test only(params) == LLVM.PointerType(10)
+        else
+            @test isempty(params)
         end
     end
     @test JuliaIR.deserves_argbox(LoweringCorpus.Uninit)
@@ -303,40 +328,44 @@ end
             @test isempty(JuliaIR.check_layout(T, dl))
         end
 
-        # the divergences per target, as names of the types that diverge
-        diverging(dl) = Set(string(T) for T in layout_types
-                            if !isempty(JuliaIR.check_layout(T, LLVM.DataLayout(dl))))
-        # Julia aligns `Int128` (and primitives of 16 bytes or more) to 16 bytes on
-        # x86-64 from 1.12 on, and always on AArch64; NVPTX does too, the other GPU targets
-        # don't
-        int128 = ["Int128", "UInt128", string(C.I128), string(C.WithUnion2),
-                  string(C.P128), string(C.P256)]
-        julia_int128_16 = Base.datatype_alignment(Int128) == 16
-        # with 8-byte alignment, the inline union of `WithUnion2` is lowered to 8-byte
-        # integers, which NVPTX lays out like Julia
-        @test diverging(gpu_datalayouts.nvptx) ==
-              Set(julia_int128_16 ? String[] : filter(!=(string(C.WithUnion2)), int128))
+        # (for 64-bit hosts: Julia's `LLVMPtr`s have the host's pointer size)
+        if Sys.WORD_SIZE == 64
+            # the divergences per target, as names of the types that diverge
+            diverging(dl) = Set(string(T) for T in layout_types
+                                if !isempty(JuliaIR.check_layout(T, LLVM.DataLayout(dl))))
+            # Julia aligns `Int128` (and primitives of 16 bytes or more) to 16 bytes on
+            # x86-64 from 1.12 on, and always on AArch64; NVPTX does too, the other GPU
+            # targets don't
+            int128 = ["Int128", "UInt128", string(C.I128), string(C.WithUnion2),
+                      string(C.P128), string(C.P256)]
+            julia_int128_16 = Base.datatype_alignment(Int128) == 16
+            # with 8-byte alignment, the inline union of `WithUnion2` is lowered to 8-byte
+            # integers, which NVPTX lays out like Julia
+            @test diverging(gpu_datalayouts.nvptx) ==
+                  Set(julia_int128_16 ? String[] : filter(!=(string(C.WithUnion2)), int128))
 
-        # AMDGPU's local and private pointers are 4 bytes (Julia's `LLVMPtr` 8)
-        amdgpu_ptr = [string(Core.LLVMPtr{Int8,3}), string(C.WithLP), string(C.WithLP3),
-                      string(C.PaddedLP3)]
-        @test diverging(gpu_datalayouts.amdgpu) ==
-              Set(julia_int128_16 ? [int128; amdgpu_ptr] : amdgpu_ptr)
-        @test diverging(gpu_datalayouts.air) == Set(julia_int128_16 ? int128 : String[])
-        @test diverging(gpu_datalayouts.spirv) == Set(julia_int128_16 ? int128 : String[])
+            # AMDGPU's local and private pointers are 4 bytes (Julia's `LLVMPtr`s 8)
+            amdgpu_ptr = [string(Core.LLVMPtr{Int8,3}), string(C.WithLP), string(C.WithLP3),
+                          string(C.PaddedLP3)]
+            @test diverging(gpu_datalayouts.amdgpu) ==
+                  Set(julia_int128_16 ? [int128; amdgpu_ptr] : amdgpu_ptr)
+            @test diverging(gpu_datalayouts.air) == Set(julia_int128_16 ? int128 : String[])
+            @test diverging(gpu_datalayouts.spirv) == Set(julia_int128_16 ? int128 : String[])
 
-        divs = JuliaIR.check_layout(C.WithLP, LLVM.DataLayout(gpu_datalayouts.amdgpu))
-        @test any(d -> d.path == "$(C.WithLP).p" && d.property === :offset &&
-                       d.julia == 8 && d.llvm == 4, divs)
+            divs = JuliaIR.check_layout(C.WithLP, LLVM.DataLayout(gpu_datalayouts.amdgpu))
+            @test any(d -> d.path == "$(C.WithLP).p" && d.property === :offset &&
+                           d.julia == 8 && d.llvm == 4, divs)
 
-        # a field that is narrower in LLVM, hidden by padding
-        divs = JuliaIR.check_layout(C.PaddedLP3, LLVM.DataLayout(gpu_datalayouts.amdgpu))
-        @test any(d -> d.path == "$(C.PaddedLP3).p" && d.property === :size &&
-                       d.julia == 8 && d.llvm == 4, divs)
-        if isdefined(Core, :GenericMemoryRef)
-            divs = JuliaIR.check_layout(MemoryRef{Int}, LLVM.DataLayout("e-p:32:32-p10:64:64"))
-            @test any(d -> d.path == "$(MemoryRef{Int}).ptr_or_offset" &&
-                           d.property === :size, divs)
+            # a field that is narrower in LLVM, hidden by padding
+            divs = JuliaIR.check_layout(C.PaddedLP3, LLVM.DataLayout(gpu_datalayouts.amdgpu))
+            @test any(d -> d.path == "$(C.PaddedLP3).p" && d.property === :size &&
+                           d.julia == 8 && d.llvm == 4, divs)
+            if isdefined(Core, :GenericMemoryRef)
+                dl32 = LLVM.DataLayout("e-p:32:32-p10:64:64")
+                divs = JuliaIR.check_layout(MemoryRef{Int}, dl32)
+                @test any(d -> d.path == "$(MemoryRef{Int}).ptr_or_offset" &&
+                               d.property === :size, divs)
+            end
         end
     end
 end
