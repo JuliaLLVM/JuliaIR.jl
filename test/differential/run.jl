@@ -297,13 +297,17 @@ function unified_diff(a::String, b::String)
     return d
 end
 
+status_only(out) =
+    join(["! ok"; filter(l -> startswith(l, "! invalid IR"), split(out, '\n'))], '\n')
+
 function record!(paths::Paths, job::Job, status::Symbol; changed::Bool=false,
                  cpp::String="", port::String="")
     file = ""
     if status === :compared
-        # when only one side failed, the other's module is not what differs
-        startswith(cpp, "! ") && !startswith(port, "! ") && (port = "! ok")
-        startswith(port, "! ") && !startswith(cpp, "! ") && (cpp = "! ok")
+        # when only one side failed, the other's module is not what differs, but whether
+        # it verifies still is
+        startswith(cpp, "! ") && !startswith(port, "! ") && (port = status_only(port))
+        startswith(port, "! ") && !startswith(cpp, "! ") && (cpp = status_only(cpp))
         if cpp == port
             status = :identical
         else
@@ -368,18 +372,25 @@ end
 
 ## supervision
 
-# what the worker printed for a job's side before it died
+# what the worker printed for a job's side before it died, and the signal that killed it
+# (from Julia's report, `[pid] signal 6 (-6): Aborted` or `[pid] signal (6.-6): Aborted`)
 function crash_output(paths::Paths, key::String, side::String)
     log = read(paths.log, String)
     marker = "$MARKER $key $side\n"
     i = findlast(marker, log)
     text = i === nothing ? "" : log[last(i)+1:end]
     lines = String[]
+    signal = nothing
     for line in split(text, '\n')
-        occursin(r"^\[\d+\] signal", line) && break
+        m = match(r"^\[\d+\] signal \(?(\d+)", line)
+        if m !== nothing
+            signal = parse(Int, m[1])
+            push!(lines, "signal $signal")
+            break
+        end
         push!(lines, line)
     end
-    return one_line(join(lines, '\n'))
+    return one_line(join(lines, '\n')), signal
 end
 
 function supervise(opts::Options, jobs)
@@ -414,8 +425,8 @@ function supervise(opts::Options, jobs)
             error("the worker failed outside of a job; see $(paths.log)")
         key, side = split(read(paths.inflight, String), '\t')
         job = byname[key]
-        what = hung ? "timed out after $(opts.timeout) s" :
-                      crash_output(paths, String(key), String(side))
+        what, signal = hung ? ("timed out after $(opts.timeout) s", nothing) :
+                              crash_output(paths, String(key), String(side))
         # errors of the passes are caught, so an uncaught one is the harness's own
         occursin("ERROR: LoadError", what) &&
             error("the worker failed on $key ($side):\n$what")
@@ -426,7 +437,12 @@ function supervise(opts::Options, jobs)
                     port="! crashed | " * what)
         else
             port = isfile(paths.inflight_port) ? read(paths.inflight_port, String) : ""
-            cpp = (!hung && job.spec.aborts ? "! rejected | " : "! crashed | ") * what
+            # a verifier rejects input with abort(); any other end is a crash
+            if job.spec.aborts && signal == 6
+                cpp = "! rejected | " * chopsuffix(what, " | signal 6")
+            else
+                cpp = "! crashed | " * what
+            end
             record!(paths, job, :compared; changed=true, cpp, port)
         end
     end
