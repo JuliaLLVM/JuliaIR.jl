@@ -57,6 +57,12 @@ struct Dialect
     has_gc_loaded::Bool
     "Whether `julia.atomicmodify.*` intrinsics exist (lowered by ExpandAtomicModify)."
     has_atomicmodify::Bool
+    "The exception handlers that LowerExcHandlers lowers, by the signature of
+    `julia.except_enter`: `:no_task` (`() -> i32`; Julia 1.10), `:task` (`(ptr) -> i32`,
+    taking the current task; 1.11), `:task_buffer` (`(ptr) -> {i32, ptr}`, also returning
+    the handler buffer; 1.12), or `:none` (1.13 and later, whose code generator emits
+    handlers directly, and which have no LowerExcHandlers)."
+    except_enter::Symbol
 
     # passes
     "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
@@ -157,6 +163,9 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.11",                      # has_call3
                    minor >= v"1.11",                      # has_gc_loaded
                    minor >= v"1.13",                      # has_atomicmodify
+                   minor == v"1.10" ? :no_task :
+                   minor == v"1.11" ? :task :
+                   minor == v"1.12" ? :task_buffer : :none, # except_enter
                    minor <= v"1.11",                      # has_combine_muladd
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :

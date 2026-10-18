@@ -296,14 +296,29 @@ status = "exclude"
 reason = "FinalLowerGC is CPU-only"
 
 [fixtures."lower-handlers.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "LowerExcHandlers is CPU-only"
+kind = "port"
+ports = ["LowerExcHandlers"]
+status = "run"
 
 [fixtures."lower-handlers-addrspaces.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "LowerExcHandlers is CPU-only"
+kind = "port"
+ports = ["LowerExcHandlers"]
+status = "run"
+
+[fixtures."lower-handlers-addrspaces.ll".pins."1.10"]
+status = "override"
+patch = "derived/1.10/lower-handlers-addrspaces.ll.patch"
+reason = "targets amdgcn: the port only uses the running Julia's runtime facts (handler size, setjmp) for the host's target, so the derived copy gives them as pass options (the CHECK lines don't depend on them)"
+
+[fixtures."lower-handlers-addrspaces.ll".pins."1.11"]
+status = "override"
+patch = "derived/1.11/lower-handlers-addrspaces.ll.patch"
+reason = "targets amdgcn: the port only uses the running Julia's runtime facts (handler size, setjmp) for the host's target, so the derived copy gives them as pass options (the CHECK lines don't depend on them)"
+
+[fixtures."lower-handlers-addrspaces.ll".pins."1.12"]
+status = "override"
+patch = "derived/1.12/lower-handlers-addrspaces.ll.patch"
+reason = "targets amdgcn: the port only uses the running Julia's runtime facts (handler size, setjmp) for the host's target, so the derived copy gives them as pass options (the CHECK lines don't depend on them)"
 
 [fixtures."multiversioning-annotate-only.ll"]
 kind = "cpu"

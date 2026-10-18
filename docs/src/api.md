@@ -18,6 +18,8 @@ JuliaIR.LateGCCleanupPass
 JuliaIR.CombineMulAddPass
 JuliaIR.UnsupportedInputError
 JuliaIR.UnsupportedConstruct
+JuliaIR.LowerExcHandlersPass
+JuliaIR.HandlerNestingError
 ```
 
 ## Dialects and options
@@ -26,6 +28,14 @@ JuliaIR.UnsupportedConstruct
 JuliaIR.Dialect
 JuliaIR.PassOptions
 JuliaIR.parse_options
+```
+
+## Runtime facts
+
+```@docs
+JuliaIR.RuntimeProfile
+JuliaIR.resolve_runtime
+JuliaIR.RuntimeError
 ```
 
 ## Libraries

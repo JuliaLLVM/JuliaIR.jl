@@ -18,6 +18,7 @@ include("passes/demote_float16.jl")
 include("passes/gc_invariant_verifier.jl")
 include("passes/late_gc_cleanup.jl")
 include("passes/combine_muladd.jl")
+include("passes/lower_exc_handlers.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
