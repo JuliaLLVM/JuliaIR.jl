@@ -94,8 +94,10 @@ Deliberate differences:
 
 - A module that already declares a runtime function with another type than Julia's runtime
   gives it makes the pass throw a [`JuliaIR.DeclarationError`](@ref) before it changes
-  anything. The C++ pass calls the existing function with the wrong arguments, which gives
-  invalid IR. (A global variable of the name is renamed, by both.)
+  anything, as does a call of `julia.queue_gc_root` whose type differs from the runtime
+  function's. The C++ pass calls the existing function with the wrong arguments, which
+  gives invalid IR. (When a global variable has the name, both declare the function under
+  a new one, such as `ijl_gc_queue_root.1`.)
 - What the C++ pass takes from the host (`sizeof(void*)`, for the size of frame slots, the
   alignment of the frame's stores and loads, and the header of big objects) comes from the
   module's data layout; this is the same for every target Julia supports.
