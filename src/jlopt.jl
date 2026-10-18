@@ -316,7 +316,7 @@ function jlopt_main(args::Vector{String})
             flush(Base.stderr)
             ccall(:abort, Cvoid, ())
         end
-        if ex isa UnsupportedInputError
+        if ex isa UnsupportedInputError || ex isa RuntimeError
             showerror(Base.stderr, ex)
             println(Base.stderr)
             return 1

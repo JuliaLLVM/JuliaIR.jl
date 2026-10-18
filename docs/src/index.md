@@ -27,7 +27,8 @@ need (see below) are taken from the running Julia; IR for GPUs doesn't need them
 | `jl-demote-float16` | `DemoteFloat16` | yes |
 | `jl-gc-invariant-verifier` | `GCInvariantVerifier` | yes |
 | `jl-combine-muladd` | `CombineMulAdd` (Julia 1.10 and 1.11) | no |
-| `jl-late-gc-cleanup` | `LateLowerGCFrame` (the cleanup, for functions without a GC frame) | yes |
+| `jl-late-lower-gc-frame` | `LateLowerGCFrame` | yes |
+| `jl-late-gc-cleanup` | (`LateLowerGCFrame` on functions without a GC frame, for GPUs) | yes |
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
 
@@ -43,10 +44,12 @@ later alone, and CombineMulAdd only in Julia 1.10 and 1.11.
 Some passes need facts that the IR doesn't state, about the Julia runtime the code will
 run with: LowerExcHandlers allocates stack buffers of the size of the runtime's exception
 handler (`jl_handler_t`, which contains the C library's `jmp_buf`) and calls the
-runtime's `setjmp`, whose name depends on the OS. Like Julia's own passes, the ports
-take these facts from the running Julia, or from pass options that give them explicitly;
-what the C++ passes derive from the module, like whether `setjmp` takes a `savemask`
-argument (not for a Windows triple), the ports derive from it too. See
+runtime's `setjmp`, whose name depends on the OS; LateLowerGCFrame lowers allocations
+and GC state transitions with the offsets of the thread-local state in the task and of
+the safepoint page and GC state in it. Like Julia's own passes, the ports take these
+facts from the running Julia, or from pass options that give them explicitly; what the
+C++ passes derive from the module, like whether `setjmp` takes a `savemask` argument
+(not for a Windows triple), the ports derive from it too. See
 [Runtime facts](runtime.md) for what these facts are and how they are read.
 
 Differences with Julia's C++ passes:
@@ -94,7 +97,8 @@ Differences with Julia's C++ passes:
   array of a subroutine type, when the loop ID has no other operands. The remark about
   a loop's flags is attached to the header's terminator (with the location of the start
   of the loop) instead of the header block.
-- LateGCCleanup only ports the part of `LateLowerGCFrame` that applies to functions
-  without a GC frame, and rejects the others; see [LateLowerGC cleanup](@ref) for its
-  input contract and its other differences. Unlike the other ports, `jlopt` does not map
-  Julia's pass name to it.
+- LateLowerGCFrame keeps operand bundles that are not Julia's, accesses the GC state
+  byte with a valid alignment, and orders the frame slots of allocas deterministically;
+  see [LateLowerGCFrame](@ref) for these and the fixes of later Julia versions it applies.
+  `jl-late-gc-cleanup` runs it on functions without a GC frame after checking an input
+  contract (on the same page); `jlopt` does not map Julia's pass name to it.

@@ -38,12 +38,13 @@ function alloca_addrspace(layout::String)
 end
 
 # like C++'s `CallInst::Create(call, bundles)`: the same call with other operand bundles,
-# inserted before it
-function clone_call!(builder::IRBuilder, call::Instruction, bundles::Vector{OperandBundle})
+# inserted before it (named `name`, which C++ passes as the call's own name)
+function clone_call!(builder::IRBuilder, call::Instruction, bundles::Vector{OperandBundle};
+                     name::String="")
     position!(builder, LLVM.before(call))
     builder.debug_location = nothing
     new_call = call!(builder, call.called_type, call.called_operand,
-                     collect(call.arguments), bundles)
+                     collect(call.arguments), bundles, name)
     new_call.tailcall_kind = call.tailcall_kind
     new_call.callconv = call.callconv
     for attr in collect(call.function_attributes)
