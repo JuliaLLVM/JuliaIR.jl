@@ -32,6 +32,7 @@ read it first, including its Log). This file says where things are and how to co
 | S15 FinalLowerGC (`jl-final-lower-gc`) | done, every dialect; branch `tb/s15-final-lower-gc` (on S7) | see `git log` |
 | S16 LowerPTLS (`jl-lower-ptls`) | done, branch `tb/s16-lower-ptls` (on S15) | see `git log` |
 | S20 CPUFeatures (`jl-cpu-features`), keyword-only pass options | done, branch `tb/s20-cpufeatures` (on S16) | see `git log` |
+| S21 JuliaMultiVersioning (`jl-multiversioning`) | done, branch `tb/s21-multiversioning` (on S20) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -72,10 +73,10 @@ FinalLowerGC (GC stack, declarations of intrinsics and runtime functions, TBAA, 
 loads, write barriers) are in `src/gc.jl`. The docs page `docs/src/late_lower_gc_frame.md` has the per-version table,
 the contract and every deviation. All `late-lower-gc*.ll`, `gcroots.ll`,
 `refinements.ll`, `returnstwicegc.ll`, `gc-writebarrier-volatile.ll`,
-`alloc-opt-gcframe.ll`, `multiversioning-abi.ll` and `safepoint_stress.jl` run with the
-port in mode A at every pin (1.10's `safepoint_stress.jl` through an override: its CHECK
-line is typed), with the FinalLowerGC port behind it since S15. The harness's `derived`
-status (S6) is unused now.
+`alloc-opt-gcframe.ll`, `multiversioning-abi.ll` (with the S21 port) and
+`safepoint_stress.jl` run with the port in mode A at every pin (1.10's
+`safepoint_stress.jl` through an override: its CHECK line is typed), with the FinalLowerGC
+port behind it since S15. The harness's `derived` status (S6) is unused now.
 
 S18 details: `src/passes/combine_muladd.jl`, a faithful port of the 1.10/1.11 C++ pass
 (identical in both versions), remarks included. `Dialect.has_combine_muladd` says which
@@ -374,10 +375,36 @@ the C++ keeps the empty triple for `have_fma`); `JuliaIR.jit_target()` (probe `:
 `jl_get_llvm_target`, `JLJITGetTripleString`) gives what Julia's pipeline uses. Non-call
 uses, arguments, `invoke` and non-integer results throw `CPUFeaturesError` before any
 change. Upstream `cpu-features*.ll` run at every pin (the AArch64/RISC-V ones are
-unsupported on x86 hosts), `multiversioning-x86.ll` as mixed (Julia's JuliaMultiVersioning
-first), `parsing.ll` maps `CPUFeatures`. Lit: `cpu-features.ll` (all versions),
+unsupported on x86 hosts), `multiversioning-x86.ll` behind the JuliaMultiVersioning port
+(S21), `parsing.ll` maps `CPUFeatures`. Lit: `cpu-features.ll` (all versions),
 `cpu-features-tokens.ll` (up to 1.13), `cpu-features-subtarget.ll` (master, X86
 registered), `cpu-features-targets.ll` (master, AArch64/RISC-V registered or not). `always_have_fma` is for S21.
+
+S21 details: `src/passes/multiversioning.jl` (`jl-multiversioning`, `cpp_name =
+"JuliaMultiVersioning"`, a required module pass), in sections that follow the C++:
+targets (`MultiVersioningTarget`, the `julia.mv.specs` flag in both flag encodings,
+`target_specs`), annotation (`annotate_module_clones`), checks (`check_cloning`: what the
+C++ asserts on, crashes on or miscompiles throws `MultiVersioningError` before the module
+changes), cloning (`CloneCtx`, `prepare_slots!` ... `emit_metadata!`). `src/irutils.jl` has
+the `ConstantUses` walk (`constant_uses`, `use_info`, `next!`); `always_have_fma` is
+S20's. The dialect fields are
+`mv_spec_flags`, `mv_bf16`, `mv_tables` (1.10's offset tables) and `mv_autoinit`. Module
+flags are read and added through the `llvm.module.flags` named metadata, as LLVM's C API
+can't represent `Max` flags (LLVM.jl's `mod.flags` iteration and assignment are unsafe for
+them). The `targets` keyword is vector-valued, which `custom_pass` now supports (not
+settable in a pipeline). Deviations (S-D22) are on `docs/src/multiversioning.md`. All four
+`multiversioning-*.ll` fixtures run with the port at every pin (`-x86.ll` with the
+CPUFeatures port behind it, `-abi.ll` behind the LateLowerGCFrame port). Validated: `Pkg.test()` 1.10
+742, 1.11 742, 1.12 739, 1.13 707, nightly 705; mode A 23/24/25/27/30 (+3 each), `--cpp`
+28/32/33/35/40 + 2 unsupported (unchanged). The in-process differential against the C++
+(fixtures, the lit module, a module with every kind of use) is identical except for the
+trampolines' ABI on 1.10–1.12 (S-D22(2)); the audit's probes give identical output, an
+error where the C++ crashes or miscompiles, or the documented deviations (D1 expansion,
+D2 on 1.10, D5, D7). On Julia 1.13's own system image built for three targets
+(`--output-unopt-bc`, 89 MB of bitcode), the output is identical up to the order of the
+relocations of one function in `jl_clone_slots` (the C++'s unstable sort), and the port
+takes 1.8× the C++'s time, half of it in LLVM.jl's value-mapper prepass of `clone_into!`
+(which runs even without callbacks).
 
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,

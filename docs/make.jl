@@ -18,6 +18,7 @@ function main()
             "FinalLowerGC" => "final_lower_gc.md",
             "LowerPTLS" => "lower_ptls.md",
             "CPUFeatures" => "cpu_features.md",
+            "JuliaMultiVersioning" => "multiversioning.md",
             "Runtime facts" => "runtime.md",
             "Type lowering" => "type_lowering.md",
             "Testing" => "testing.md",
