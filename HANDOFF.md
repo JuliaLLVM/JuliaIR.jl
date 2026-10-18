@@ -281,12 +281,17 @@ mapped (seeding only the CUs leaves the CU's `globals` pointing at a stale varia
 D3 metadata of global declarations kept (master's codegen attaches `!julia.constgv` to
 them, so this is a real difference on nightly's IR); D4 all type attributes mapped;
 D5 ifuncs recreated (the C++ deletes the resolver they still use and segfaults when the
-module is printed). Upstream `remove-addrspaces.ll` runs with the port at every pin (1.10
+module is printed); D6 the metadata of global variables and ifuncs mapped after the
+initializers, function bodies and aliasees (it is mapped without the type mapper, and the
+C++'s interleaving lets a later initializer, body or aliasee reuse its constant
+expressions with the old types). Upstream `remove-addrspaces.ll` runs with the port at every pin (1.10
 through an override: typed RUN lines), `parsing.ll` too. Differential (C++ vs port
 in-process, every pinned fixture, a `code_llvm` corpus with and without debug info, and
 from 1.11 the corpus after Julia's pipeline prefix): identical except the lit extras for
-D1–D5, and on nightly the `!julia.constgv` of D3. Validated: `Pkg.test()` 1.10 461,
-1.11 461, 1.12 458, 1.13 426, nightly 424; mode A 21/22/23/25/28, `--cpp` unchanged.
+D1–D6, and on nightly the `!julia.constgv` of D3 (the prefix is Julia's: from 1.13
+ExpandAtomicModify after FinalLowerGC, on master CancellationLowering first). Validated:
+`Pkg.test()` 1.10 469, 1.11 469, 1.12 466, 1.13 434, nightly 432; mode A 21/22/23/25/28,
+`--cpp` unchanged.
 
 JuliaIR.jl depends on unmerged LLVM.jl work (custom loop passes, the inlining API, value
 mapping and cloning, MemorySSA, the target triple wrapper, ...), split into the pull
