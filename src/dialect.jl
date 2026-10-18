@@ -182,6 +182,20 @@ struct Dialect
     (Julia 1.12 and later)."
     gc_declare_small_alloc::Bool
 
+    # type lowering
+    "How `Ptr{T}` is lowered: `:integer` (an integer of the pointer's size; Julia 1.10 and
+    1.11) or `:pointer` (`ptr`)."
+    cpointer_type::Symbol
+    "Which types besides `Union{}` lower to `void` as aliases of the bottom type:
+    `:bottom` (none; Julia 1.10 and 1.11), `:typeofbottom_super` (`typeof(Union{})` and its
+    supertype `Type{Union{}}`; 1.12 and 1.13) or `:some_type` (`typeof(Union{})` and
+    `Type{Union{}}`, which is a `Core.TypeEq`)."
+    bottom_aliases::Symbol
+    "Whether values of the kinds (`DataType`, `Union`, `UnionAll`, `typeof(Union{})` and
+    master's `Core.TypeEq`/`Core.TypeEgal`) are always boxed, instead of being lowered
+    like other immutable structs."
+    boxes_kinds::Bool
+
     # policies
     "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
     fp16::Symbol
@@ -270,6 +284,10 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    development ? :monotonic_named :
                    minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
                    minor >= v"1.12",                      # gc_declare_small_alloc
+                   minor <= v"1.11" ? :integer : :pointer, # cpointer_type
+                   minor <= v"1.11" ? :bottom :
+                   development ? :some_type : :typeofbottom_super, # bottom_aliases
+                   development,                           # boxes_kinds
                    fp16, bf16, gc_barrier)
 end
 

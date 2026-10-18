@@ -8,6 +8,7 @@ include("registration.jl")
 include("jlopt.jl")
 include("passes.jl")
 include("runtime.jl")
+include("type_lowering.jl")
 include("lit.jl")
 include("upstream.jl")
 

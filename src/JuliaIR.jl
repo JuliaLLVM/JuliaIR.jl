@@ -10,6 +10,7 @@ include("runtime.jl")
 include("jlopt.jl")
 include("irutils.jl")
 include("codegen_shared.jl")
+include("type_lowering.jl")
 
 include("allocations.jl")
 
