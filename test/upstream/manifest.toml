@@ -84,6 +84,11 @@ kind = "port"
 ports = ["ExpandAtomicModify"]
 status = "run"
 
+[fixtures."cancellation-lowering.ll"]
+kind = "port"
+ports = ["CancellationLowering"]
+status = "run"
+
 [fixtures."float16.ll"]
 kind = "port"
 ports = ["DemoteFloat16"]
@@ -259,11 +264,6 @@ cpp = "its RUN lines rely on LLVM 15 parsing Julia 1.10's typed IR into a typed 
 
 
 ## CPU-only passes
-
-[fixtures."cancellation-lowering.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CancellationLowering is CPU-only"
 
 [fixtures."cpu-features.ll"]
 kind = "cpu"

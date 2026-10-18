@@ -562,6 +562,7 @@ struct GCFunctions
     call::Union{Nothing,LLVM.Function}
     call2::Union{Nothing,LLVM.Function}
     call3::Union{Nothing,LLVM.Function}
+    cancellation_point::Union{Nothing,LLVM.Function}
 end
 
 function GCFunctions(mod::LLVM.Module, dialect::Dialect)
@@ -578,7 +579,9 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                        lookup("julia.blackbox"), barriers, field_barriers,
                        lookup("ijl_pop_handler_noexcept"), lookup("julia.call"),
                        lookup("julia.call2"),
-                       dialect.has_call3 ? lookup("julia.call3") : nothing)
+                       dialect.has_call3 ? lookup("julia.call3") : nothing,
+                       dialect.has_cancellation_lowering ?
+                           lookup("julia.cancellation_point") : nothing)
 end
 
 is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee

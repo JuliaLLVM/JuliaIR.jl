@@ -68,6 +68,9 @@ struct Dialect
     # passes
     "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
     has_combine_muladd::Bool
+    "Whether the code generator emits `julia.cancellation_point` calls, lowered by
+    CancellationLowering (Julia master)."
+    has_cancellation_lowering::Bool
 
     # allocations
     "Whether `julia.gc_alloc_obj` calls carry `allockind` and return alignment
@@ -236,6 +239,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor == v"1.11" ? :task :
                    minor == v"1.12" ? :task_buffer : :none, # except_enter
                    minor <= v"1.11",                      # has_combine_muladd
+                   development,                           # has_cancellation_lowering
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
                    minor == v"1.11" ? :store : :memset,   # alloc_initialization
