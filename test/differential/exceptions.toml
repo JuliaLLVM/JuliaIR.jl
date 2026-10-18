@@ -17,8 +17,9 @@
 # an exception allows exactly the change it describes, anywhere else the outputs must
 # agree. Errors, crashes and invalid IR are status lines of the output, starting with `! `.
 #
-# For outputs of the C++ that can't be compared because they are broken (invalid IR), an
-# exception can instead have `accept = '...'` (a regex) in place of `lines`: the
+# For a deviation that changes too much of a module to be rewritten away (the C++ output
+# is invalid IR, or the port's analysis differs), an exception can instead have
+# `accept = '...'` (a regex) in place of `lines`, and should then name its inputs: the
 # difference is excepted when a line of that side's output matches and the other side's
 # output is a module that verifies. And for a deviation that a regex can't describe,
 # `canonicalize = "..."` names a rewrite in run.jl's CANONICALIZATIONS (e.g. "frame
@@ -31,6 +32,29 @@ side = "cpp"
 accept = '^! invalid IR: LLVM error: Invalid bitcast \| %\d+ = bitcast ptr addrspace\(5\) %\d+ to ptr \|'
 reason = "for an alloca in a non-zero address space, the C++ of 1.10 and 1.11 casts it to address space 0 with a bitcast (invalid IR); the port uses the alloca as is"
 decision = "S-D3 (Log, S4, exception 4)"
+
+# The port uses Julia 1.13's escape analysis on every version: fields that don't overlap
+# are not merged (JuliaLang/julia#62166); allocations with references can be split or
+# removed (#61131); cmpxchg/atomicrmw moved onto the slots of a split allocation are made
+# non-atomic (#61131); a field touched only by an atomicrmw/cmpxchg gets a stack slot
+# (#62752; 1.12's C++ crashes without it); storing the allocation's address with an
+# atomic is an escape. So on 1.10 to 1.12 the port removes or splits allocations that the
+# C++ keeps.
+[[AllocOpt]]
+input = "corpus/alloc_refpair*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@julia\.gc_alloc_obj\('
+reason = "the C++ of 1.10 to 1.12 keeps an allocation with references and atomic accesses, which the port (1.13's escape analysis) removes or splits"
+decision = "S-D30"
+
+[[AllocOpt]]
+input = "corpus/preserve_ref*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@julia\.gc_alloc_obj\('
+reason = "as for alloc_refpair: an allocation initialized with an atomic store"
+decision = "S-D30"
 
 [[AllocOpt]]
 input = "llvmpasses/gc-writebarrier-volatile.ll"

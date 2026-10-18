@@ -605,11 +605,11 @@ CANONICALIZATIONS["frame slots"] = canonical_frame_slots
 #
 # An exception either rewrites the lines it matches in one side's output (deletes them, or
 # replaces the matched text), after which both outputs must be identical, so that it only
-# ever allows the deviation it describes; or, for an output that can't be compared because
-# the C++ produced something broken (invalid IR), accepts the difference when a line of
-# that side matches, as long as the other side's output is a module that verifies (no
-# error, crash or invalid IR). A few deviations that a regex can't describe have a
-# canonicalization of both outputs instead (`CANONICALIZATIONS`).
+# ever allows the deviation it describes; or, for a deviation that changes too much to be
+# rewritten away (invalid IR from the C++, a different analysis), accepts the difference
+# when a line of that side matches, as long as the other side's output is a module that
+# verifies (no error, crash or invalid IR). A few deviations that a regex can't describe
+# have a canonicalization of both outputs instead (`CANONICALIZATIONS`).
 function explain(cpp, port, exceptions)
     sides = Dict("cpp" => cpp, "port" => port)
     for (i, e) in enumerate(exceptions)
