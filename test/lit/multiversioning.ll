@@ -12,7 +12,7 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 target triple = "x86_64-unknown-linux-gnu"
 
 @jl_fvars = global [6 x ptr] [ptr @leaf, ptr @caller, ptr @in_global, ptr @ce_uses, ptr @abi, ptr @va]
-@jl_fvar_idxs = global [1 x i32] zeroinitializer
+@jl_fvar_idxs = global [6 x i32] [i32 0, i32 1, i32 2, i32 3, i32 4, i32 5]
 @jl_gvars = global [1 x ptr] [ptr @table]
 @jl_gvar_idxs = global [1 x i32] zeroinitializer
 

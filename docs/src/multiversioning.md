@@ -90,7 +90,8 @@ The port changes what the C++ pass does where it is wrong (S-D3, S-D22):
   entries that aren't function definitions: the C++ pass drops every entry after the
   first of them, the port only those entries.
 - **Malformed input.** Where the C++ pass asserts, crashes or emits wrong code (no
-  `jl_fvars` or `jl_fvar_idxs` table, malformed target flags or `julia.mv.clones`
+  `jl_fvars` or `jl_fvar_idxs` table, an index table with fewer 32-bit entries than
+  the loader reads, malformed target flags or `julia.mv.clones`
   attributes, functions without a version for a target that clones everything, a
   relocated function that isn't in the function table, a target based on one that
   doesn't clone everything, a cloned function in a constant global, in `llvm.used`, under

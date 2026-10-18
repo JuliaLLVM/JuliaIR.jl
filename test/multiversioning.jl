@@ -403,11 +403,12 @@ two_targets = [MultiVersioningTarget("base", "+base"),
 function cloning_ir(ir::String, fvars::Vector{String}; flags::Vector{String}=String[],
                     tables::Bool=true)
     entries = join(("ptr @$f" for f in fvars), ", ")
+    idxs = join(("i32 $i" for i in eachindex(fvars) .- 1), ", ")
     head = tables ? """
         @jl_fvars = hidden constant [$(length(fvars)) x ptr] [$entries]
-        @jl_fvar_idxs = global [1 x i32] zeroinitializer
+        @jl_fvar_idxs = global [$(length(fvars)) x i32] [$idxs]
         @jl_gvars = hidden constant [0 x ptr] zeroinitializer
-        @jl_gvar_idxs = global [1 x i32] zeroinitializer
+        @jl_gvar_idxs = global [0 x i32] zeroinitializer
         """ : ""
     annotated = """!{i32 1, !"julia.mv.annotated", i32 1}"""
     return head * ir * mv_flags(annotated, flags...)
@@ -697,6 +698,15 @@ end
 
     rejects("jl_fvar_idxs is missing",
             replace(cloning_ir(f_ir(), ["f"]), r"@jl_fvar_idxs = .*\n" => ""))
+    # the loader reads a 32-bit index for every function
+    rejects("jl_fvar_idxs is not an array of at least 2 32-bit indices",
+            replace(cloning_ir(f_ir() * "define void @g() {\n  ret void\n}\n", ["f", "g"]),
+                    "[2 x i32] [i32 0, i32 1]" => "[1 x i32] [i32 0]"))
+    rejects("jl_fvar_idxs is not an array of at least 1 32-bit indices",
+            replace(cloning_ir(f_ir(), ["f"]), "[1 x i32] [i32 0]" => "[1 x i64] [i64 0]"))
+    rejects("jl_gvar_idxs is not an array of at least 1 32-bit indices",
+            replace(cloning_ir(f_ir() * "@v = global i32 0\n", ["f"]),
+                    "[0 x ptr] zeroinitializer" => "[1 x ptr] [ptr @v]"), dialects[1])
     rejects("jl_gvars is missing",
             replace(cloning_ir(f_ir(), ["f"]), r"@jl_gvars = .*\n" => ""), dialects[1])
     rejects("jl_fvars is used",

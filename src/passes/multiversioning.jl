@@ -597,6 +597,16 @@ function check_table(mod::LLVM.Module, name::String, external::Bool, functions::
     end
 end
 
+# A table like `jl_fvar_idxs`, from which the image loader reads a 32-bit index for each of
+# the `n` entries of the table that goes with it. The pass only renames it.
+function check_index_table(mod::LLVM.Module, name::String, n::Int)
+    gv = get(mod.globals, name, nothing)
+    gv === nothing && throw(MultiVersioningError("the table $name is missing"))
+    ty = gv.global_value_type
+    ty isa LLVM.ArrayType && ty.element_type == LLVM.Int32Type() && ty.length >= n ||
+        throw(MultiVersioningError("the table $name is not an array of at least $n 32-bit indices"))
+end
+
 # The checks for what the C++ pass asserts or crashes on, before the module is changed
 # (S-D22). Returns whether to clone the module, rather than only annotate it, which
 # `external` does for modules without a usable `jl_fvars` table.
@@ -609,12 +619,12 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
     check_table(mod, "jl_fvars", external, true)
     offsets && check_table(mod, "jl_gvars", external, false)
 
-    fvars = Set(LLVM.Function[f for f in table_elements(mod.globals["jl_fvars"], external)])
+    fvar_list = LLVM.Function[f for f in table_elements(mod.globals["jl_fvars"], external)]
+    fvars = Set(fvar_list)
     if !(external && isempty(fvars))
-        haskey(mod.globals, "jl_fvar_idxs") ||
-            throw(MultiVersioningError("the table jl_fvar_idxs is missing"))
-        offsets && !haskey(mod.globals, "jl_gvar_idxs") &&
-            throw(MultiVersioningError("the table jl_gvar_idxs is missing"))
+        check_index_table(mod, "jl_fvar_idxs", length(fvar_list))
+        offsets && check_index_table(mod, "jl_gvar_idxs",
+                                     length(table_elements(mod.globals["jl_gvars"], false)))
         suffix = module_flag(mod, "julia.mv.suffix")
         suffix === nothing || suffix.value isa MDString ||
             throw(MultiVersioningError("the module flag julia.mv.suffix is not a string"))
