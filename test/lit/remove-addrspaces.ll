@@ -50,10 +50,14 @@ $f_comdat = comdat any
 ; CHECK-NEXT: @gep = global ptr getelementptr inbounds ([4 x ptr], ptr @g, i64 0, i64 2)
 ; CHECK-NEXT: @nested = global i64 ptrtoint (ptr @g to i64)
 ; CHECK-NEXT: @kept = global ptr addrspace(1) addrspacecast (ptr @g to ptr addrspace(1))
+; casts of vectors of pointers too (LLVM 23 turns the vector getelementptr into a vector
+; of scalar ones when it parses it)
+; CHECK-NEXT: @vec_folded = global <2 x ptr> {{getelementptr \(i8, ptr @g, <2 x i64> <i64 0, i64 8>\)|<ptr @g, ptr getelementptr \(i8, ptr @g, i64 8\)>}}
 @folded = global ptr addrspace(11) addrspacecast (ptr addrspace(10) @g to ptr addrspace(11))
 @gep = global ptr addrspace(10) getelementptr inbounds ([4 x ptr addrspace(10)], ptr addrspace(10) @g, i64 0, i64 2)
 @nested = global i64 ptrtoint (ptr addrspace(11) addrspacecast (ptr addrspace(10) @g to ptr addrspace(11)) to i64)
 @kept = global ptr addrspace(1) addrspacecast (ptr addrspace(10) @g to ptr addrspace(1))
+@vec_folded = global <2 x ptr addrspace(11)> addrspacecast (<2 x ptr addrspace(10)> getelementptr (i8, ptr addrspace(10) @g, <2 x i64> <i64 0, i64 8>) to <2 x ptr addrspace(11)>)
 
 ; CHECK-NEXT: @tls = thread_local(initialexec) global ptr null
 ; CHECK-NEXT: @attrs = internal unnamed_addr constant i64 1, section "jl_data", align 32

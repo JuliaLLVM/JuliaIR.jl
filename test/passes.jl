@@ -805,6 +805,9 @@ end
     @test occursin("%T = type { ptr addrspace(10), ptr }", str)
     str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 1 ? 7 : as))
     @test occursin("ptr addrspace(7) %r", str)
+    # the mapping is applied once, also when it maps to an address space it changes
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as))
+    @test occursin("define ptr addrspace(5) @f(ptr addrspace(10) %p, ptr addrspace(5) %q, ptr addrspace(3) %r)", str)
 
     # errors of the mapping are rethrown
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
@@ -826,6 +829,18 @@ end
         end
         @test err isa PassException
         @test occursin("expected an address space", sprint(showerror, err))
+    end
+    for bad in (2^24, 1.0, :zero)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            err = try
+                run!(JuliaIR.RemoveAddrspacesPass(as -> bad), mod)
+                nothing
+            catch err
+                err
+            end
+            @test err isa PassException
+            @test occursin("expected an address space", sprint(showerror, err))
+        end
     end
 
     # The pass recreates the global values, keeping their names: references taken before
