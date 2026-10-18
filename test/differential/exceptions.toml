@@ -20,7 +20,9 @@
 # For outputs of the C++ that can't be compared because they are broken (invalid IR), an
 # exception can instead have `accept = '...'` (a regex) in place of `lines`: the
 # difference is excepted when a line of that side's output matches and the other side's
-# output verifies.
+# output is a module that verifies. And for a deviation that a regex can't describe,
+# `canonicalize = "..."` names a rewrite in run.jl's CANONICALIZATIONS (e.g. "frame
+# slots", which names GC frame slots by their first use and hides their indices).
 
 [[AllocOpt]]
 input = "llvmpasses/late-lower-gc-addrspaces.ll"
@@ -72,30 +74,11 @@ replace = '\1, align 1'
 reason = "the GC state byte is accessed with an alignment it has (the C++ of 1.12 and 1.13 claims that of a pointer)"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
-# The frame slots of allocas: the next three entries hide, in these inputs only, which
-# slot each alloca gets (and so the operands that select between slots).
 [[LateLowerGCFrame]]
 input = "llvmpasses/late-lower-gc-s*.ll"
 side = "both"
-lines = '^(  %\d+ = call ptr @julia\.get_gc_frame_slot\(ptr %\d+, i32 )\d+\)$'
-replace = '\1?)'
+canonicalize = "frame slots"
 reason = "the frame slots of allocas are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
-decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
-
-[[LateLowerGCFrame]]
-input = "llvmpasses/late-lower-gc-s*.ll"
-side = "both"
-lines = '^(  %\d+ = select i1 %\d+, ptr )%\d+, ptr %\d+$'
-replace = '\1%?, ptr %?'
-reason = "as above: the slots that a select of frame slots chooses from"
-decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
-
-[[LateLowerGCFrame]]
-input = "llvmpasses/late-lower-gc-s*.ll"
-side = "both"
-lines = '^(  %\d+ = phi ptr \[ )%\d+(, %\d+ \], \[ )%\d+(, %\d+ \])$'
-replace = '\1%?\2%?\3'
-reason = "as above: the slots that a phi of frame slots merges"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]

@@ -471,8 +471,8 @@ struct Recorded
     prefix::String
     side::String
     lines::Regex
-    action::Symbol      # :delete, :replace or :accept
-    replacement::String
+    action::Symbol      # :delete, :replace, :accept or :canonicalize
+    replacement::String # for :replace; the canonicalization's name for :canonicalize
     reason::String
     decision::String
 end
@@ -485,17 +485,21 @@ function load_exceptions(file)
     for (pass, entries) in TOML.parsefile(file), e in entries
         where = "an entry of $pass in $file"
         for k in keys(e)
-            k in ("input", "julia", "prefix", "side", "lines", "replace", "accept", "reason",
-                  "decision") || error("unknown key $k in $where")
+            k in ("input", "julia", "prefix", "side", "lines", "replace", "accept",
+                  "canonicalize", "reason", "decision") || error("unknown key $k in $where")
         end
         all(k -> haskey(e, k), ("side", "reason", "decision")) ||
             error("$where lacks side, reason or decision")
         e["side"] in ("cpp", "port", "both") || error("$where: side must be cpp, port or both")
-        haskey(e, "lines") + haskey(e, "accept") == 1 ||
-            error("$where needs either lines or accept")
+        haskey(e, "lines") + haskey(e, "accept") + haskey(e, "canonicalize") == 1 ||
+            error("$where needs one of lines, accept or canonicalize")
         if haskey(e, "accept")
             e["side"] == "both" && error("$where: accept needs side cpp or port")
             action, pattern, replacement = :accept, e["accept"], ""
+        elseif haskey(e, "canonicalize")
+            haskey(CANONICALIZATIONS, e["canonicalize"]) ||
+                error("$where: unknown canonicalization $(e["canonicalize"])")
+            action, pattern, replacement = :canonicalize, "", e["canonicalize"]
         else
             action = haskey(e, "replace") ? :replace : :delete
             pattern, replacement = e["lines"], get(e, "replace", "")
@@ -523,6 +527,12 @@ function rewritten(text, side, exceptions)
     for (i, e) in enumerate(exceptions)
         e.action === :accept && continue
         e.side == side || e.side == "both" || continue
+        if e.action === :canonicalize
+            out = CANONICALIZATIONS[e.replacement](lines)
+            out == lines || push!(used, i)
+            lines = out
+            continue
+        end
         out = String[]
         for line in lines
             if occursin(e.lines, line)
@@ -537,6 +547,59 @@ function rewritten(text, side, exceptions)
     return lines, used
 end
 
+# Rewrites of an output that hide a deviation that a regex can't describe. Each takes
+# and returns the lines of an output.
+const CANONICALIZATIONS = Dict{String,Function}()
+
+# The frame slots of a GC frame are interchangeable when every use agrees on which is
+# which and each gets as much room: name each slot value by its first use and replace its
+# index by its extent, the distance to the next slot or the end of the frame, listed after
+# the function's header. A port whose slots have the C++'s extents has disjoint ranges in
+# the frame that are as large as the C++'s, whatever their order. If the indices of a
+# frame aren't distinct and within it, the function is left as it is, so that the
+# difference shows.
+function canonical_frame_slots(lines)
+    out = String.(lines)
+    starts = findall(l -> startswith(l, "define "), out)
+    for (k, from) in enumerate(starts)
+        body = from:(k < length(starts) ? starts[k+1] - 1 : length(out))
+        sizes = Dict{String,Int}()
+        slots = Dict{String,Tuple{String,Int}}()    # slot value => (frame, index)
+        valid = true
+        for i in body
+            m = match(r"^  (%\d+) = call ptr @julia\.new_gc_frame\(i32 (\d+)\)$", out[i])
+            m === nothing || (sizes[m[1]] = parse(Int, m[2]))
+            m = match(r"^  (%\d+) = call ptr @julia\.get_gc_frame_slot\(ptr (%\d+), i32 (\d+)\)$",
+                      out[i])
+            m === nothing && continue
+            slot = (String(m[2]), parse(Int, m[3]))
+            valid &= slot[2] < get(sizes, slot[1], 0) && !(slot in values(slots))
+            slots[m[1]] = slot
+        end
+        (valid && !isempty(slots)) || continue
+        function extent((frame, index))
+            next = [i for (f, i) in values(slots) if f == frame && i > index]
+            return (isempty(next) ? sizes[frame] : minimum(next)) - index
+        end
+        names = Dict{String,String}()
+        name(v) = get!(() -> "%slot$(length(names) + 1)", names, v)
+        for i in body
+            m = match(r"^  (%\d+) = call ptr @julia\.get_gc_frame_slot\(", out[i])
+            if m !== nothing && haskey(slots, m[1])
+                out[i] = "  %slot = call ptr @julia.get_gc_frame_slot(ptr $(slots[m[1]][1]), i32 ?)"
+            else
+                out[i] = replace(out[i], r"%\d+\b" => v -> haskey(slots, v) ? name(v) : v)
+            end
+        end
+        unused = sort([v for v in keys(slots) if !haskey(names, v)]; by=v -> slots[v])
+        foreach(name, unused)
+        listing = sort(["$(names[v]) = $(slots[v][1]) + $(extent(slots[v]))" for v in keys(slots)])
+        out[from] *= "\n; frame slots: " * join(listing, ", ")
+    end
+    return out
+end
+CANONICALIZATIONS["frame slots"] = canonical_frame_slots
+
 # Whether the recorded deviations explain the difference of two outputs, which exceptions
 # that took, and the diff that remains if they don't.
 #
@@ -544,7 +607,9 @@ end
 # replaces the matched text), after which both outputs must be identical, so that it only
 # ever allows the deviation it describes; or, for an output that can't be compared because
 # the C++ produced something broken (invalid IR), accepts the difference when a line of
-# that side matches, as long as the other side's output verifies.
+# that side matches, as long as the other side's output is a module that verifies (no
+# error, crash or invalid IR). A few deviations that a regex can't describe have a
+# canonicalization of both outputs instead (`CANONICALIZATIONS`).
 function explain(cpp, port, exceptions)
     sides = Dict("cpp" => cpp, "port" => port)
     for (i, e) in enumerate(exceptions)

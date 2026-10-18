@@ -144,7 +144,9 @@ Each comparison is one of:
   change it describes and the rest of the module is still compared. For the few inputs
   on which the C++ pass produces invalid IR, which can't be compared at all, an entry
   can instead accept the difference outright when a line of the C++ output matches
-  (e.g. the verifier's message) and the port's output verifies;
+  (e.g. the verifier's message) and the port's output is a module that verifies; and a
+  deviation that a regex can't describe, like the order of GC frame slots, can have a
+  named canonicalization of both outputs (`CANONICALIZATIONS` in `run.jl`);
 - *different*: a finding, reported with the diff, which makes the run fail.
 
 Inputs that don't parse or verify, inputs on which the prefix pipeline fails (listed with
