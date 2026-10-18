@@ -20,13 +20,13 @@
 
 ; the module pass and the function pass lower functions the same way (except for the
 ; declarations on Julia 1.10)
-; RUN: opt -passes='FinalLowerGC' -S %t/frames.ll -o %t/module.ll
+; RUN: opt -passes='module(FinalLowerGC)' -S %t/frames.ll -o %t/module.ll
 ; RUN: opt -passes='function(FinalLowerGC)' -S %t/frames.ll -o %t/function.ll
 ; RUN: %if julia-ge-1.11 %{ diff %t/module.ll %t/function.ll %}
 
 ; jlopt maps Julia's name to the port, at both levels
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='FinalLowerGC,function(FinalLowerGC)' -S %t/frames.ll -o /dev/null
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='module(FinalLowerGC),function(FinalLowerGC)' -S %t/frames.ll -o /dev/null
 ; RUN: grep -c 'pass	jl-final-lower-gc	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 6
 

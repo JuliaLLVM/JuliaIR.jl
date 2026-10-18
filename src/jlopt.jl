@@ -87,6 +87,10 @@ end
 
 cpp_mapping() = Dict(def.cpp_name => def.name for def in PASSES if !isempty(def.cpp_name))
 
+# the pipeline that runs the ports in place of Julia's C++ passes
+port_pipeline(pipeline::AbstractString) =
+    map_pipeline(nest_pipeline(pipeline, Dialect(VERSION)), cpp_mapping())
+
 # raise an error that `opt` would report as a crash, for `not --crash` tests
 struct FatalPassError <: Exception
     ex::Any
@@ -230,9 +234,7 @@ exception of a failing pass otherwise. See `bin/jlopt --help` for the options.
 function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     opts = parse_jlopt_args(args)
     opts.pipeline === nothing && throw(JloptError("no pipeline given; use -passes=..."))
-    pipeline = opts.map_passes ?
-        map_pipeline(nest_pipeline(opts.pipeline, Dialect(VERSION)), cpp_mapping()) :
-        opts.pipeline
+    pipeline = opts.map_passes ? port_pipeline(opts.pipeline) : opts.pipeline
     isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
 
     input = something(opts.input, "-")

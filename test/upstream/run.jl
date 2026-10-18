@@ -237,7 +237,7 @@ function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A")
             throw(HarnessError("RUN line $(run.index) cannot run with jlopt: $(err.msg)"))
         end
         pipeline = something(opts.pipeline, "")
-        map_passes && (pipeline = JuliaIR.map_pipeline(pipeline, JuliaIR.cpp_mapping()))
+        map_passes && (pipeline = JuliaIR.port_pipeline(pipeline))
         push!(pipelines, pipeline)
     end
     if mode == "B"

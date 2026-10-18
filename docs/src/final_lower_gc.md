@@ -35,6 +35,12 @@ registered as both: in a pipeline, the name at the top level is the module pass
 - the function pass on Julia 1.10's IR declares the runtime functions like later
   versions do, in the module of each function that it lowers.
 
+As the name at the top level is the module pass, a pipeline that starts with it is a module
+pipeline, in which function passes have to be nested: `jl-final-lower-gc,jl-alloc-opt` doesn't
+parse, `function(jl-final-lower-gc,jl-alloc-opt)` does. From Julia 1.11 on, LLVM nests a
+pipeline that starts with Julia's (function) pass, such as `FinalLowerGC,AllocOpt`, in a
+function pass manager; `jlopt` keeps that nesting when it maps the names to the ports.
+
 `JuliaIR.FinalLowerGCPass(; kind)` selects one of them for `run!`; by default, the kind of
 the running Julia's pass.
 
