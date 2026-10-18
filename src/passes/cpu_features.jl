@@ -44,11 +44,11 @@ function always_have_fma(name::AbstractString, triple::LLVM.Triple)
     return typ == "f32" || typ == "f64"
 end
 
-# the options that describe the target, checked once they are all known
-function check_cpu_target(target_cpu, target_features, target_machine)
-    target_cpu isa Union{Nothing,String} ||
+# the options that describe the target (keyword-only, so not checked by `parse_options`)
+function check_cpu_target((; target_cpu, target_features, target_machine))
+    target_cpu isa Union{Nothing,AbstractString} ||
         throw(ArgumentError("target_cpu must be a string, not a $(typeof(target_cpu))"))
-    target_features isa Union{Nothing,String} ||
+    target_features isa Union{Nothing,AbstractString} ||
         throw(ArgumentError("target_features must be a string, not a $(typeof(target_features))"))
     target_machine isa Union{Nothing,LLVM.TargetMachine} ||
         throw(ArgumentError("target_machine must be an LLVM.TargetMachine, not a $(typeof(target_machine))"))
@@ -67,20 +67,35 @@ mutable struct CPUFeaturesRun
     tm::Union{Nothing,LLVM.TargetMachine}
     target::Union{Nothing,Missing,LLVM.Target}  # `missing` until it was looked up
     subtargets::Dict{Tuple{String,String},Union{Nothing,LLVM.SubtargetInfo}}
-    feature_names::Dict{Ptr{Cvoid},Set{String}}
+    # the names of the features of the target (the same for all its subtargets)
+    feature_names::Union{Nothing,Set{String}}
 end
 
 function CPUFeaturesRun(dialect::Dialect, mod::LLVM.Module, extra::NamedTuple)
     (; target_cpu, target_features, target_machine) = extra
-    check_cpu_target(target_cpu, target_features, target_machine)
-    # the token rule only reads a target machine's feature string, as the C++ pass
-    # does with the JIT's
-    if dialect.cpu_features_rule === :tokens && target_machine !== nothing
-        target_features = target_machine.features
-        target_machine = nothing
+    cpu = target_cpu === nothing ? nothing : String(target_cpu)
+    features = target_features === nothing ? nothing : String(target_features)
+    triple = LLVM.Triple(mod.triple)
+    if dialect.cpu_features_rule === :tokens
+        # the token rule only reads a target machine's feature string, as the C++ pass
+        # does with the JIT's
+        if target_machine !== nothing
+            features = target_machine.features
+            target_machine = nothing
+        end
+    elseif isempty(string(triple))
+        # Options describe the target machine that Julia's pipeline gives the C++ pass,
+        # and Julia's modules have that target's triple. Use it for a module without a
+        # triple (where the C++ pass would ask the subtarget about the target machine's
+        # triple, but decide `have_fma` by the module's empty one, so always false).
+        if target_machine !== nothing
+            triple = LLVM.Triple(target_machine.triple)
+        elseif cpu !== nothing || features !== nothing
+            triple = LLVM.Triple(native_probe(:jit_target).triple)
+        end
     end
-    return CPUFeaturesRun(dialect, LLVM.Triple(mod.triple), target_cpu, target_features,
-                          target_machine, missing, Dict(), Dict())
+    return CPUFeaturesRun(dialect, triple, cpu, features, target_machine, missing,
+                          Dict(), nothing)
 end
 
 function finish!(run::CPUFeaturesRun)
@@ -220,7 +235,7 @@ function function_subtarget(run::CPUFeaturesRun, caller::LLVM.Function)
         target = subtarget_target(run)
         target === nothing && return nothing
         try
-            LLVM.SubtargetInfo(target, subtarget_triple(run); cpu, features)
+            LLVM.SubtargetInfo(target, run.triple; cpu, features)
         catch err
             err isa ArgumentError || rethrow()
             nothing
@@ -228,19 +243,10 @@ function function_subtarget(run::CPUFeaturesRun, caller::LLVM.Function)
     end
 end
 
-# The triple of the subtargets: the module's. Options describe a target machine, which
-# Julia's pipeline gives the pass for modules without a triple too: then the JIT's.
-function subtarget_triple(run::CPUFeaturesRun)
-    if isempty(string(run.triple)) && (run.cpu !== nothing || run.features !== nothing)
-        return LLVM.Triple(native_probe(:jit_target).triple)
-    end
-    return run.triple
-end
-
 function subtarget_target(run::CPUFeaturesRun)
     if run.target === missing
         run.target = try
-            LLVM.Target(; triple=string(subtarget_triple(run)))
+            LLVM.Target(; triple=string(run.triple))
         catch err
             err isa ArgumentError || rethrow()
             nothing
@@ -249,11 +255,12 @@ function subtarget_target(run::CPUFeaturesRun)
     return run.target
 end
 
-# the names of the features that a subtarget's target knows
+# the names of the features that the target knows
 function feature_names(run::CPUFeaturesRun, sti::LLVM.SubtargetInfo)
-    get!(run.feature_names, Ptr{Cvoid}(Base.unsafe_convert(API.LLVMMCSubtargetInfoRef, sti))) do
-        Set(LLVM.processor_features(sti))
+    if run.feature_names === nothing
+        run.feature_names = Set(LLVM.processor_features(sti))
     end
+    return run.feature_names
 end
 
 # whether a subtarget has a feature; LLVM aborts for features it doesn't know
@@ -299,7 +306,7 @@ end
 const CPU_FEATURES = define_pass("jl-cpu-features", :module, cpu_features!; required=true,
                                  extra=(target_cpu=nothing, target_features=nothing,
                                         target_machine=nothing),
-                                 cpp_name="CPUFeatures")
+                                 cpp_name="CPUFeatures", check=check_cpu_target)
 
 """
     JuliaIR.CPUFeaturesPass(; target_cpu=nothing, target_features=nothing,
@@ -325,9 +332,10 @@ compiled for. How depends on the Julia version, like Julia's C++ pass:
   C++ pass. Without any of these, the generic CPU is used, as when the C++ pass runs by
   name (e.g. in `opt`): to use the JIT's target like Julia's pipeline does, pass the
   `cpu` and `features` of [`JuliaIR.jit_target`](@ref). The answer is false for
-  triples whose target isn't registered with LLVM; a module without a triple is
-  compiled for the JIT's when the target is given by options. Names of features are
-  LLVM's, so the answers can depend on the version of LLVM.
+  triples whose target isn't registered with LLVM. A module without a triple is taken
+  to be for the triple of `target_machine`, or for the JIT's when `target_cpu` or
+  `target_features` is given. Names of features are LLVM's, so the answers can depend
+  on the version of LLVM.
 
 The options can't be given in a pipeline's text (feature strings contain commas); with
 `jlopt`, they are its `-mcpu` and `-mattr` flags. `target_machine` can't be combined
@@ -337,10 +345,4 @@ Intrinsics that aren't called, are passed as arguments or are called with `invok
 make the pass throw a [`JuliaIR.CPUFeaturesError`](@ref) before it changes the module.
 Like Julia's C++ pass, it is required, so it also runs on `optnone` functions.
 """
-function CPUFeaturesPass(; target_cpu=nothing, target_features=nothing,
-                         target_machine=nothing, kwargs...)
-    target_cpu isa AbstractString && (target_cpu = String(target_cpu))
-    target_features isa AbstractString && (target_features = String(target_features))
-    check_cpu_target(target_cpu, target_features, target_machine)
-    return custom_pass(CPU_FEATURES; target_cpu, target_features, target_machine, kwargs...)
-end
+CPUFeaturesPass(; kwargs...) = custom_pass(CPU_FEATURES; kwargs...)

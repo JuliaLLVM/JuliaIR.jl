@@ -56,16 +56,19 @@ Up to Julia 1.13, the features of the options (or the target machine's feature s
 take the place of the JIT's feature string; `target_cpu` is accepted and has no effect,
 as the C++ pass never reads a CPU. Without options, the port uses the answers that the
 running Julia's JIT gives for `have_fma`, which it reads from the code Julia generates
-for `Core.Intrinsics.have_fma(Float32)` and `(Float64)`. The JIT's feature string only
-has the features of its own architecture, so for a module of another architecture
-(e.g. ARM code compiled on x86) the answer is false, as with the C++ pass. The answers
+for `Core.Intrinsics.have_fma(Float32)` and `(Float64)`. For a module of another
+architecture than the JIT's (e.g. ARM code compiled on x86) the answer is false: the
+JIT's feature string only has features of its own architecture, unless Julia was
+started with features of another one in its CPU target (`-C`), which LLVM ignores but
+the C++ pass would find. The answers
 are read once per process, and only when a function without `target-features` needs
 them.
 
 From Julia 1.14 on, the options take the place of the target machine that Julia's
-pipeline gives the C++ pass. A module without a triple is then compiled for the JIT's
-triple (but `have_fma`, which looks at the module's triple, is false, as in Julia's
-pipeline). [`JuliaIR.jit_target`](@ref) returns the JIT's CPU, features and triple, so
+pipeline gives the C++ pass. A module without a triple is then taken to be for the
+target machine's triple (`target_machine`), or the JIT's (`target_cpu`,
+`target_features`); Julia's own modules always have one. [`JuliaIR.jit_target`](@ref)
+returns the JIT's CPU, features and triple, so
 `JuliaIR.CPUFeaturesPass(; target_cpu=t.cpu, target_features=t.features)` with
 `t = JuliaIR.jit_target()` decides like Julia's own pipeline does for JIT code.
 
@@ -108,3 +111,8 @@ back-end.
   for the function. Both have the same features for the targets the pass answers for,
   except where a target machine reads other function attributes (X86's
   `"use-soft-float"`). `target_machine` gives exactly the C++ pass's behaviour.
+- From Julia 1.14 on, a module without a triple is taken to be for the target's triple
+  when the target is given (see above). The C++ pass creates the subtarget for the
+  target machine's triple, but decides `have_fma` by the module's empty triple, so that
+  it is always false, while `julia.cpu.supports` can be true. Julia's own pipeline
+  doesn't run into this, as the code generator sets the triple of every module.

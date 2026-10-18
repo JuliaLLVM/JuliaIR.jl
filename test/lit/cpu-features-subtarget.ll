@@ -16,7 +16,7 @@
 ; RUN: opt -mcpu=haswell -passes=CPUFeatures -S %t/options.ll | FileCheck %t/options.ll --check-prefix=HASWELL
 ; RUN: opt -mattr=+fma -passes=CPUFeatures -S %t/options.ll | FileCheck %t/options.ll --check-prefix=FMA
 
-; without a triple, the options are for the JIT's (have_fma looks at the module's)
+; without a triple, the options are for the JIT's
 ; RUN: opt -passes=CPUFeatures -S %t/notriple.ll | FileCheck %t/notriple.ll --check-prefix=NONE
 ; RUN: %if x86_64 %{ opt -mattr=+fma -passes=CPUFeatures -S %t/notriple.ll | FileCheck %t/notriple.ll --check-prefix=FMA %}
 
@@ -233,7 +233,7 @@ declare i1 @julia.cpu.supports.fma()
 ; NONE-LABEL: @have_fma(
 ; NONE-NEXT: ret i1 false
 ; FMA-LABEL: @have_fma(
-; FMA-NEXT: ret i1 false
+; FMA-NEXT: ret i1 true
 define i1 @have_fma() {
   %r = call i1 @julia.cpu.have_fma.f64()
   ret i1 %r

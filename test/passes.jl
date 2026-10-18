@@ -1219,6 +1219,10 @@ end
 
     # the target can only be given as keyword arguments
     @test_throws "target_cpu must be a string" JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
+    @dispose pb=PassBuilder() begin
+        @test_throws "target_cpu must be a string" JuliaIR.register!(pb;
+            options=Dict("jl-cpu-features" => (; target_cpu=42)))
+    end
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") pb=PassBuilder() begin
         JuliaIR.register!(pb)
         add!(pb, "jl-cpu-features<target-features=+fma>")
@@ -1324,6 +1328,10 @@ end
             @test fold(plain; triple) == [false, false]
             @test fold(plain; triple, target_cpu=jit.cpu, target_features=jit.features) ==
                   [have32(), have64()]
+            # a module without a triple is for the JIT's when options give the target
+            @test fold(plain; triple="", target_cpu=jit.cpu, target_features=jit.features) ==
+                  [have32(), have64()]
+            @test fold(plain; triple="") == [false, false]
         else
             @test fold(plain; triple) == [have32(), have64()]
             @test haskey(JuliaIR.NATIVE_FACTS, :jit_fma)
@@ -1362,6 +1370,9 @@ end
                 # up to Julia 1.13, only its (empty) feature string counts
                 @test fold(plain; target_machine=tm) == [subtarget, subtarget]
                 @test fold(attributed; target_machine=tm) == [true, true]
+                # from Julia 1.14 on, a module without a triple is for the target
+                # machine's
+                @test fold(plain; triple="", target_machine=tm) == [subtarget, subtarget]
             end
             @dispose tm=LLVM.TargetMachine(target, "x86_64-unknown-linux-gnu";
                                            features="+fma") begin
