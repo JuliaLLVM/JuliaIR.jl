@@ -24,7 +24,7 @@ include(joinpath(@__DIR__, "..", "litsetup.jl"))
 
 const MANIFEST_PATH = joinpath(@__DIR__, "manifest.toml")
 
-const KINDS = ("port", "mixed", "frame", "cpu", "emitter", "infra")
+const KINDS = ("port", "mixed", "cpu", "emitter", "infra")
 const STATUSES = ("run", "skip", "exclude", "override", "derived")
 const FIXTURE_KEYS = ("kind", "ports", "status", "missing", "reason", "ref", "patch",
                       "ledger_empty", "cpp", "pins")

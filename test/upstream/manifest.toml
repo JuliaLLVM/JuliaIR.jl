@@ -7,9 +7,8 @@
 #
 # [fixtures."<file>"]: every file in test/llvmpasses of any pin, with
 #   kind    = "port"     tests passes that this package ports (`ports`, Julia's names)
-#             "mixed"    tests ported passes together with Julia's CPU-only passes
-#             "frame"    tests LateLowerGCFrame's GC frame lowering (CPU-only; the GPU
-#                        cleanup part gets its own tests, S6)
+#             "mixed"    tests ported passes together with Julia's passes that are not
+#                        ported yet
 #             "cpu"      tests CPU-only passes that are not ported
 #             "emitter"  tests Julia's code generator, not a pass
 #             "infra"    not a test
@@ -20,9 +19,8 @@
 #                        to the fixture first; the run fails if the pristine fixture
 #                        passes too (the override is stale)
 #             "derived"  run a copy that tests a port instead of what the fixture
-#                        tests: `patch` is applied to the fixture first (e.g., the
-#                        functions of a frame fixture that concern the GPU cleanup, with
-#                        the pipeline naming the port); the copy must run a port
+#                        tests: `patch` is applied to the fixture first (e.g., with the
+#                        pipeline naming a port); the copy must run a port
 #   reason  = why, for skip/exclude/override; `ref` = upstream reference, if any
 #   cpp     = why the fixture does not run with Julia's C++ passes (`run.jl --cpp`, which
 #             otherwise runs every fixture that does not test the code generator)
@@ -168,9 +166,9 @@ missing = ["RemoveJuliaAddrspaces"]
 
 [fixtures."alloc-opt-gcframe.ll"]
 kind = "mixed"
-ports = ["AllocOpt"]
+ports = ["AllocOpt", "LateLowerGCFrame"]
 status = "run"
-reason = "AllocOpt followed by Julia's LateLowerGCFrame and FinalLowerGC (only on Julia's LLVM)"
+reason = "AllocOpt and LateLowerGCFrame, followed by Julia's FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."parsing.ll"]
 kind = "mixed"
@@ -185,74 +183,80 @@ patch = "derived/1.10/parsing.ll.patch"
 reason = "its only RUN line uses typed pointers; the derived copy parses into an opaque context instead, which does not change what is tested"
 
 
-## GC frame lowering (LateLowerGCFrame), CPU-only
+## GC frame lowering (LateLowerGCFrame), with Julia's C++ passes behind it where the RUN
+## lines name them (FinalLowerGC, JuliaMultiVersioning)
 
 [fixtures."gc-writebarrier-volatile.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "LateLowerGCFrame followed by Julia's FinalLowerGC"
 
 [fixtures."gcroots.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."late-lower-gc.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."late-lower-gc-addrspaces.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering"
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
 
 [fixtures."late-lower-gc-alloc-zeroing.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering"
-
-[fixtures."late-lower-gc-alloc-zeroing.ll".pins."1.14"]
-status = "derived"
-patch = "derived/1.14/late-lower-gc-alloc-zeroing.ll.patch"
-reason = "the zeroinit_indirect tests concern the cleanup (jl-late-gc-cleanup); the derived copy runs them with the port and drops the julia.gc_alloc_obj tests, which need frame lowering"
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
 
 [fixtures."late-lower-gc-dynamic-index.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering"
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
 
 [fixtures."late-lower-gc-select-store.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering"
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
 
 [fixtures."late-lower-gc-sret.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering"
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
 
 [fixtures."multiversioning-abi.ll"]
-kind = "frame"
-status = "exclude"
-reason = "JuliaMultiVersioning and LateLowerGCFrame's frame lowering"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "Julia's JuliaMultiVersioning followed by LateLowerGCFrame (only on Julia's LLVM)"
 
 [fixtures."refinements.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."returnstwicegc.ll"]
-kind = "frame"
-status = "exclude"
-reason = "LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "LateLowerGCFrame followed by Julia's FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."safepoint_stress.jl"]
-kind = "frame"
-status = "exclude"
-reason = "emits IR with Julia's code generator for LateLowerGCFrame's frame lowering and FinalLowerGC"
+kind = "mixed"
+ports = ["LateLowerGCFrame"]
+status = "run"
+reason = "IR emitted by Julia's code generator through LateLowerGCFrame and Julia's FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."safepoint_stress.jl".pins."1.10"]
+status = "override"
+patch = "derived/1.10/safepoint_stress.jl.patch"
+reason = "its CHECK line expects typed pointers, as LLVM 15's opt parses Julia 1.10's typed IR into a typed context; jlopt always uses opaque pointers, so the derived copy checks the opaque spelling"
 cpp = "its RUN lines rely on LLVM 15 parsing Julia 1.10's typed IR into a typed context; jlopt always uses opaque pointers"
 
 
