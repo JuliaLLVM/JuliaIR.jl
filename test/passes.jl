@@ -704,7 +704,11 @@ end
         _, out = lower(ir(get_ir; triple=""))
         if rt_offset == -1
             @test m === nothing
-            @test occursin(r"call ptr inttoptr \(i64 \d+ to ptr\)\(", out)
+            if dialect.ptls_jit_getter === :resolved
+                @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
+            else
+                @test occursin(r"call ptr inttoptr \(i64 \d+ to ptr\)\(", out)
+            end
         else
             @test m !== nothing
             @test occursin("asm \"$(m[1])\", \"=r\"()", out)
