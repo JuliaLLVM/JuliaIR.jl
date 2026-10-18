@@ -274,7 +274,7 @@ const PROPAGATE_ADDRSPACES = define_pass("jl-propagate-addrspaces", :function,
                                          cpp_name="PropagateJuliaAddrspaces")
 
 """
-    JuliaIR.PropagateAddrspacesPass(; julia=VERSION)
+    JuliaIR.PropagateAddrspacesPass()
 
 Make loads, stores, atomics and memory intrinsics that access memory through one of
 Julia's special address spaces use the untracked pointer the address was derived from,

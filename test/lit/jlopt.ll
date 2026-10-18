@@ -30,8 +30,8 @@
 ; UNKNOWN: jlopt: unknown option -frobnicate
 ; RUN: not opt --load-pass-plugin=libfoo%shlibext -passes=jl-remove-ni -S %s 2>&1 | FileCheck %s --check-prefix=PLUGIN
 ; PLUGIN: jlopt: cannot load plugin libfoo
-; RUN: not opt -passes='jl-remove-ni<julia=1.9>' -S %s 2>&1 | FileCheck %s --check-prefix=VERSION
-; VERSION: Julia 1.9.0 is not supported
+; RUN: not opt -passes='jl-remove-ni<julia=1.12>' -S %s 2>&1 | FileCheck %s --check-prefix=OPTION
+; OPTION: unknown option julia
 ; RUN: not opt -passes=jl-no-such-pass -S %s 2>&1 | FileCheck %s --check-prefix=PIPELINE
 ; PIPELINE: jl-no-such-pass
 ; RUN: not opt -passes=jl-remove-ni -S %t.missing 2>&1 | FileCheck %s --check-prefix=MISSING

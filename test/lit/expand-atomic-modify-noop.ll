@@ -1,13 +1,14 @@
 ; Julia 1.12 and earlier have no ExpandAtomicModify (their code generator emits no
 ; `julia.atomicmodify` calls): for their IR, the port leaves the calls alone.
 
-; RUN: opt -julia=1.12 -passes=ExpandAtomicModify -S %s | FileCheck %s
-; RUN: opt -passes='jl-expand-atomic-modify<julia=1.10>' -S %s | FileCheck %s
+; UNSUPPORTED: julia-ge-1.13
+; RUN: opt -passes=ExpandAtomicModify -S %s | FileCheck %s
+; RUN: opt -passes=jl-expand-atomic-modify -S %s | FileCheck %s
 
 ; the port ran
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.11 -passes=ExpandAtomicModify -S %s -o /dev/null
-; RUN: grep -c 'pass	jl-expand-atomic-modify	julia=1.11.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=ExpandAtomicModify -S %s -o /dev/null
+; RUN: grep -c 'pass	jl-expand-atomic-modify	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 2
 
 declare {i64, i64} @julia.atomicmodify.i64(ptr, ptr, i8, i8, ...)

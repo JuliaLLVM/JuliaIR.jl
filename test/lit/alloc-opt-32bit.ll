@@ -3,8 +3,7 @@
 ; two references is split into two reference slots (which are then promoted to
 ; registers) rather than kept on the stack as an array of references.
 
-; RUN: opt -julia=1.12 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s
-; RUN: opt -julia=1.10 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s
+; RUN: opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s
 
 target datalayout = "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128-ni:10:11:12:13"
 target triple = "i686-unknown-linux-gnu"

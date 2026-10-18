@@ -1,8 +1,10 @@
 ; What AllocOpt does with allocations, depending on how they are used.
 
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,MASTER
-; RUN: opt -julia=1.13 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V113
-; RUN: opt -julia=1.13 -passes='function(AllocOpt)' -S %s | FileCheck %s --check-prefixes=CHECK,V113
+; The checks expect the stack memory layout of Julia 1.12 and later (alloc-opt-dialects.ll
+; has the older ones).
+; RUN: %if julia-1.14 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,MASTER %}
+; RUN: %if julia-1.12 || julia-1.13 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V113 %}
+; RUN: %if julia-1.12 || julia-1.13 %{ opt -passes='function(AllocOpt)' -S %s | FileCheck %s --check-prefixes=CHECK,V113 %}
 
 ; the port ran, also under Julia's name, in every function but the optnone one
 ; RUN: rm -f %t.ledger

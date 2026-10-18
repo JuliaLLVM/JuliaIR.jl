@@ -31,10 +31,6 @@ a GC frame, as on GPUs (`jl-late-gc-cleanup`).
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.
 
-Every pass has a `julia` version option, which defaults to the running Julia's `VERSION`.
-It exists for testing (the package's tests check the passes on the IR of every Julia
-version, on any Julia); don't use it to process the IR of another Julia version.
-
 Some passes need facts about Julia's runtime that the IR doesn't state, such as the
 offsets of fields in the current task or the size of an exception handler. They take
 these from the running Julia, or from pass options that give them explicitly; IR for

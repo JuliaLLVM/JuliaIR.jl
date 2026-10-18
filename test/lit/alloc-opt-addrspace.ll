@@ -2,9 +2,9 @@
 ; 1.11's AllocOpt produced invalid IR here (a bitcast between address spaces); the port's
 ; IR is valid for every dialect.
 
-; RUN: opt -julia=1.11 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,LEGACY
-; RUN: opt -julia=1.12 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,CHUNKED
-; RUN: opt -julia=1.12 -passes='function(jl-alloc-opt)' %s | llvm-dis | FileCheck %s --check-prefixes=CHECK,CHUNKED
+; RUN: %if julia-1.11 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,LEGACY %}
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,CHUNKED %}
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(jl-alloc-opt)' %s | llvm-dis | FileCheck %s --check-prefixes=CHECK,CHUNKED %}
 
 target datalayout = "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7-ni:10:11:12:13"
 

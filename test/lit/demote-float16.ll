@@ -3,20 +3,20 @@
 ; 1.12 and later the value of those attributes and the target triple; explicit
 ; `fp16`/`bf16` policies override both. The host's CPU features are never used.
 
-; RUN: opt -julia=1.12 -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112
-; RUN: opt -julia=1.14.0-DEV -mtriple=powerpc64le-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112PPC
-; RUN: opt -julia=1.12 -mtriple=ppu-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112PPC
-; RUN: opt -julia=1.11 -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V111
-; RUN: opt -julia=1.11 -mtriple=aarch64-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V111ARM
-; RUN: opt -julia=1.10 -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V110
-; RUN: opt -julia=1.13 -passes='function(jl-demote-float16<fp16=keep;bf16=keep>)' -S %s | FileCheck %s --check-prefixes=CHECK,KEEP
-; RUN: opt -julia=1.12 -passes='function(jl-demote-float16<fp16=demote;bf16=demote>)' -S %s | FileCheck %s --check-prefixes=CHECK,DEMOTE
-; RUN: opt -passes='function(jl-demote-float16<julia=1.10;bf16=demote>)' -S %s | FileCheck %s --check-prefixes=CHECK,BF16
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112 %}
+; RUN: %if julia-ge-1.12 %{ opt -mtriple=powerpc64le-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112PPC %}
+; RUN: %if julia-ge-1.12 %{ opt -mtriple=ppu-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V112PPC %}
+; RUN: %if julia-1.11 %{ opt -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V111 %}
+; RUN: %if julia-1.11 %{ opt -mtriple=aarch64-unknown-linux-gnu -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V111ARM %}
+; RUN: %if julia-1.10 %{ opt -passes='function(DemoteFloat16)' -S %s | FileCheck %s --check-prefixes=CHECK,V110 %}
+; RUN: opt -passes='function(jl-demote-float16<fp16=keep;bf16=keep>)' -S %s | FileCheck %s --check-prefixes=CHECK,KEEP
+; RUN: opt -passes='function(jl-demote-float16<fp16=demote;bf16=demote>)' -S %s | FileCheck %s --check-prefixes=CHECK,DEMOTE
+; RUN: %if julia-1.10 %{ opt -passes='function(jl-demote-float16<bf16=demote>)' -S %s | FileCheck %s --check-prefixes=CHECK,BF16 %}
 
 ; the port ran, also on optnone functions (it is required)
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.12 -passes=DemoteFloat16 -S %s -o /dev/null
-; RUN: grep -c 'pass	jl-demote-float16	julia=1.12.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=DemoteFloat16 -S %s -o /dev/null
+; RUN: grep -c 'pass	jl-demote-float16	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 13
 
 target triple = "x86_64-unknown-linux-gnu"

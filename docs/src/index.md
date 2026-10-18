@@ -14,10 +14,12 @@ What is supported:
   versions (e.g. a separately built library like libLLVMGPU).
 - Only IR with opaque pointers is supported.
 
-Every pass has a `julia` option, the Julia version whose IR it processes. It defaults to
-the running Julia's version and exists for testing: the package's tests run the passes on
-the IR of every Julia version, on any Julia. Facts about Julia's runtime that some passes
-need (see below) are taken from the running Julia; IR for GPUs doesn't need them.
+What the IR of each Julia version looks like is described by `JuliaIR.Dialect`, and the
+passes use the running Julia's (`JuliaIR.Dialect(VERSION)`). Their options only cover
+what the version doesn't determine, like DemoteFloat16's `fp16` and `bf16` policies or the
+GC write-barrier configuration Julia was built with (`gc-barrier`). Facts about Julia's
+runtime that some passes need (see below) are taken from the running Julia too; IR for
+GPUs doesn't need them.
 
 | Pass | Julia's name | Required |
 |------|--------------|----------|

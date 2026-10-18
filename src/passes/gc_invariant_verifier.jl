@@ -210,7 +210,7 @@ const GC_INVARIANT_VERIFIER = define_pass("jl-gc-invariant-verifier", :function,
                                           cpp_name="GCInvariantVerifier")
 
 """
-    JuliaIR.GCInvariantVerifierPass(; julia=VERSION, strong=false)
+    JuliaIR.GCInvariantVerifierPass(; strong=false)
 
 Check that functions obey the invariants of Julia's GC address spaces
 (`jl-gc-invariant-verifier` in a pipeline, `jl-gc-invariant-verifier<strong>` for

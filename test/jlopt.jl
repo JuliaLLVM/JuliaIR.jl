@@ -12,12 +12,6 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
     @test parse_jlopt_args(["--passes=foo"]).pipeline == "foo"
     @test parse_jlopt_args(["-p", "foo"]).pipeline == "foo"
     @test parse_jlopt_args(["-passes=foo", "-oout.bc"]).output == "out.bc"
-    @test parse_jlopt_args(["-julia=1.11.2"]).julia == v"1.11.2"
-    @test parse_jlopt_args(String[]).julia == VERSION
-    withenv("JULIAIR_JULIA" => "1.12.1") do
-        @test parse_jlopt_args(String[]).julia == v"1.12.1"
-        @test parse_jlopt_args(["-julia=1.13"]).julia == v"1.13"
-    end
     @test parse_jlopt_args(["-mtriple=nvptx64-nvidia-cuda"]).triple == "nvptx64-nvidia-cuda"
     @test parse_jlopt_args(["-verify-memoryssa"]).llvm_options == ["-verify-memoryssa"]
     @test parse_jlopt_args(["--print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]).llvm_options ==
@@ -40,7 +34,8 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
     @test_throws "unknown option -frobnicate" parse_jlopt_args(["-frobnicate"])
     @test_throws "more than one input" parse_jlopt_args(["a.ll", "b.ll"])
     @test_throws "missing value" parse_jlopt_args(["-o"])
-    @test_throws "invalid Julia version" parse_jlopt_args(["-julia=next"])
+    # the passes process the running Julia's IR; there is no option for another version
+    @test_throws "unknown option -julia=1.12" parse_jlopt_args(["-julia=1.12"])
     @test_throws JloptError jlopt(String[]; stdin=IOBuffer(""))
 end
 

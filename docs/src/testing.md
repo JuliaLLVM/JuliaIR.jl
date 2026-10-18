@@ -14,6 +14,23 @@ The passes are tested at three levels.
   `LLVM_utils_unified_jll`; `python3` must be available;
 - tests of the harness for Julia's own pass tests (below), on a synthetic checkout.
 
+The passes process the IR of the running Julia, so each Julia version tests its own
+dialect, and CI runs the tests on every supported version. The testsets expect what the
+running Julia's dialect does where that matters (`JuliaIR.Dialect(VERSION)`). In the lit
+suite, the lit feature `julia-1.X` names the running Julia's minor version (that of its
+dialect: a nightly newer than the newest known version has that version's), and
+`julia-ge-1.X` holds for 1.X and later. A test for some versions only says
+`REQUIRES: julia-1.10 || julia-1.11`; a RUN line for some versions is wrapped in lit's
+`%if`, which also selects the check prefixes of a version:
+
+```
+; RUN: %if julia-1.12 %{ opt -passes=jl-lower-exc-handlers -S %s | FileCheck %s %}
+; RUN: opt -passes=jl-lower-simdloop -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}
+```
+
+A misspelled feature would skip its lines silently, so a testset checks that every
+`julia-*` feature under `test/lit` names a known version.
+
 A RUN line can prove that a port ran, rather than Julia's C++ pass of the same name, with
 the ledger: when the environment variable `JULIAIR_LEDGER` names a file, every pass
 invocation appends a line to it (process id, `pass`, the pass name, the Julia dialect and
@@ -31,8 +48,8 @@ the LLVM version), and `jlopt` appends one with the pipeline it runs:
 pointers, runs a pipeline that may contain this package's passes, and writes the result.
 The names of Julia's C++ passes that this package ports (e.g. `AllocOpt`) are mapped to
 the ports, other names are left to LLVM (including, when running on Julia's own LLVM,
-Julia's C++ passes). `jlopt --help` lists its options. `JULIAIR_JULIA` sets the default
-dialect, `JULIAIR_MAP_PASSES=0` disables the mapping.
+Julia's C++ passes). `jlopt --help` lists its options. `JULIAIR_MAP_PASSES=0` disables
+the mapping.
 
 To use it outside the test suite, run it with a project that provides JuliaIR, e.g.
 `julia --project=test bin/jlopt -passes=jl-remove-ni -S input.ll` (Julia 1.12 and later,

@@ -2,16 +2,15 @@
 ; on every dialect (Julia master's behaviour, JuliaLang/julia#62807).
 
 ; RUN: opt -passes='function(jl-propagate-addrspaces,dce)' -S %s | FileCheck %s
-; RUN: opt -julia=1.10 -passes='function(PropagateJuliaAddrspaces,dce)' -S %s | FileCheck %s
-; RUN: opt -julia=1.13 -passes='function(jl-propagate-addrspaces<julia=1.12>,dce)' -S %s | FileCheck %s
+; RUN: opt -passes='function(PropagateJuliaAddrspaces,dce)' -S %s | FileCheck %s
 
 ; the port ran (also for Julia's name of the pass), and not on optnone functions
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=PropagateJuliaAddrspaces -julia=1.11 -S %s -o /dev/null
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=PropagateJuliaAddrspaces -S %s -o /dev/null
 ; RUN: FileCheck --check-prefix=LEDGER %s < %t.ledger
 ; RUN: grep -c 'pass	jl-propagate-addrspaces' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; LEDGER: jlopt jl-propagate-addrspaces
-; LEDGER-NEXT: pass jl-propagate-addrspaces julia=1.11.0 llvm=
+; LEDGER-NEXT: pass jl-propagate-addrspaces julia=
 ; COUNT: 11
 
 declare void @llvm.memset.p11.i64(ptr addrspace(11), i8, i64, i1)

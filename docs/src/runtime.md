@@ -27,12 +27,12 @@ without exception handlers) is processed without:
 
 1. A pass option of the same name gives the fact explicitly, e.g.
    `jl-lower-exc-handlers<handler-size=264;setjmp=__sigsetjmp>`.
-2. Otherwise, the fact is read from the running Julia, if the IR is of its version (the
-   default of the passes' `julia` option).
-3. Otherwise, the pass throws a [`JuliaIR.RuntimeError`](@ref) that names the fact and
-   the option that gives it. The same error is thrown when the running Julia doesn't have
-   the fact (e.g. the reset context of cancellation points before Julia 1.14) or when it
-   can't be read.
+2. Otherwise, the fact is read from the running Julia, whose IR the passes process.
+3. When the running Julia doesn't have the fact (e.g. the reset context of cancellation
+   points before Julia 1.14) or it can't be read, the pass throws a
+   [`JuliaIR.RuntimeError`](@ref) that names the fact and the option that gives it. So
+   does `JuliaIR.runtime_layout` for a fact of another Julia version's dialect that isn't
+   given explicitly.
 
 ## How they are read
 

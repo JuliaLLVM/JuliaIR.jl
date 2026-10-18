@@ -242,7 +242,7 @@ const LOWER_SIMDLOOP = define_pass("jl-lower-simdloop", :loop, lower_simdloop!;
                                    required=false, cpp_name="LowerSIMDLoop")
 
 """
-    JuliaIR.LowerSIMDLoopPass(; julia=VERSION)
+    JuliaIR.LowerSIMDLoopPass()
 
 Lower the loop markers of Julia's `@simd` (`jl-lower-simdloop` in a pipeline; a loop
 pass, for `loop(...)` and `loop-mssa(...)` pipelines). Julia marks the loop ID of a loop

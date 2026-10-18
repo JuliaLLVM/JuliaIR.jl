@@ -504,7 +504,7 @@ const EXPAND_ATOMIC_MODIFY = define_pass("jl-expand-atomic-modify", :function,
                                          cpp_name="ExpandAtomicModify")
 
 """
-    JuliaIR.ExpandAtomicModifyPass(; julia=VERSION)
+    JuliaIR.ExpandAtomicModifyPass()
 
 Lower the `julia.atomicmodify.*` calls that Julia emits for `@atomic` modify operations
 (`jl-expand-atomic-modify` in a pipeline). Such a call atomically replaces the value at a

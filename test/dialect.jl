@@ -17,11 +17,6 @@ using JuliaIR: Dialect
     # the running Julia is supported
     @test Dialect(VERSION).julia == VERSION
 
-    # from option text
-    @test Dialect("1.12").minor == v"1.12"
-    @test Dialect("1.14.0-DEV.3782").minor == v"1.14"
-    @test_throws ArgumentError Dialect("one.twelve")
-
     # unsupported versions
     @test_throws "not supported" Dialect(v"1.9.4")
     @test Dialect(v"1.10.0-DEV.100").minor == v"1.10"

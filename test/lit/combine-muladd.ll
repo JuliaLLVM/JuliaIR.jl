@@ -2,18 +2,15 @@
 ; the `contract` flag (Julia 1.10 and 1.11). Julia 1.12 removed the pass: for later
 ; dialects the port leaves the IR alone.
 
-; RUN: opt -julia=1.11 -passes=CombineMulAdd -S %s | FileCheck %s --check-prefixes=CHECK,COMBINE
-; RUN: opt -julia=1.10 -passes='function(CombineMulAdd)' -S %s | FileCheck %s --check-prefixes=CHECK,COMBINE
-; RUN: opt -passes='jl-combine-muladd<julia=1.12>' -S %s | FileCheck %s --check-prefixes=CHECK,NOOP
-; RUN: opt -julia=1.14.0-DEV -passes=CombineMulAdd -S %s | FileCheck %s --check-prefixes=CHECK,NOOP
+; RUN: opt -passes=CombineMulAdd -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{NOOP%} %else %{COMBINE%}
+; RUN: opt -passes='function(CombineMulAdd)' -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{NOOP%} %else %{COMBINE%}
+; RUN: opt -passes=jl-combine-muladd -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{NOOP%} %else %{COMBINE%}
 
 ; the port ran on every function but the optnone one (it is not required), also when it
 ; has nothing to do
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.11 -passes=CombineMulAdd -S %s -o /dev/null
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.13 -passes=CombineMulAdd -S %s -o /dev/null
-; RUN: grep -c 'pass	jl-combine-muladd	julia=1.11.0' %t.ledger | FileCheck --check-prefix=COUNT %s
-; RUN: grep -c 'pass	jl-combine-muladd	julia=1.13.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=CombineMulAdd -S %s -o /dev/null
+; RUN: grep -c 'pass	jl-combine-muladd	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 18
 
 ; CHECK-LABEL: @fadd_contract(

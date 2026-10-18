@@ -157,7 +157,7 @@ const DEMOTE_FLOAT16 = define_pass("jl-demote-float16", :function, demote_float1
                                    required=true, cpp_name="DemoteFloat16")
 
 """
-    JuliaIR.DemoteFloat16Pass(; julia=VERSION, fp16=:auto, bf16=:auto)
+    JuliaIR.DemoteFloat16Pass(; fp16=:auto, bf16=:auto)
 
 Perform floating-point arithmetic on `half` (`fp16`) and `bfloat` (`bf16`) values in
 `float`, truncating every result, so that the IEEE semantics of the 16-bit types are

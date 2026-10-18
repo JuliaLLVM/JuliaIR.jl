@@ -2,6 +2,10 @@ using LLVM, LLVM.IR, LLVM.Passes
 
 @testset "passes" begin
 
+# the passes process the IR of the running Julia, so where its dialect matters, the tests
+# expect what the running Julia's dialect does
+dialect = JuliaIR.Dialect(VERSION)
+
 @testset "RemoveNI" begin
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             target datalayout = "e-i64:64-ni:10:11:12:13"
@@ -13,7 +17,7 @@ using LLVM, LLVM.IR, LLVM.Passes
         @test JuliaIR.remove_ni!(mod, nothing, opts) == PreservedAnalyses(AllAnalyses)
 
         mod.datalayout = "e-i64:64-ni:10:11:12:13"
-        run!(JuliaIR.RemoveNIPass(; julia=v"1.11"), mod)
+        run!(JuliaIR.RemoveNIPass(), mod)
         @test string(mod.datalayout) == "e-i64:64"
     end
 
@@ -31,7 +35,7 @@ end
               %load = load i64, ptr addrspace(11) %casted
               ret i64 %load
             }""") begin
-        run!(JuliaIR.PropagateAddrspacesPass(; julia=v"1.12"), mod)
+        run!(JuliaIR.PropagateAddrspacesPass(), mod)
         load = collect(first(first(mod.functions).blocks).instructions)[3]
         @test load.operands[1] == first(first(first(mod.functions).blocks).instructions)
     end
@@ -45,9 +49,9 @@ end
               %r = fadd half %a, %a
               ret half %r
             }""") begin
-        run!(JuliaIR.DemoteFloat16Pass(; julia=v"1.12", fp16=:keep), mod)
+        run!(JuliaIR.DemoteFloat16Pass(; fp16=:keep), mod)
         @test occursin("%r = fadd half", string(mod))
-        run!(JuliaIR.DemoteFloat16Pass(; julia=v"1.12", fp16=:demote), mod)
+        run!(JuliaIR.DemoteFloat16Pass(; fp16=:demote), mod)
         @test occursin("%r = fptrunc float", string(mod))
     end
 end
@@ -65,7 +69,7 @@ end
     # every violation is reported, and the error outlives the module
     err = @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         try
-            run!(JuliaIR.GCInvariantVerifierPass(; julia=v"1.12", strong=true), mod)
+            run!(JuliaIR.GCInvariantVerifierPass(; strong=true), mod)
             nothing
         catch err
             err
@@ -83,7 +87,7 @@ end
     # without the strong check, GEPs of tracked pointers are fine
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         err = try
-            run!(JuliaIR.GCInvariantVerifierPass(; julia=v"1.12"), mod)
+            run!(JuliaIR.GCInvariantVerifierPass(), mod)
         catch err
             err
         end
@@ -127,13 +131,14 @@ end
               %t = call ptr addrspace(10) @julia.typeof(ptr addrspace(10) %obj)
               ret ptr addrspace(10) %t
             }""") begin
-        run!(JuliaIR.LateLowerGCFramePass(; julia=v"1.12"), mod)
+        run!(JuliaIR.LateLowerGCFramePass(), mod)
         @test !occursin("julia.typeof(", string(mod.functions["f"]))
-        @test occursin("and i64 %obj.tag, -16", string(mod.functions["f"]))
+        tag = dialect.gc_names ? "%obj.tag" : "%[0-9]+"
+        @test occursin(Regex("and i64 $tag, -16"), string(mod.functions["f"]))
     end
 
-    # lowering an allocation needs runtime facts, which only the running Julia's dialect
-    # has without pass options
+    # lowering an allocation needs runtime facts: given as pass options, or the running
+    # Julia's
     alloc_ir = """
         target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
         @tag = external addrspace(10) global {}, align 16
@@ -145,20 +150,11 @@ end
           %v = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag)
           ret ptr addrspace(10) %v
         }"""
-    other = JuliaIR.dialect_minor(VERSION) == v"1.12" ? v"1.13" : v"1.12"
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
-        err = try
-            run!(JuliaIR.LateLowerGCFramePass(; julia=other), mod)
-            nothing
-        catch err
-            err
-        end
-        @test err isa PassException && err.ex isa JuliaIR.RuntimeError
-        @test occursin("(`task_ptls`)", sprint(showerror, err.ex))
-    end
-    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
-        run!(JuliaIR.LateLowerGCFramePass(; julia=other, task_ptls=100), mod)
-        @test occursin("i32 100", string(mod.functions["alloc"]))
+        run!(JuliaIR.LateLowerGCFramePass(; task_ptls=128), mod)
+        # Julia 1.11 and older address the field in pointers, later versions in bytes
+        index = dialect.gc_ptls_gep === :pointer ? "i64 16" : "i32 128"
+        @test occursin("ptr %task, $index", string(mod.functions["alloc"]))
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
         run!(JuliaIR.LateLowerGCFramePass(), mod)
@@ -183,7 +179,7 @@ end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         before = string(mod)
         err = try
-            run!(JuliaIR.LateGCCleanupPass(; julia=v"1.12"), mod)
+            run!(JuliaIR.LateGCCleanupPass(), mod)
             nothing
         catch err
             err
@@ -311,7 +307,7 @@ end
                   call void @external(ptr addrspace(10) %escaped)
                   ret void
                 }""")
-            run!(JuliaIR.AllocOptPass(; julia=v"1.12"), mod; remarks=r -> push!(remarks, r))
+            run!(JuliaIR.AllocOptPass(), mod; remarks=r -> push!(remarks, r))
         end
         @test any(r -> r.kind === :passed && r.name == "Dead Allocation", remarks)
         @test any(r -> r.kind === :missed && r.name == "Escaped", remarks)
@@ -331,21 +327,21 @@ end
           %r = fadd double %r1, %r2
           ret double %r
         }"""
-    for (julia, changed) in [(v"1.10", true), (v"1.11.9", true), (v"1.12", false)]
-        remarks = []
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-            run!(JuliaIR.CombineMulAddPass(; julia), mod; remarks=r -> push!(remarks, r))
-            @test occursin("%once = fmul contract double", string(mod)) == changed
-            @test occursin("%twice = fmul double", string(mod))
-        end
-        if changed
-            @test [(r.kind, r.name, r.message) for r in remarks] ==
-                  [(:passed, "Marked for FMA", "marked for fma fmul"),
-                   (:missed, "Multiuse FMul", "fmul had multiple uses fmul")]
-            @test all(r -> r.pass_name == "combine-muladd", remarks)
-        else
-            @test isempty(remarks)
-        end
+    # Julia 1.12 removed the pass
+    changed = dialect.has_combine_muladd
+    remarks = []
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        run!(JuliaIR.CombineMulAddPass(), mod; remarks=r -> push!(remarks, r))
+        @test occursin("%once = fmul contract double", string(mod)) == changed
+        @test occursin("%twice = fmul double", string(mod))
+    end
+    if changed
+        @test [(r.kind, r.name, r.message) for r in remarks] ==
+              [(:passed, "Marked for FMA", "marked for fma fmul"),
+               (:missed, "Multiuse FMul", "fmul had multiple uses fmul")]
+        @test all(r -> r.pass_name == "combine-muladd", remarks)
+    else
+        @test isempty(remarks)
     end
 end
 
@@ -382,168 +378,165 @@ end
         !8 = !DILocation(line: 9, scope: !3)
         """
     flags = "Loop marked for SIMD vectorization with flags { \"simd\": true, \"ivdep\": false }"
-    for (julia, combine) in [(v"1.11", false), (v"1.12", true)]
-        remarks = []
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-            @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
-                LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass(; julia))
-                add!(pb, "function(loop-mssa(jl-lower-simdloop))")
-                run!(pb, mod)
-            end
-            str = string(mod)
-            @test occursin("%a1 = fadd reassoc contract double %acc, %m", str)
-            @test occursin("%m = fmul $(combine ? "contract " : "")double", str)
-            @test occursin(r"!llvm.loop (![0-9]+)\n.*\n\1 = distinct !{\1, ![0-9]+}\n"s, str)
-            # the other loop properties are kept, the marker is gone
-            @test !occursin("julia.simdloop", str)
-            @test occursin("!\"llvm.loop.vectorize.width\", i32 4", str)
-            # the remark about the loop is located at the preheader's terminator (the
-            # start of the loop); the header's terminator keeps its own location
-            header = collect(first(mod.functions).blocks)[2]
-            @test LLVM.line(LLVM.terminator(header).debug_location) == 9
+    # Julia 1.12 and later also mark the multiplications feeding a reduction
+    combine = dialect.simdloop_check_combine
+    remarks = []
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
+            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass())
+            add!(pb, "function(loop-mssa(jl-lower-simdloop))")
+            run!(pb, mod)
         end
-        expected = [(:analysis, "Loop SIMD Flags", flags, 7),
-                    (:missed, "FirstArithmeticOpInChainIsUninteresting",
-                     "first arithmetic op in chain is uninteresting", 0),
-                    (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0)]
-        combine && push!(expected, (:passed, "Marked for FMA", "marked for fma fmul", 0))
-        push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
-        @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
-        @test all(r -> r.pass_name == "lower_simd_loop", remarks)
+        str = string(mod)
+        @test occursin("%a1 = fadd reassoc contract double %acc, %m", str)
+        @test occursin("%m = fmul $(combine ? "contract " : "")double", str)
+        @test occursin(r"!llvm.loop (![0-9]+)\n.*\n\1 = distinct !{\1, ![0-9]+}\n"s, str)
+        # the other loop properties are kept, the marker is gone
+        @test !occursin("julia.simdloop", str)
+        @test occursin("!\"llvm.loop.vectorize.width\", i32 4", str)
+        # the remark about the loop is located at the preheader's terminator (the
+        # start of the loop); the header's terminator keeps its own location
+        header = collect(first(mod.functions).blocks)[2]
+        @test LLVM.line(LLVM.terminator(header).debug_location) == 9
     end
+    expected = [(:analysis, "Loop SIMD Flags", flags, 7),
+                (:missed, "FirstArithmeticOpInChainIsUninteresting",
+                 "first arithmetic op in chain is uninteresting", 0),
+                (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0)]
+    combine && push!(expected, (:passed, "Marked for FMA", "marked for fma fmul", 0))
+    push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
+    @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
+    @test all(r -> r.pass_name == "lower_simd_loop", remarks)
 end
 
 @testset "LowerExcHandlers" begin
     @test JuliaIR.LowerExcHandlersPass().required
-    native_minor = JuliaIR.dialect_minor(VERSION)
-    # the 1.12 dialect
-    ir(; triple="", call=true) = """
+    # a handler in the running Julia's dialect; Julia 1.13 and later emit none (and have
+    # no LowerExcHandlers), for them the IR of 1.12 checks that the pass does nothing
+    kind = dialect.except_enter === :none ? :task_buffer : dialect.except_enter
+    enter_type = kind === :task_buffer ? "{i32, ptr}" : "i32"
+    enter_args = kind === :no_task ? "" : "ptr %ct"
+    pop_args(n) = kind === :no_task ? "i32 $n" : "ptr %ct, i32 $n"
+    ir(; triple="", call=true, pops=1) = """
         $(isempty(triple) ? "" : "target triple = \"$triple\"")
-        declare {i32, ptr} @julia.except_enter(ptr) returns_twice
-        declare void @ijl_pop_handler(ptr, i32)
+        declare $enter_type @julia.except_enter($(kind === :no_task ? "" : "ptr")) returns_twice
+        declare void @ijl_pop_handler($(kind === :no_task ? "i32" : "ptr, i32"))
         define void @f(ptr %ct) {
-          $(call ? "%r = call {i32, ptr} @julia.except_enter(ptr %ct)" : "")
-          $(call ? "call void @ijl_pop_handler(ptr %ct, i32 1)" : "")
+          $(call ? "%r = call $enter_type @julia.except_enter($enter_args)" : "")
+          $(call ? "call void @ijl_pop_handler($(pop_args(pops)))" : "")
           ret void
         }"""
-    lowered(mod) = !occursin("call { i32, ptr } @julia.except_enter", string(mod))
-    function lower(triple; julia=v"1.12", kwargs...)
+    lowered(mod) = !occursin(r"call [^\n]*@julia.except_enter\(", string(mod))
+    function lower(triple; kwargs...)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir(; triple)) begin
-            run!(JuliaIR.LowerExcHandlersPass(; julia, kwargs...), mod)
+            run!(JuliaIR.LowerExcHandlersPass(; kwargs...), mod)
             @test lowered(mod)
             return string(mod)
         end
     end
 
-    @testset "runtime facts" begin
-        # the running Julia's, whatever the target (the upstream fixtures cover this for
-        # Julia 1.10 and 1.11)
-        if native_minor == v"1.12"
+    # without handlers, the runtime facts aren't needed and nothing changes
+    no_handlers = ir(; triple="armv7-unknown-linux-gnueabihf", call=false)
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, no_handlers) begin
+        before = string(mod)
+        opts = JuliaIR.parse_options(""; extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+        @test JuliaIR.lower_exc_handlers!(mod.functions["f"], nothing, opts) ==
+              PreservedAnalyses(AllAnalyses)
+        @test string(mod) == before
+    end
+
+    if dialect.except_enter === :none
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
+            before = string(mod)
+            run!(JuliaIR.LowerExcHandlersPass(), mod)
+            @test string(mod) == before
+        end
+    else
+        @testset "runtime facts" begin
+            # the running Julia's, whatever the target
             @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
                 rt = JuliaIR.runtime_layout(JuliaIR.Dialect(VERSION), mod)
                 for triple in ("", LLVM.default_triple(), "amdgcn-amd-amdhsa")
-                    out = lower(triple; julia=VERSION)
+                    out = lower(triple)
                     @test occursin("alloca i8, i32 $(rt.handler_size), align 16", out)
                     # Windows Julia's default triple, `x86_64-w64-mingw32`, isn't
                     # normalized, so the C++ pass passes a savemask there too
                     @test occursin("call i32 @$(rt.setjmp)(ptr %1, i32 0)", out)
                 end
             end
+
+            # explicit facts win
+            out = lower("x86_64-unknown-linux-gnu"; handler_size=300, handler_align=16,
+                        setjmp="jl_setjmp")
+            @test occursin("alloca i8, i32 300, align 16", out)
+            @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
+            # the buffers are aligned to at least 16 bytes, like the C++ pass does
+            out = lower(""; handler_size=96, handler_align=4, setjmp="ijl_setjmp")
+            @test occursin("alloca i8, i32 96, align 16", out)
         end
 
-        # explicit facts win
-        out = lower("x86_64-unknown-linux-gnu"; handler_size=300, handler_align=16,
-                    setjmp="jl_setjmp")
-        @test occursin("alloca i8, i32 300, align 16", out)
-        @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
-        # the buffers are aligned to at least 16 bytes, like the C++ pass does
-        out = lower(""; handler_size=96, handler_align=4, setjmp="ijl_setjmp")
-        @test occursin("alloca i8, i32 96, align 16", out)
-    end
-
-    @testset "setjmp signature" begin
-        # the savemask argument follows the module's triple, not the runtime's setjmp,
-        # like the C++ pass: only (unnormalized) Windows triples drop it
-        for (triple, savemask) in ("" => true, "x86_64-unknown-linux-gnu" => true,
-                                   "amdgcn-amd-amdhsa" => true,
-                                   "x86_64-w64-windows-gnu" => false,
-                                   "i686-pc-win32" => false,
-                                   "x86_64-pc-windows-msvc" => false,
-                                   "x86_64-w64-mingw32" => true)
-            out = lower(triple; handler_size=264, handler_align=16, setjmp="__sigsetjmp")
-            args = savemask ? "ptr %1, i32 0" : "ptr %1"
-            @test occursin("call i32 @__sigsetjmp($args)", out)
-        end
-        # an existing declaration for a Windows target, with the Unix runtime's setjmp
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
-                target triple = "x86_64-w64-windows-gnu"
-                declare i32 @__sigsetjmp(ptr) returns_twice
-                $(ir())""") begin
-            run!(JuliaIR.LowerExcHandlersPass(; julia=v"1.12", handler_size=264,
-                                              handler_align=16, setjmp="__sigsetjmp"), mod)
-            @test lowered(mod)
-            @test occursin("call i32 @__sigsetjmp(ptr %1)", string(mod))
-            @test verify(mod) === nothing
-        end
-        # the signature of setjmp, explicitly
-        out = lower(""; handler_size=264, handler_align=16, setjmp="__sigsetjmp",
-                    setjmp_savemask=:no)
-        @test occursin("call i32 @__sigsetjmp(ptr %1)", out)
-        out = lower("x86_64-w64-mingw32"; handler_size=320, handler_align=16,
-                    setjmp="jl_setjmp", setjmp_savemask=:yes)
-        @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
-        opts = JuliaIR.parse_options("julia=1.12;setjmp-savemask=no";
-                                     extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
-        @test opts.extra.setjmp_savemask === :no
-        @test_throws "invalid option setjmp-savemask" lower(""; handler_size=264,
-            handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:maybe)
-    end
-
-    @testset "lowering" begin
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
-            run!(JuliaIR.LowerExcHandlersPass(; julia=v"1.12", handler_size=200,
-                                              handler_align=16, setjmp="sigsetjmp"), mod)
-            @test lowered(mod)
-            @test occursin("alloca i8, i32 200, align 16", string(mod))
-            @test occursin("call i32 @sigsetjmp(ptr %1, i32 0) #0", string(mod))
-        end
-        # the 1.13 dialect has no handlers to lower
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
-            before = string(mod)
-            run!(JuliaIR.LowerExcHandlersPass(; julia=v"1.13"), mod)
-            @test string(mod) == before
-        end
-        # without handlers, the runtime facts aren't needed and nothing changes
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module,
-                                                             ir(; triple="armv7-unknown-linux-gnueabihf", call=false)) begin
-            before = string(mod)
-            opts = JuliaIR.parse_options("julia=1.12"; extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
-            @test JuliaIR.lower_exc_handlers!(mod.functions["f"], nothing, opts) ==
-                  PreservedAnalyses(AllAnalyses)
-            @test string(mod) == before
-        end
-        # leaving more handlers than were entered is rejected before changing anything
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
-                declare {i32, ptr} @julia.except_enter(ptr) returns_twice
-                declare void @ijl_pop_handler(ptr, i32)
-                define void @f(ptr %ct) {
-                  %r = call {i32, ptr} @julia.except_enter(ptr %ct)
-                  call void @ijl_pop_handler(ptr %ct, i32 2)
-                  ret void
-                }""") begin
-            before = string(mod)
-            f = mod.functions["f"]
-            opts = JuliaIR.parse_options("julia=1.12;handler-size=200;handler-align=16;setjmp=sigsetjmp";
-                                         extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
-            err = try
-                JuliaIR.lower_exc_handlers!(f, nothing, opts)
-                nothing
-            catch err
-                err
+        @testset "setjmp signature" begin
+            # the savemask argument follows the module's triple, not the runtime's setjmp,
+            # like the C++ pass: only (unnormalized) Windows triples drop it
+            for (triple, savemask) in ("" => true, "x86_64-unknown-linux-gnu" => true,
+                                       "amdgcn-amd-amdhsa" => true,
+                                       "x86_64-w64-windows-gnu" => false,
+                                       "i686-pc-win32" => false,
+                                       "x86_64-pc-windows-msvc" => false,
+                                       "x86_64-w64-mingw32" => true)
+                out = lower(triple; handler_size=264, handler_align=16, setjmp="__sigsetjmp")
+                args = savemask ? "ptr %1, i32 0" : "ptr %1"
+                @test occursin("call i32 @__sigsetjmp($args)", out)
             end
-            @test err isa JuliaIR.HandlerNestingError
-            @test occursin("more handlers left than entered", sprint(showerror, err))
-            @test string(mod) == before
+            # an existing declaration for a Windows target, with the Unix runtime's setjmp
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                    target triple = "x86_64-w64-windows-gnu"
+                    declare i32 @__sigsetjmp(ptr) returns_twice
+                    $(ir())""") begin
+                run!(JuliaIR.LowerExcHandlersPass(; handler_size=264, handler_align=16,
+                                                  setjmp="__sigsetjmp"), mod)
+                @test lowered(mod)
+                @test occursin("call i32 @__sigsetjmp(ptr %1)", string(mod))
+                @test verify(mod) === nothing
+            end
+            # the signature of setjmp, explicitly
+            out = lower(""; handler_size=264, handler_align=16, setjmp="__sigsetjmp",
+                        setjmp_savemask=:no)
+            @test occursin("call i32 @__sigsetjmp(ptr %1)", out)
+            out = lower("x86_64-w64-mingw32"; handler_size=320, handler_align=16,
+                        setjmp="jl_setjmp", setjmp_savemask=:yes)
+            @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
+            opts = JuliaIR.parse_options("setjmp-savemask=no";
+                                         extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+            @test opts.extra.setjmp_savemask === :no
+            @test_throws "invalid option setjmp-savemask" lower(""; handler_size=264,
+                handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:maybe)
+        end
+
+        @testset "lowering" begin
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
+                run!(JuliaIR.LowerExcHandlersPass(; handler_size=200, handler_align=16,
+                                                  setjmp="sigsetjmp"), mod)
+                @test lowered(mod)
+                @test occursin("alloca i8, i32 200, align 16", string(mod))
+                @test occursin("call i32 @sigsetjmp(ptr %1, i32 0) #0", string(mod))
+            end
+            # leaving more handlers than were entered is rejected before changing anything
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir(; pops=2)) begin
+                before = string(mod)
+                f = mod.functions["f"]
+                opts = JuliaIR.parse_options("handler-size=200;handler-align=16;setjmp=sigsetjmp";
+                                             extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+                err = try
+                    JuliaIR.lower_exc_handlers!(f, nothing, opts)
+                    nothing
+                catch err
+                    err
+                end
+                @test err isa JuliaIR.HandlerNestingError
+                @test occursin("more handlers left than entered", sprint(showerror, err))
+                @test string(mod) == before
+            end
         end
     end
 end
@@ -571,10 +564,10 @@ end
           ret {i32, i32} %y
         }"""
     # the error, if any, and the module after running the pass
-    function expand(body; julia=v"1.13")
+    function expand(body)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, decls * body) begin
             err = try
-                run!(JuliaIR.ExpandAtomicModifyPass(; julia), mod)
+                run!(JuliaIR.ExpandAtomicModifyPass(), mod)
                 nothing
             catch err
                 err
@@ -583,54 +576,52 @@ end
         end
     end
 
-    # the IR of Julia 1.12 and earlier has no `julia.atomicmodify` calls
     ok = """
         define i64 @f(ptr %p, i64 %v) {
           %r = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
           %old = extractvalue {i64, i64} %r, 0
           ret i64 %old
         }"""
-    err, str = expand(ok; julia=v"1.12")
-    @test err === nothing && occursin("@julia.atomicmodify.i64(ptr align 8 %p", str)
-    if LLVM.version() >= v"20"
-        err, str = expand(ok)
+    err, str = expand(ok)
+    if !dialect.has_atomicmodify
+        # the IR of Julia 1.12 and earlier has no `julia.atomicmodify` calls
+        @test err === nothing && occursin("@julia.atomicmodify.i64(ptr align 8 %p", str)
+    else
         @test err === nothing && occursin("atomicrmw add ptr %p, i64 %v seq_cst, align 8", str)
-    end
 
-    # calls that can't be lowered are rejected before changing anything, also when an
-    # earlier call of the function could be lowered
-    function rejected(body, message)
-        err, str = expand(body)
-        err isa PassException && err.ex isa JuliaIR.AtomicModifyError || return false
-        occursin(message, sprint(showerror, err.ex)) || return false
-        return occursin("@julia.atomicmodify.i64(ptr align 8 %p, ptr @add", str)
-    end
-    @test rejected("""
-        define void @f(ptr %p, i64 %v, ptr %op) {
-          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
-          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr %op, i8 7, i8 1, i64 %v)
-          ret void
-        }""", "the operation is not a function of the old value in function f")
-    @test rejected("""
-        define void @f(ptr %p, i64 %v, i8 %order) {
-          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
-          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 %order, i8 1, i64 %v)
-          ret void
-        }""", "are not constants")
-    @test rejected("""
-        define void @f(ptr %p, i64 %v) {
-          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
-          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 -1, i8 1, i64 %v)
-          ret void
-        }""", "invalid atomic ordering 255")
-    @test rejected("""
-        define void @f(ptr %p, i64 %v, {i32, i32} %s) {
-          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
-          %r2 = call {{i32, i32}, {i32, i32}} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.s(ptr align(8) %p, ptr @second, i8 7, i8 1, {i32, i32} %s)
-          ret void
-        }""", "don't support values of type { i32, i32 }")
+        # calls that can't be lowered are rejected before changing anything, also when an
+        # earlier call of the function could be lowered
+        function rejected(body, message)
+            err, str = expand(body)
+            err isa PassException && err.ex isa JuliaIR.AtomicModifyError || return false
+            occursin(message, sprint(showerror, err.ex)) || return false
+            return occursin("@julia.atomicmodify.i64(ptr align 8 %p, ptr @add", str)
+        end
+        @test rejected("""
+            define void @f(ptr %p, i64 %v, ptr %op) {
+              %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+              %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr %op, i8 7, i8 1, i64 %v)
+              ret void
+            }""", "the operation is not a function of the old value in function f")
+        @test rejected("""
+            define void @f(ptr %p, i64 %v, i8 %order) {
+              %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+              %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 %order, i8 1, i64 %v)
+              ret void
+            }""", "are not constants")
+        @test rejected("""
+            define void @f(ptr %p, i64 %v) {
+              %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+              %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 -1, i8 1, i64 %v)
+              ret void
+            }""", "invalid atomic ordering 255")
+        @test rejected("""
+            define void @f(ptr %p, i64 %v, {i32, i32} %s) {
+              %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+              %r2 = call {{i32, i32}, {i32, i32}} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.s(ptr align(8) %p, ptr @second, i8 7, i8 1, {i32, i32} %s)
+              ret void
+            }""", "don't support values of type { i32, i32 }")
 
-    if LLVM.version() >= v"20"
         # the scope operand is an unsigned i8: scope ID 128 is `i8 -128`
         @dispose ctx=Context(; opaque_pointers=true) begin
             for i in 2:128
@@ -643,7 +634,7 @@ end
                   %old = extractvalue {i64, i64} %r, 0
                   ret i64 %old
                 }""") begin
-                run!(JuliaIR.ExpandAtomicModifyPass(; julia=v"1.13"), mod)
+                run!(JuliaIR.ExpandAtomicModifyPass(), mod)
                 @test occursin("""atomicrmw add ptr %p, i64 %v syncscope("scope128") seq_cst""",
                                string(mod))
             end

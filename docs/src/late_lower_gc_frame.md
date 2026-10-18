@@ -40,8 +40,8 @@ without a GC frame, as GPU back-ends emit them, after checking an input contract
 
 ## What changes between Julia versions
 
-The pass follows the C++ pass of the Julia version of its `julia` option. The differences
-are fields of `JuliaIR.Dialect`:
+The pass follows the C++ pass of the running Julia's version. The differences between
+versions are fields of `JuliaIR.Dialect`:
 
 | Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
 |-----------|------|------|------|------|--------|
@@ -73,8 +73,8 @@ for Julia 1.12's transitions), and where that state keeps the safepoint page
 (`tls_safepoint`) and the GC state (`tls_gc_state`). The pass takes them from the
 running Julia (see [Runtime facts](runtime.md)), only for functions that need them (the
 GPU cleanup never does), or from the pass options of the same names (`task-ptls=168`,
-...), which IR of another Julia version needs. Like the C++ pass, which compiles them in,
-it uses them whatever the module's target is.
+...), which override them. Like the C++ pass, which compiles them in, it uses them
+whatever the module's target is.
 
 ## The GPU cleanup: `jl-late-gc-cleanup`
 
@@ -90,7 +90,7 @@ skips (thunks) are checked too.
 
 ### Input contract
 
-The input is a function in the IR dialect of the `julia` version, after the back-end's
+The input is a function in the IR dialect of the running Julia, after the back-end's
 own GC lowering (GPUCompiler's `GPULowerGCFrame` and `GPULowerPTLS`). The function must
 not contain:
 
