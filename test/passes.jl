@@ -627,7 +627,21 @@ end
     end
 
     @testset "errors" begin
-        # rejected before anything changes
+        # the message of the error, which must leave the module unchanged
+        function rejection(ir_str, options)
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir_str) begin
+                before = string(mod)
+                opts = JuliaIR.parse_options(options; extra=JuliaIR.LOWER_PTLS.extra)
+                err = try
+                    JuliaIR.lower_ptls!(mod, nothing, opts)
+                    nothing
+                catch err
+                    err
+                end
+                err isa JuliaIR.LowerPTLSError || return err
+                return string(mod) == before ? sprint(showerror, err) : "module changed"
+            end
+        end
         bad = ir("""
             $get_ir
             define void @g(i1 %c) {
@@ -640,18 +654,22 @@ end
             done:
               ret void
             }""")
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
-            before = string(mod)
-            opts = JuliaIR.parse_options("tls-offset=-8"; extra=JuliaIR.LOWER_PTLS.extra)
-            err = try
-                JuliaIR.lower_ptls!(mod, nothing, opts)
-                nothing
-            catch err
-                err
-            end
-            @test err isa JuliaIR.LowerPTLSError
-            @test occursin("doesn't dominate a return", sprint(showerror, err))
-            @test string(mod) == before
+        @test occursin("doesn't dominate a return", rejection(bad, "tls-offset=-8"))
+        # names of the image's variables that are taken by other kinds of globals
+        for decl in ["@x = global ptr null\n@jl_pgcstack_func_slot = alias ptr, ptr @x",
+                     "@jl_pgcstack_func_slot = external thread_local global ptr",
+                     "declare void @jl_pgcstack_func_slot()"]
+            @test occursin("@jl_pgcstack_func_slot is declared in the module, but not as an external, not thread-local variable",
+                           rejection(ir("$decl\n$get_ir"), "imaging;tls-elf-support=no"))
+        end
+        # the function that adopts a thread must be declared like the getter
+        adopt = dialect.ptls_adopt_thread
+        facts = "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
+        for decl in ["@x = global ptr null\n@$adopt = alias ptr, ptr @x",
+                     "declare ptr @$adopt(i32)",
+                     "declare ptr @$adopt() addrspace(1)"]
+            @test occursin("@$adopt is not declared like @julia.get_pgcstack_or_new",
+                           rejection(ir("$decl\n$or_new_ir"), facts))
         end
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
@@ -660,6 +678,21 @@ end
         @test !occursin("asm", out)
         _, out = lower(ir(get_ir; triple), "imaging;tls-elf-support=no")
         @test !occursin("asm", out)
+    end
+
+    # the function that adopts a thread is declared in the getter's address space
+    @testset "address space" begin
+        _, out = lower("""
+            target triple = "x86_64-unknown-linux-gnu"
+            declare ptr @julia.get_pgcstack_or_new() addrspace(1)
+            declare void @use(ptr)
+            define void @f() {
+              %pgcstack = call addrspace(1) ptr @julia.get_pgcstack_or_new()
+              call void @use(ptr %pgcstack)
+              ret void
+            }""", "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+        @test occursin("call addrspace(1) ptr @$(dialect.ptls_adopt_thread)()", out)
+        @test occursin("declare ptr @$(dialect.ptls_adopt_thread)() addrspace(1)", out)
     end
 
     # the thread pointer of the host, as Julia's own code reads it (in JIT mode)

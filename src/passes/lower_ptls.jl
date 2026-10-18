@@ -137,12 +137,23 @@ function load_slot!(p::LowerPTLS, T::LLVMType, slot::String)
     return load
 end
 
-# the declaration of an external function for a call like `call`, as Julia declares the
-# getter
+# the global value of the module named `name`, of any kind (`Module::getNamedValue`)
+function named_global(mod::LLVM.Module, name::String)
+    for set in (mod.functions, mod.globals, mod.aliases, mod.ifuncs)
+        gv = get(set, name, nothing)
+        gv === nothing || return gv
+    end
+    return nothing
+end
+
+global_addrspace(gv::LLVM.GlobalValue) = LLVM.addrspace(LLVM.value_type(gv))
+
+# the declaration of an external function like the getter, as Julia declares the function
+# that adopts a thread
 function declare_like!(p::LowerPTLS, name::String, getter::LLVM.Function)
     f = get(p.mod.functions, name, nothing)
     f === nothing || return f
-    f = LLVM.Function(p.mod, name, getter.function_type)
+    f = LLVM.Function(p.mod, name, getter.function_type; addrspace=global_addrspace(getter))
     LLVM.linkage!(f, LLVM.linkage(getter))
     LLVM.copy_attributes!(f, getter)
     for (kind, md) in getter.metadata
@@ -279,10 +290,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         end
         set_pgcstack_attrs!(call)
     else
-        resolved = get(p.mod.functions, PGCSTACK_RESOLVED, nothing)
-        if resolved === nothing
-            resolved = get(p.mod.globals, PGCSTACK_RESOLVED, nothing)
-        end
+        resolved = named_global(p.mod, PGCSTACK_RESOLVED)
         if resolved === nothing
             # (declared as returning nothing, and called as returning the GC stack)
             resolved = LLVM.Function(p.mod, PGCSTACK_RESOLVED,
@@ -303,16 +311,13 @@ function slot_type(p::LowerPTLS, name::String)
 end
 
 function check_slot(p::LowerPTLS, name::String)
-    gv = get(p.mod.globals, name, nothing)
-    if gv === nothing
-        haskey(p.mod.functions, name) &&
-            throw(LowerPTLSError("the image's variable @$name is a function"))
-        return
-    end
-    (LLVM.isdeclaration(gv) && LLVM.linkage(gv) == LLVM.API.LLVMExternalLinkage &&
+    gv = named_global(p.mod, name)
+    gv === nothing && return
+    (gv isa GlobalVariable && LLVM.isdeclaration(gv) &&
+     LLVM.linkage(gv) == LLVM.API.LLVMExternalLinkage && !LLVM.threadlocal(gv) &&
      LLVM.global_value_type(gv) == slot_type(p, name) &&
-     LLVM.addrspace(LLVM.value_type(gv)) == p.gc.dl.globals_addrspace) ||
-        throw(LowerPTLSError("@$name is declared in the module, but not as an external variable of type $(string(slot_type(p, name))): $(string(gv))"))
+     global_addrspace(gv) == p.gc.dl.globals_addrspace) ||
+        throw(LowerPTLSError("@$name is declared in the module, but not as an external, not thread-local variable of type $(string(slot_type(p, name))): $(string(gv))"))
     return
 end
 
@@ -368,13 +373,11 @@ function check_lower_ptls(p::LowerPTLS, getters)
                 isempty(call.uses) && continue
                 needs_tp = true
                 or_new || continue
-                adopt = get(p.mod.functions, p.dialect.ptls_adopt_thread, nothing)
-                if adopt === nothing
-                    haskey(p.mod.globals, p.dialect.ptls_adopt_thread) &&
-                        throw(LowerPTLSError("@$(p.dialect.ptls_adopt_thread) is not a function"))
-                elseif adopt.function_type != call.called_type
-                    throw(LowerPTLSError("@$(p.dialect.ptls_adopt_thread) is declared with another type than @$name: $(string(adopt))"))
-                end
+                adopt = named_global(p.mod, p.dialect.ptls_adopt_thread)
+                adopt === nothing ||
+                    (adopt isa LLVM.Function && adopt.function_type == call.called_type &&
+                     global_addrspace(adopt) == global_addrspace(getter)) ||
+                    throw(LowerPTLSError("@$(p.dialect.ptls_adopt_thread) is not declared like @$name: $(string(adopt))"))
                 return_type = API.LLVMGetReturnType(API.LLVMGlobalGetValueType(f))
                 CountTrackedPointers(return_type).count == 0 || continue
                 # the GC state is restored at every return, from values defined at the call
