@@ -275,6 +275,70 @@ end
     end
 end
 
+@testset "LowerSIMDLoop" begin
+    @test !JuliaIR.LowerSIMDLoopPass().required
+    ir = """
+        define double @f(ptr %p) !dbg !3 {
+        entry:
+          br label %loop, !dbg !7
+        loop:
+          %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+          %acc = phi double [ 0.0, %entry ], [ %a2, %loop ]
+          %v = load double, ptr %p
+          %m = fmul double %v, %v
+          %a1 = fadd double %acc, %m
+          %a2 = fadd double %a1, %v
+          %next = add i64 %i, 1
+          %done = icmp eq i64 %next, 10
+          br i1 %done, label %exit, label %loop, !llvm.loop !5, !dbg !8
+        exit:
+          ret double %a2
+        }
+
+        !llvm.dbg.cu = !{!0}
+        !llvm.module.flags = !{!2}
+        !0 = distinct !DICompileUnit(language: DW_LANG_Julia, file: !1, emissionKind: FullDebug)
+        !1 = !DIFile(filename: "a.jl", directory: ".")
+        !2 = !{i32 2, !"Debug Info Version", i32 3}
+        !3 = distinct !DISubprogram(name: "f", scope: !1, file: !1, type: !4, spFlags: DISPFlagDefinition, unit: !0)
+        !4 = !DISubroutineType(types: !{})
+        !5 = distinct !{!5, !"julia.simdloop", !6}
+        !6 = !{!"llvm.loop.vectorize.width", i32 4}
+        !7 = !DILocation(line: 7, scope: !3)
+        !8 = !DILocation(line: 9, scope: !3)
+        """
+    flags = "Loop marked for SIMD vectorization with flags { \"simd\": true, \"ivdep\": false }"
+    for (julia, combine) in [(v"1.11", false), (v"1.12", true)]
+        remarks = []
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
+                LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass(; julia))
+                add!(pb, "function(loop-mssa(jl-lower-simdloop))")
+                run!(pb, mod)
+            end
+            str = string(mod)
+            @test occursin("%a1 = fadd reassoc contract double %acc, %m", str)
+            @test occursin("%m = fmul $(combine ? "contract " : "")double", str)
+            @test occursin(r"!llvm.loop (![0-9]+)\n.*\n\1 = distinct !{\1, ![0-9]+}\n"s, str)
+            # the other loop properties are kept, the marker is gone
+            @test !occursin("julia.simdloop", str)
+            @test occursin("!\"llvm.loop.vectorize.width\", i32 4", str)
+            # the remark about the loop is located at the preheader's terminator (the
+            # start of the loop); the header's terminator keeps its own location
+            header = collect(first(mod.functions).blocks)[2]
+            @test LLVM.line(LLVM.terminator(header).debug_location) == 9
+        end
+        expected = [(:analysis, "Loop SIMD Flags", flags, 7),
+                    (:missed, "FirstArithmeticOpInChainIsUninteresting",
+                     "first arithmetic op in chain is uninteresting", 0),
+                    (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0)]
+        combine && push!(expected, (:passed, "Marked for FMA", "marked for fma fmul", 0))
+        push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
+        @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
+        @test all(r -> r.pass_name == "lower_simd_loop", remarks)
+    end
+end
+
 @testset "LowerExcHandlers" begin
     @test JuliaIR.LowerExcHandlersPass().required
     native_minor = JuliaIR.dialect_minor(VERSION)

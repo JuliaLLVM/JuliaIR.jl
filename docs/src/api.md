@@ -20,6 +20,7 @@ JuliaIR.UnsupportedInputError
 JuliaIR.UnsupportedConstruct
 JuliaIR.LowerExcHandlersPass
 JuliaIR.HandlerNestingError
+JuliaIR.LowerSIMDLoopPass
 ```
 
 ## Dialects and options

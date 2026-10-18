@@ -119,9 +119,6 @@ is_julia_function(fns::CleanupFunctions, f::LLVM.Function) =
     f in fns.erased || f == fns.pointer_from_objref || f == fns.gc_loaded ||
     haskey(fns.jlcalls, f) || f in fns.pgcstack_getters || haskey(fns.unsupported, f)
 
-opcode_name(inst::Instruction) = inst isa LLVM.InvokeInst ? "invoke" :
-                                 inst isa LLVM.CallBrInst ? "callbr" : "call"
-
 function has_string_attribute(attrs, kind::String)
     for attr in attrs
         attr isa StringAttribute && LLVM.kind(attr) == kind && return true
