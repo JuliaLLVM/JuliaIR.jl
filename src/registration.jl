@@ -175,7 +175,10 @@ ledger_record(name::String, dialect::Dialect) =
 # A pass of this package. `impl(ir, am, opts::PassOptions)` runs it on a module (module
 # pass), a function (function pass) or a loop (loop pass, with the loop pass manager's
 # `LoopAnalysisResults` as `am`), and returns the preserved analyses. `cpp_name` is
-# the name of Julia's C++ pass it ports, which `jlopt` maps to this pass.
+# the name of Julia's C++ pass it ports, which `jlopt` maps to this pass. A pass can be
+# defined with the same name for several kinds (FinalLowerGC is a module pass in Julia
+# 1.10 and a function pass later); LLVM's pipeline parser picks the one of the pass
+# manager it is nested in, and the module pass at the top level.
 struct PassDefinition
     name::String
     kind::Symbol
@@ -201,7 +204,7 @@ function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
     startswith(name, "jl-") || error("pass names must start with jl-")
     kind in (:module, :function, :loop) || error("invalid pass kind $kind")
     def = PassDefinition(name, kind, required, impl, extra, cpp_name)
-    filter!(p -> p.name != name, PASSES)
+    filter!(p -> p.name != name || p.kind != kind, PASSES)
     push!(PASSES, def)
     return def
 end
@@ -238,7 +241,7 @@ end
 
 The names of the passes of this package, as used in pipelines.
 """
-passes() = [def.name for def in PASSES]
+passes() = unique(def.name for def in PASSES)
 
 """
     JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock)

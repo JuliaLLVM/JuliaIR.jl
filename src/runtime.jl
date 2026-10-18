@@ -457,3 +457,41 @@ function run_probe(::Val{:cancel})
                 reset_ctx_gcstack=reset_gcstack, reset_ctx_eh=reset_eh, reset_ctx_mctx=mctx)
     end
 end
+
+
+## the running Julia's GC size classes
+
+# allocation size => its pool (offset, object size), or `nothing` for big objects
+const POOL_CLASSES = Dict{UInt64,Union{Nothing,Tuple{Int,Int}}}()
+const POOL_CLASSES_LOCK = ReentrantLock()
+
+"""
+    JuliaIR.gc_pool_class(dialect::Dialect, sz::Integer)
+
+How the running Julia's GC allocates an object of `sz` bytes: the offset of its pool in
+the thread-local state and the size of the pool's objects, `(offset, osize)`, or
+`nothing` when the object is too big for a pool. This is what Julia's FinalLowerGC asks
+the runtime (`jl_gc_classify_pools`), which compiles the allocation into a call of the
+pool's allocation function, and depends on the build (e.g. the page size).
+
+Only the running Julia's GC can be asked: for another `dialect`, or a running Julia that
+was built with another GC than the stock one, this throws a
+[`JuliaIR.RuntimeError`](@ref). The answers are cached for the process.
+"""
+function gc_pool_class(dialect::Dialect, sz::Integer)
+    julia = "Julia $(dialect.minor.major).$(dialect.minor.minor)"
+    dialect.minor == dialect_minor(VERSION) ||
+        throw(RuntimeError("the GC size class of an allocation of $sz bytes is only known when running on $julia, not on $(running_julia())"))
+    if isdefined(GC, :gc_active_impl)
+        impl = GC.gc_active_impl()
+        occursin("stock", impl) ||
+            throw(RuntimeError("the running $(running_julia()) uses a GC that its FinalLowerGC doesn't lower allocations for ($impl)"))
+    end
+    lock(POOL_CLASSES_LOCK) do
+        get!(POOL_CLASSES, UInt64(sz)) do
+            osize = Ref{Cint}(0)
+            offset = ccall(:jl_gc_classify_pools, Cint, (Csize_t, Ref{Cint}), sz, osize)
+            offset < 0 ? nothing : (Int(offset), Int(osize[]))
+        end
+    end
+end

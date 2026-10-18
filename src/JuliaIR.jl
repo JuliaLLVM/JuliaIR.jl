@@ -28,10 +28,12 @@ include("passes/lower_simdloop.jl")
 include("passes/expand_atomic_modify.jl")
 include("passes/cancellation_lowering.jl")
 include("passes/remove_addrspaces.jl")
+include("passes/final_lower_gc.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
     empty!(NATIVE_FACTS)
+    empty!(POOL_CLASSES)
 end
 
 end

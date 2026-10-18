@@ -198,6 +198,27 @@ struct Dialect
     lowered like other immutable structs."
     boxes_kinds::Bool
 
+    # FinalLowerGC
+    "Whether FinalLowerGC is a module pass, which declares the runtime functions it lowers
+    to in every module and lists them in `llvm.compiler.used` while it runs (Julia 1.10);
+    later, a function pass that declares them in each function it lowers."
+    gc_final_module::Bool
+    "Whether FinalLowerGC skips functions when no GC intrinsic in the module has a use
+    (Julia 1.13 and later)."
+    gc_final_skip_unused::Bool
+    "Whether FinalLowerGC inserts the lowered frame allocation and push after the
+    intrinsic, with the debug location of the next instruction (Julia 1.10)."
+    gc_final_debugloc_next::Bool
+    "The runtime's allocation functions: `:pool` (`ijl_gc_pool_alloc`,
+    `ijl_gc_big_alloc`, without the type tag; Julia 1.10), `:pool_instrumented`
+    (`ijl_gc_pool_alloc_instrumented`, `ijl_gc_big_alloc_instrumented`, with it; 1.11) or
+    `:small` (`ijl_gc_small_alloc`, `ijl_gc_big_alloc`; 1.12 and later)."
+    gc_alloc_entry_points::Symbol
+    "Whether allocations and root queuing in a cancellation reset region
+    (`!julia.reset_region`) use the runtime's `*_reset_safe` functions (Julia 1.14 and
+    later)."
+    gc_alloc_reset_safe::Bool
+
     # policies
     "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
     fp16::Symbol
@@ -289,6 +310,12 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor <= v"1.11" ? :bottom :
                    minor >= v"1.14" ? :some_type : :typeofbottom_super, # bottom_aliases
                    minor >= v"1.14",                      # boxes_kinds
+                   minor == v"1.10",                      # gc_final_module
+                   minor >= v"1.13",                      # gc_final_skip_unused
+                   minor == v"1.10",                      # gc_final_debugloc_next
+                   minor == v"1.10" ? :pool :
+                   minor == v"1.11" ? :pool_instrumented : :small, # gc_alloc_entry_points
+                   minor >= v"1.14",                      # gc_alloc_reset_safe
                    fp16, bf16, gc_barrier)
 end
 

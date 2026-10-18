@@ -182,7 +182,9 @@ end
     @test all(startswith("jl-"), JuliaIR.passes())
     @dispose pb=PassBuilder() begin
         @test JuliaIR.register!(pb; fp16=:keep) === pb
-        @test length(pb.custom_passes) == length(JuliaIR.passes())
+        @test length(pb.custom_passes) == length(JuliaIR.PASSES)
+        # FinalLowerGC is registered as a module and as a function pass
+        @test count(p -> p.name == "jl-final-lower-gc", pb.custom_passes) == 2
     end
 end
 
