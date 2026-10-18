@@ -43,6 +43,7 @@ end
     @test !d10.has_gc_loaded && d11.has_gc_loaded && dm.has_gc_loaded
     @test !d10.has_call3 && d11.has_call3
     @test !d12.has_atomicmodify && d13.has_atomicmodify && dm.has_atomicmodify
+    @test d10.has_combine_muladd && d11.has_combine_muladd && !d12.has_combine_muladd
 
     @test (d10.alloc_initialization, d11.alloc_initialization, d12.alloc_initialization) ==
           (:none, :store, :memset)

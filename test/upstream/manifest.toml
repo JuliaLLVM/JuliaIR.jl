@@ -145,6 +145,11 @@ ports = ["LowerSIMDLoop"]
 status = "skip"
 missing = ["LowerSIMDLoop"]
 
+[fixtures."muladd.ll"]
+kind = "port"
+ports = ["CombineMulAdd"]
+status = "run"
+
 [fixtures."propagate-addrspace.ll"]
 kind = "port"
 ports = ["PropagateJuliaAddrspaces"]
@@ -172,7 +177,7 @@ reason = "AllocOpt followed by Julia's LateLowerGCFrame and FinalLowerGC (only o
 
 [fixtures."parsing.ll"]
 kind = "mixed"
-ports = ["RemoveNI", "AllocOpt", "DemoteFloat16", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
 
@@ -299,11 +304,6 @@ reason = "LowerExcHandlers is CPU-only"
 kind = "cpu"
 status = "exclude"
 reason = "LowerExcHandlers is CPU-only"
-
-[fixtures."muladd.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CombineMulAdd is CPU-only"
 
 [fixtures."multiversioning-annotate-only.ll"]
 kind = "cpu"

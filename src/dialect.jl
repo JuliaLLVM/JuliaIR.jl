@@ -58,6 +58,10 @@ struct Dialect
     "Whether `julia.atomicmodify.*` intrinsics exist (lowered by ExpandAtomicModify)."
     has_atomicmodify::Bool
 
+    # passes
+    "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
+    has_combine_muladd::Bool
+
     # allocations
     "Whether `julia.gc_alloc_obj` calls carry `allockind` and return alignment
     attributes at the call site (instead of only on the declaration)."
@@ -153,6 +157,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.11",                      # has_call3
                    minor >= v"1.11",                      # has_gc_loaded
                    minor >= v"1.13",                      # has_atomicmodify
+                   minor <= v"1.11",                      # has_combine_muladd
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
                    minor == v"1.11" ? :store : :memset,   # alloc_initialization

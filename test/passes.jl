@@ -246,4 +246,33 @@ end
     end
 end
 
+@testset "CombineMulAdd" begin
+    @test !JuliaIR.CombineMulAddPass().required
+    ir = """
+        define double @f(double %a, double %b, double %c) {
+          %once = fmul double %a, %b
+          %twice = fmul double %a, %c
+          %r1 = fadd contract double %once, %twice
+          %r2 = fsub contract double %twice, %c
+          %r = fadd double %r1, %r2
+          ret double %r
+        }"""
+    for (julia, changed) in [(v"1.10", true), (v"1.11.9", true), (v"1.12", false)]
+        remarks = []
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            run!(JuliaIR.CombineMulAddPass(; julia), mod; remarks=r -> push!(remarks, r))
+            @test occursin("%once = fmul contract double", string(mod)) == changed
+            @test occursin("%twice = fmul double", string(mod))
+        end
+        if changed
+            @test [(r.kind, r.name, r.message) for r in remarks] ==
+                  [(:passed, "Marked for FMA", "marked for fma fmul"),
+                   (:missed, "Multiuse FMul", "fmul had multiple uses fmul")]
+            @test all(r -> r.pass_name == "combine-muladd", remarks)
+        else
+            @test isempty(remarks)
+        end
+    end
+end
+
 end
