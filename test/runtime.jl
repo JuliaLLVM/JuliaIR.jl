@@ -1,4 +1,4 @@
-using LLVM, LLVM.IR, InteractiveUtils, TOML
+using LLVM, LLVM.IR, InteractiveUtils
 
 # the facts for a module of the running Julia's dialect
 function facts(; kwargs...)
@@ -56,8 +56,8 @@ end
         @test (rt.reset_ctx_gcstack, rt.reset_ctx_eh) == (W, 2W)
     end
 
-    # the values measured on x86-64 Linux with glibc; the development version's are those
-    # of the pinned commit, so other nightly builds only report differences
+    # the values measured on x86-64 Linux with glibc; the development version's were
+    # measured on a nightly build, so later ones only report differences
     if Sys.ARCH === :x86_64 && Sys.islinux() && libc == "glibc"
         measured = Dict(
             v"1.10" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
@@ -72,15 +72,12 @@ end
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
                         reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24))
         minor = JuliaIR.dialect_minor(VERSION)
-        pins = TOML.parsefile(joinpath(@__DIR__, "upstream", "manifest.toml"))["pins"]
-        pin = pins["$(minor.major).$(minor.minor)"]
-        exact = minor < JuliaIR.DEVELOPMENT_MINOR ||
-                startswith(pin["commit"], Base.GIT_VERSION_INFO.commit)
+        exact = minor < JuliaIR.DEVELOPMENT_MINOR
         for (name, value) in pairs(measured[minor])
             if exact
                 @test getproperty(rt, name) == value
             elseif getproperty(rt, name) != value
-                @warn "Runtime fact $name differs from the pinned commit's: $(getproperty(rt, name)) (running Julia) vs $value"
+                @warn "Runtime fact $name differs from the value measured on an earlier nightly build: $(getproperty(rt, name)) (running Julia) vs $value"
             end
         end
     end

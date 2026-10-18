@@ -2,8 +2,9 @@
 #
 # [pins.<minor>]: the JuliaLang/julia commit whose fixtures are used for a Julia minor
 # version, and the Julia build they are run with (mode A: the passes run on that Julia's
-# own LLVM). The development version is pinned to the commit of the nightly build it was
-# last checked against.
+# own LLVM). The development version has no commit: its fixtures are those of the commit
+# the running nightly build was built from (`Base.GIT_VERSION_INFO.commit`), and its
+# entries below apply to whatever master is then.
 #
 # [fixtures."<file>"]: every file in test/llvmpasses of any pin, with
 #   kind    = "port"     tests passes that this package ports (`ports`, Julia's names)
@@ -54,8 +55,6 @@ julia = "1.13.2"
 
 [pins."1.14"]
 tag = "master"
-commit = "54d14c8eb9e43ce9080eaa6cce6a74f1ece3921a"
-julia = "1.14.0-DEV.3782"
 
 
 ## ported passes

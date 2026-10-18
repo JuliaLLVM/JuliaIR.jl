@@ -63,8 +63,9 @@ writes an `opt` wrapper for the running Julia and project into `dir`, which LLVM
 unchanged, with `jlopt` standing in for `opt`. Which fixtures are relevant to this package,
 and how they run, is recorded in `test/upstream/manifest.toml`, together with the commit
 whose fixtures are used for each Julia minor version: the release tag for released
-versions, and the commit of a nightly build for the development version. Every file in the
-checkout must be in the manifest, as one of:
+versions. For the development version, the fixtures are those of the commit that the
+running nightly build was built from (`Base.GIT_VERSION_INFO.commit`), so that the binary
+and its tests always match. Every file in the checkout must be in the manifest, as one of:
 
 - `run`: the fixture runs, with Julia's pass names mapped to the ports. The harness checks
   in each test's ledger that every port in its pipelines ran;
@@ -87,6 +88,13 @@ julia +1.12 --project=test test/upstream/run.jl julia-src --cpp      # Julia's p
 julia +1.12 --project=test test/upstream/run.jl julia-src --report   # coverage table
 ```
 
+For the nightly build, check out the commit it reports instead:
+
+```
+git -C julia-src checkout $(julia +nightly -e 'print(Base.GIT_VERSION_INFO.commit)')
+julia +nightly --project=test test/upstream/run.jl julia-src
+```
+
 The Julia that runs the harness must be the one the pin is for (it runs the passes on its
 own LLVM, and Julia's C++ passes for the fixtures that combine them). On Julia 1.10 and
 1.11, which don't support workspaces, first run
@@ -96,6 +104,9 @@ own LLVM, and Julia's C++ passes for the fixtures that combine them). On Julia 1
 instead of the ports. It checks `jlopt` and the harness against upstream's expectations,
 independently of the ports.
 
-When a new patch release is tagged, or the nightly build moves on, update the pin's
-`commit` and `julia` in the manifest and the matching `julia_ref` in CI, and account for
-new or changed fixtures.
+When a new patch release is tagged, update the pin's `commit` and `julia` in the manifest
+and the matching `julia_ref` in CI, and account for new or changed fixtures. The
+development version's entries apply to whatever master is current: when the nightly
+build moves on and a fixture appears or changes in a way the manifest doesn't account for
+(an override that no longer applies, a fixture of a port that now passes), the harness
+fails, and the manifest needs updating.

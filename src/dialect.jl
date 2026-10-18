@@ -2,7 +2,7 @@
 # depend on and that changed between Julia versions.
 
 # Julia minor versions whose dialect is known. The last one is the development version,
-# whose dialect is the one of the master commit pinned in test/upstream/manifest.toml.
+# whose dialect is the one of current Julia master (as tested with the nightly build).
 const KNOWN_MINORS = (v"1.10", v"1.11", v"1.12", v"1.13", v"1.14")
 const DEVELOPMENT_MINOR = last(KNOWN_MINORS)
 

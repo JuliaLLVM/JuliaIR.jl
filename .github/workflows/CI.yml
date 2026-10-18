@@ -46,7 +46,8 @@ jobs:
           files: lcov.info
 
   # Julia's own pass tests, at the commits pinned in test/upstream/manifest.toml (the
-  # job checks that the refs here match), with the Julia build they belong to
+  # job checks that the refs here match), with the Julia build they belong to; for the
+  # nightly build, at the commit it was built from
   upstream:
     name: Julia ${{ matrix.version }} - upstream llvmpasses
     runs-on: ubuntu-latest
@@ -59,21 +60,27 @@ jobs:
           - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
           - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
           - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
-          - {version: 'nightly', julia_ref: '54d14c8eb9e43ce9080eaa6cce6a74f1ece3921a'}  # master
+          - {version: 'nightly', julia_ref: ''}  # master
     steps:
       - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - name: Determine the fixtures' commit
+        id: fixtures
+        run: |
+          ref='${{ matrix.julia_ref }}'
+          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           repository: JuliaLang/julia
-          ref: ${{ matrix.julia_ref }}
+          ref: ${{ steps.fixtures.outputs.ref }}
           path: julia-src
           sparse-checkout: |
             test/llvmpasses
             test/testhelpers
           sparse-checkout-cone-mode: true
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
       # until the LLVM.jl changes JuliaIR uses are released
       - uses: ./.github/actions/llvm-dev

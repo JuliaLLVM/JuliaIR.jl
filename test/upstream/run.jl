@@ -14,7 +14,9 @@
 #   --manifest F   use another manifest (for testing the harness)
 #
 # JULIA_SRC is a git checkout of JuliaLang/julia (test/llvmpasses and test/testhelpers
-# suffice) at the commit pinned for the running Julia's minor version.
+# suffice) at the commit pinned for the running Julia's minor version, or, for the
+# development version, at the commit the running nightly build was built from
+# (`Base.GIT_VERSION_INFO.commit`).
 
 module UpstreamHarness
 
@@ -457,30 +459,36 @@ function check_ledger(f, processes)
     return failures
 end
 
-function check_pin(manifest, src::String, minor::String)
+# Check that `src` has the fixtures of the running Julia, and return its pin with the
+# commit of the fixtures. A pin without a commit (the development version's) takes the
+# commit the running Julia was built from (`running_commit`).
+function check_pin(manifest, src::String, minor::String;
+                   running_commit::AbstractString=Base.GIT_VERSION_INFO.commit)
     haskey(manifest["pins"], minor) ||
         throw(HarnessError("no pin for Julia $minor in the manifest"))
-    pin = manifest["pins"][minor]
+    pin = copy(manifest["pins"][minor])
+    if haskey(pin, "commit")
+        expected = VersionNumber(pin["julia"])
+        VERSION == expected ||
+            throw(HarnessError("Julia $VERSION is running, but the fixtures of $(pin["tag"]) are for Julia $expected"))
+    else
+        isempty(VERSION.prerelease) &&
+            throw(HarnessError("Julia $VERSION is running, but the fixtures of Julia $minor are those of a development build"))
+        length(running_commit) == 40 ||
+            throw(HarnessError("Julia $VERSION doesn't know the commit it was built from"))
+        pin["commit"] = String(running_commit)
+    end
     head = try
         readchomp(`git -C $src rev-parse HEAD`)
     catch
         throw(HarnessError("$src is not a git checkout of JuliaLang/julia"))
     end
     head == pin["commit"] ||
-        throw(HarnessError("$src is at $head, but Julia $minor's fixtures are pinned to $(pin["commit"]) ($(pin["tag"]))"))
+        throw(HarnessError("$src is at $head, but the fixtures of Julia $VERSION are those of $(pin["commit"]) ($(pin["tag"]))"))
     # the fixtures must be those of the commit
     changes = readchomp(`git -C $src status --porcelain --untracked-files=all -- test/llvmpasses test/testhelpers`)
     isempty(changes) ||
         throw(HarnessError("the fixtures in $src differ from commit $head:\n$changes"))
-    expected = VersionNumber(pin["julia"])
-    if VERSION != expected
-        if isempty(VERSION.prerelease)
-            throw(HarnessError("Julia $VERSION is running, but the fixtures of $(pin["tag"]) are for Julia $expected"))
-        else
-            # nightly builds move daily; the pin is refreshed when they drift too far
-            @warn "Julia $VERSION is running, the fixtures are pinned for $expected ($(pin["commit"]))"
-        end
-    end
     return pin
 end
 
@@ -539,7 +547,7 @@ function main(args)
     minor = "$(VERSION.major).$(VERSION.minor)"
     pin = check_pin(manifest, src, minor)
 
-    # the fixtures of the pinned commit (which check_pin verified are checked out)
+    # the fixtures of the pin's commit (which check_pin verified are checked out)
     names = sort(map(basename, readlines(`git -C $src ls-tree --name-only $(pin["commit"]) test/llvmpasses/`)))
     fixtures = [plan_fixture(manifest, src, name, minor; cpp, manifest_dir=dirname(manifest_path))
                 for name in names]
