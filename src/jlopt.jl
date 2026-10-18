@@ -73,6 +73,18 @@ function map_pipeline(pipeline::AbstractString, mapping::Dict{String,String})
     end)
 end
 
+# LLVM nests a pipeline whose first pass is a function pass in `function(...)`. Julia's
+# FinalLowerGC is one from Julia 1.11 on, but its port is also a module pass, which LLVM
+# picks at the top level: nest such a pipeline explicitly, so that the passes after it
+# still parse as function passes.
+function nest_pipeline(pipeline::AbstractString, dialect::Dialect)
+    m = match(r"^[A-Za-z0-9_.-]+", pipeline)
+    if m !== nothing && m.match == "FinalLowerGC" && !dialect.gc_final_module
+        return "function($pipeline)"
+    end
+    return pipeline
+end
+
 cpp_mapping() = Dict(def.cpp_name => def.name for def in PASSES if !isempty(def.cpp_name))
 
 # raise an error that `opt` would report as a crash, for `not --crash` tests
@@ -218,7 +230,9 @@ exception of a failing pass otherwise. See `bin/jlopt --help` for the options.
 function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     opts = parse_jlopt_args(args)
     opts.pipeline === nothing && throw(JloptError("no pipeline given; use -passes=..."))
-    pipeline = opts.map_passes ? map_pipeline(opts.pipeline, cpp_mapping()) : opts.pipeline
+    pipeline = opts.map_passes ?
+        map_pipeline(nest_pipeline(opts.pipeline, Dialect(VERSION)), cpp_mapping()) :
+        opts.pipeline
     isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
 
     input = something(opts.input, "-")

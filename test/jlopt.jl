@@ -61,6 +61,19 @@ end
     @test map_pipeline("AllocOptX,XAllocOpt,jl-alloc-opt", mapping) == "AllocOptX,XAllocOpt,jl-alloc-opt"
     # every ported pass is mapped from the name of the C++ pass
     @test JuliaIR.cpp_mapping()["RemoveNI"] == "jl-remove-ni"
+
+    # FinalLowerGC is a function pass from Julia 1.11 on, so a pipeline that starts with
+    # it is a function pipeline, though the port is also registered as a module pass
+    if !JuliaIR.Dialect(VERSION).gc_final_module
+        ir = """
+            define void @f() {
+              ret void
+            }"""
+        out = sprint() do io
+            jlopt(["-passes=FinalLowerGC,AllocOpt", "-S"]; stdin=IOBuffer(ir), stdout=io)
+        end
+        @test occursin("define void @f()", out)
+    end
 end
 
 ir = """
