@@ -324,23 +324,6 @@ end
 
 ## calling convention
 
-# `jl_is_datatype_singleton`: from Julia 1.11 on, also checks that the instance holds no
-# data, which immutable types with an instance always satisfy
-is_datatype_singleton(T::DataType) =
-    isdefined(T, :instance) && (L = own_layout(T); L.size == 0 && L.npointers == 0)
-
-# `jl_datatype_isinlinealloc(T, 0)`: whether values of `T` can be stored inline
-function datatype_isinlinealloc(T::DataType)
-    T.name.flags & 0x04 != 0 || return false   # mayinlinealloc
-    try_layout(T) || return false
-    if own_layout(T).npointers > 0
-        T.name.n_uninitialized != 0 && return false
-        # the GC only supports 8- and 16-bit field descriptors in inline objects
-        Base.datatype_fielddesc_type(T) > 1 && return false
-    end
-    return true
-end
-
 """
     JuliaIR.deserves_stack(T)::Bool
 
@@ -351,7 +334,9 @@ port of `deserves_stack` in Julia's src/codegen.cpp.
 """
 function deserves_stack(@nospecialize(T))
     is_concrete_immutable(T, DIALECT) || return false
-    return is_datatype_singleton(T) || datatype_isinlinealloc(T)
+    # `jl_is_datatype_singleton` and `jl_datatype_isinlinealloc(T, 0)`, which is what
+    # `Base.allocatedinline` asks the runtime for a `DataType`
+    return Base.issingletontype(T) || Base.allocatedinline(T)
 end
 
 """
