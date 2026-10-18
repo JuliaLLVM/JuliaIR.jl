@@ -24,9 +24,11 @@ is_pointer(@nospecialize(v::Value)) =
 is_pointer_like(@nospecialize(v::Value)) =
     API.LLVMGetTypeKind(scalar_typeref(API.LLVMTypeOf(v))) == API.LLVMPointerTypeKind
 
-# the address space of a pointer or vector of pointers
+# the address space of a pointer or vector of pointers, or of their type
 pointer_addrspace(@nospecialize(v::Value)) =
     Int(API.LLVMGetPointerAddressSpace(scalar_typeref(API.LLVMTypeOf(v))))
+pointer_addrspace(@nospecialize(ty::LLVMType)) =
+    Int(API.LLVMGetPointerAddressSpace(scalar_typeref(Base.unsafe_convert(API.LLVMTypeRef, ty))))
 
 # the address space of allocas, from the data layout string (`A<n>`)
 function alloca_addrspace(layout::String)

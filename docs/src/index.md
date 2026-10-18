@@ -38,6 +38,8 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
 | `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
 | `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.14 and later) | yes |
+| `jl-remove-addrspaces` | `RemoveJuliaAddrspaces` | yes |
+| `jl-remove-all-addrspaces` | `RemoveAddrspaces` | yes |
 
 ## Passes that exist in some Julia versions only
 
@@ -141,3 +143,8 @@ Differences with Julia's C++ passes:
 - CancellationLowering reports the control-flow graph as changed when it splits blocks,
   rejects cancellation points it can't lower, and uses the data layout's pointer
   alignment; see [CancellationLowering](@ref).
+- RemoveJuliaAddrspaces and RemoveAddrspaces keep the compile units for every Julia
+  version (Julia 1.13 added this) and the debug info of global variables consistent with
+  them, and keep the metadata of global variable declarations, the types of `inalloca`
+  and `preallocated` attributes, and indirect functions, which the C++ passes drop, leave
+  unmapped or corrupt; see [RemoveJuliaAddrspaces](@ref).
