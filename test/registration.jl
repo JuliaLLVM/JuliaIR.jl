@@ -47,6 +47,8 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         @test_throws "requires an integer" parse_options("offset=x"; extra)
         @test_throws "requires an address" parse_options("addr=-1"; extra)
         @test_throws "requires a value" parse_options("offset"; extra)
+        # only for the integers they can be parsed and printed as
+        @test_throws TypeError JuliaIR.Optional{BigInt}()
     end
 
     # round trip

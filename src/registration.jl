@@ -29,10 +29,10 @@ signed integer like an offset (`T = Int`, e.g. `tls-offset=-8` in a pipeline), o
 address (`T = UInt`, written as `pgcstack-getter=0x4011c0`). A pass's default for such an
 option is `Optional{T}()`; its constructor's keyword takes a `T` or `nothing`.
 """
-struct Optional{T<:Integer}
+struct Optional{T<:Union{Int,UInt}}
     value::Union{Nothing,T}
     # (an inner constructor, so that there is no `Optional(nothing)` without a `T`)
-    Optional{T}(value=nothing) where {T<:Integer} = new{T}(value)
+    Optional{T}(value=nothing) where {T<:Union{Int,UInt}} = new{T}(value)
 end
 
 # the value of an option, `nothing` for an unspecified `Optional`
