@@ -28,6 +28,7 @@ read it first, including its Log). This file says where things are and how to co
 | S12 differential harness (`test/differential/`) | done, branch `tb/s12-differential` (on S14) | see `git log` |
 | S11a mode B in the upstream harness, upgrade oracle, rule-generated patches for LLVM 23 (S11 steps 4–5) | done, branch `tb/s11a-mode-b-harness` (on S12) | see `git log` |
 | v115 Julia 1.15 (master after 1.14 branched): pins, dialect gates, CI | done, branch `tb/julia-1.15` (on S11a) | see `git log` |
+| S7 RemoveJuliaAddrspaces (`jl-remove-addrspaces`), RemoveAddrspaces (`jl-remove-all-addrspaces`) | done, branch `tb/s7-remove-addrspaces` (on `tb/juliair-deps-pin`) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -265,6 +266,27 @@ and the upstream and differential jobs; `all.sh` defaults to it too (juliaup cha
 `1.14-nightly`).
 The docs and comments that said "Julia master" for the newest dialect's behaviour say
 "Julia 1.14 (and later)" now.
+
+S7 details: `src/passes/remove_addrspaces.jl`, both passes required, the same at every
+pin. `AddrspaceRemapper` maps types (with its own cache for the whole run: LLVM.jl's
+type mapper only caches per call) and `AddrspaceMaterializer` rebuilds constant
+expressions, for LLVM.jl's value mapper (#674: `ValueMap`, `map_value`, `clone_into!`,
+`remangle_intrinsic`, ...). Faithful otherwise, including the `.bad` renaming of
+identified structs in the context; target extension and AMX types map to themselves.
+Deviations (docs/src/remove_addrspaces.md): D1 compile units mapped to themselves on
+every LLVM (from LLVM 20, CloneFunctionInto only adds a CU to the map when it visits it,
+so one referred to only by inlined subprograms got duplicated); D2 the CUs and the
+`DIGlobalVariable`s of the globals' `!dbg` are seeded before any global metadata is
+mapped (seeding only the CUs leaves the CU's `globals` pointing at a stale variable);
+D3 metadata of global declarations kept (master's codegen attaches `!julia.constgv` to
+them, so this is a real difference on nightly's IR); D4 all type attributes mapped;
+D5 ifuncs recreated (the C++ deletes the resolver they still use and segfaults when the
+module is printed). Upstream `remove-addrspaces.ll` runs with the port at every pin (1.10
+through an override: typed RUN lines), `parsing.ll` too. Differential (C++ vs port
+in-process, every pinned fixture, a `code_llvm` corpus with and without debug info, and
+from 1.11 the corpus after Julia's pipeline prefix): identical except the lit extras for
+D1–D5, and on nightly the `!julia.constgv` of D3. Validated: `Pkg.test()` 1.10 461,
+1.11 461, 1.12 458, 1.13 426, nightly 424; mode A 21/22/23/25/28, `--cpp` unchanged.
 
 JuliaIR.jl depends on unmerged LLVM.jl work (custom loop passes, the inlining API, value
 mapping and cloning, MemorySSA, the target triple wrapper, ...), split into the pull
@@ -532,6 +554,18 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 - Julia's C++ LowerSIMDLoop only reports remarks with
   `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
   "-pass-remarks-analysis=lower_simd_loop")`.
+- LLVM 23 rejects a named struct used in an initializer before its definition: define
+  `%T = type ...` at the top of lit inputs.
+- Julia's C++ FinalLowerGC is not nested automatically in pipeline text: write
+  `function(...,FinalLowerGC)` (1.12+) or a module-level `FinalLowerGC` (before).
+- `--implicit-check-not=addrspace` also matches the ModuleID (the file name); use
+  `'addrspace('`.
+- Julia's C++ RemoveJuliaAddrspaces segfaults on modules with an `ifunc`.
+- From LLVM 20, CloneFunctionInto only adds the compile units it visits to the value map
+  (LLVM 19 and older reset every CU found by DebugInfoFinder).
+- LLVM 16 and older rebuild a type-mapped `poison` as `undef`; LLVM 15/16 have no vector
+  `llvm.ptrmask`; LLVM 23 turns `llvm.masked.gather`'s alignment operand into an
+  attribute.
 
 - The differential's worker runs Julia's C++ passes, which abort the process on IR they
   reject (GCInvariantVerifier) or crash on; an uncaught Julia error in the worker is a
