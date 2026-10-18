@@ -558,3 +558,72 @@ function gc_pool_class(dialect::Dialect, sz::Integer)
         end
     end
 end
+
+
+## the JIT's target
+
+# What Julia's JIT compiles for: Julia's CPUFeatures pass uses it for functions without
+# target attributes. Unlike the runtime facts, these describe a target, which
+# CPUFeatures takes as its options (`target_cpu`, `target_features`, `target_machine`);
+# the running Julia's are the defaults where the C++ pass uses the JIT's.
+
+probe_have_fma32() = Core.Intrinsics.have_fma(Float32)
+probe_have_fma64() = Core.Intrinsics.have_fma(Float64)
+
+# the constant that a function without arguments returns, once optimized by Julia's
+# pipeline
+function probe_constant(probe, what)
+    with_probe_ir(probe, Tuple{}, what) do mod
+        values = Set{Int}()
+        # (not its wrappers, like `jfptr_*`)
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
+            startswith(LLVM.name(f), "julia_") || continue
+            inst isa LLVM.RetInst || continue
+            val = only(inst.operands)
+            val isa LLVM.ConstantInt || return nothing
+            push!(values, convert(Int, val))
+        end
+        length(values) == 1 || return nothing
+        return only(values)
+    end
+end
+
+# Up to Julia 1.13, the C++ pass decides whether a function without `target-features`
+# has FMA by looking for some features in the JIT's feature string, which Julia doesn't
+# export. Only two answers of it matter, which the pass gives for the code that Julia
+# generates for `Core.Intrinsics.have_fma`.
+function run_probe(::Val{:jit_fma})
+    f32 = probe_constant(probe_have_fma32, "`Core.Intrinsics.have_fma(Float32)`")
+    f64 = probe_constant(probe_have_fma64, "`Core.Intrinsics.have_fma(Float64)`")
+    return (; jit_fma_f32=f32 != 0, jit_fma_f64=f64 != 0)
+end
+
+# The JIT's triple, and from Julia 1.14 on its CPU and feature string, as Julia's JIT
+# creates its target machine with them.
+function run_probe(::Val{:jit_target})
+    jit = ccall(:JLJITGetJuliaOJIT, Ptr{Cvoid}, ())
+    triple = unsafe_string(ccall(:JLJITGetTripleString, Cstring, (Ptr{Cvoid},), jit))
+    cpu = features = nothing
+    # before, `jl_get_llvm_target` returns a C++ type
+    if Dialect(VERSION).cpu_features_rule === :subtarget
+        imaging = ccall(:jl_generating_output, Cint, ()) != 0
+        target = ccall(:jl_get_llvm_target, NTuple{2,Ptr{UInt8}}, (Cstring, Bool),
+                       unsafe_string(Base.JLOptions().cpu_target), imaging)
+        cpu, features = unsafe_string(target[1]), unsafe_string(target[2])
+    end
+    return (; triple, cpu, features)
+end
+
+"""
+    JuliaIR.jit_target()
+
+The target that the running Julia's JIT compiles for, as a named tuple of its `triple`,
+`cpu` and `features` (a feature string like `"+avx2,-fma"`). Julia's own pipeline runs
+its CPUFeatures pass with the JIT's target machine; to do the same with
+[`JuliaIR.CPUFeaturesPass`](@ref), pass it the `cpu` and `features`.
+
+Up to Julia 1.13, the JIT's CPU and features aren't exported (they are `nothing`), and
+the pass doesn't need them: it uses the JIT's answers by default, see
+[`JuliaIR.CPUFeaturesPass`](@ref).
+"""
+jit_target() = native_probe(:jit_target)

@@ -31,6 +31,7 @@ include("passes/remove_addrspaces.jl")
 include("passes/final_lower_gc.jl")
 include("gc_transitions.jl")
 include("passes/lower_ptls.jl")
+include("passes/cpu_features.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

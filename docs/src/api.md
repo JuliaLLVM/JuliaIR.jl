@@ -32,6 +32,10 @@ JuliaIR.RemoveJuliaAddrspacesPass
 JuliaIR.RemoveAddrspacesPass
 JuliaIR.LowerPTLSPass
 JuliaIR.LowerPTLSError
+JuliaIR.CPUFeaturesPass
+JuliaIR.CPUFeaturesError
+JuliaIR.always_have_fma
+JuliaIR.jit_target
 ```
 
 

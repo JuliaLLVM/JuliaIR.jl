@@ -40,6 +40,7 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.14 and later) | yes |
 | `jl-remove-addrspaces` | `RemoveJuliaAddrspaces` | yes |
 | `jl-remove-all-addrspaces` | `RemoveAddrspaces` | yes |
+| `jl-cpu-features` | `CPUFeatures` | yes |
 
 ## Passes that exist in some Julia versions only
 
@@ -120,6 +121,12 @@ Differences with Julia's C++ passes:
   array of a subroutine type, when the loop ID has no other operands. The remark about
   a loop's flags is attached to the header's terminator (with the location of the start
   of the loop) instead of the header block.
+- CPUFeatures throws a `JuliaIR.CPUFeaturesError` for uses of its intrinsics it can't
+  fold (not called, passed as an argument, called with `invoke`), where the C++ pass
+  crashes or corrupts the IR. Up to Julia 1.13, it reads the JIT's answers from the code
+  Julia generates for `have_fma` rather than from the JIT's feature string; on Julia
+  master, its `target_cpu` and `target_features` options create a subtarget without a
+  target machine. See [CPUFeatures](cpu_features.md).
 - ExpandAtomicModify places the `atomicrmw xchg` that replaces an operation that ignores
   the old value after the inlined code that computes the new one, for the IR of every
   Julia version (Julia 1.14): Julia 1.13 places it before that code, which is invalid
