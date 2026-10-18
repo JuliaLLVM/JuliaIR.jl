@@ -15,9 +15,12 @@
 # `datatype_layout`, and introduced `GenericMemoryRef`.
 const HAS_MEMORY = isdefined(Core, :GenericMemory)
 
-# A primitive type is aligned to its size rounded up to a power of two, at most to
-# `MAX_ALIGN` (Julia's src/julia_internal.h), so the alignment of a 256-bit one is
-# `MAX_ALIGN` (which is at most 16 on every platform).
+# `MAX_ALIGN` (Julia's src/julia_internal.h, src/julia.h before 1.12), the largest
+# alignment Julia gives a primitive type, which caps the integers that represent inline
+# unions. Julia aligns a primitive type to its size rounded up to a power of two, capped at
+# `MAX_ALIGN`; the only other rule, 4-byte alignment of 8-byte types on 32-bit x86 outside
+# Windows, doesn't apply to a 32-byte type. So the alignment of a 256-bit primitive is `MAX_ALIGN`, as long
+# as that is at most 32 bytes (it is at most 16 on every platform and version).
 primitive type MaxAlignProbe 256 end
 max_align() = Base.datatype_alignment(MaxAlignProbe)
 
@@ -72,17 +75,18 @@ is_kind(@nospecialize(T)) = any(K -> K === T, KINDS)
 
 # `Union{}`, and what the dialect lowers like it (`is_typeofbottom_typealias`)
 function is_bottom_alias(@nospecialize(T), d::Dialect)
-    # comparing a `DataType` with `typeof(Union{})` makes Julia 1.10's inference fail
-    # internally (an "Internal error" printed while compiling callers)
-    T = Base.inferencebarrier(T)
     T === Union{} && return true
+    d.bottom_aliases === :bottom && return false
+    # `typeof(Union{})` is hidden from inference: Julia 1.10's fails internally on
+    # comparisons with it and with `Type{Union{}}`, which are `==` but not `===`
+    # (JuliaLang/julia#56913, fixed in 1.11)
+    T === Base.inferencebarrier(Core.TypeofBottom) && return true
     if d.bottom_aliases === :typeofbottom_super
-        return T === Core.TypeofBottom || T === Core.TypeofBottom.super
-    elseif d.bottom_aliases === :some_type
-        T === Core.TypeofBottom && return true
-        @static if isdefined(Core, :TypeEq)
-            return (T isa Core.TypeEq || T isa Core.TypeEgal) && T.T === Union{}
-        end
+        return T === Type{Union{}}
+    end
+    # `:some_type`: `Type{Union{}}` is a `Core.TypeEq` object
+    @static if isdefined(Core, :TypeEq)
+        return (T isa Core.TypeEq || T isa Core.TypeEgal) && T.T === Union{}
     end
     return false
 end

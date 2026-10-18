@@ -84,12 +84,18 @@ Other differences follow from what the running Julia has, not from the dialect:
 `BFloat16`, `Memory` and `MemoryRef` exist from Julia 1.11 on, Julia master has
 primitive types of any number of bits (`primitive type P7 7 end` is `i7`), and from 1.11
 on, Julia reports the layout of `Memory{T}` through its type constructor's, which makes
-`no_boxing` box `Memory{Nothing}` rather than lower it to `void`. Julia's `MAX_ALIGN`
-(the largest alignment Julia gives a type, which decides how inline unions are split)
-is 8 on x86-64 before Julia 1.12 and 16 from then on (always 16 on AArch64): there,
+`no_boxing` box `Memory{Nothing}` rather than lower it to `void`.
+
+Julia's `MAX_ALIGN`, the largest alignment Julia gives a primitive type, caps the
+integers that represent an inline union (a union with a larger alignment, like one with
+a `VecElement` tuple member, gets the alignment marker). It is 8 on x86-64 before Julia
+1.12 and 16 from then on (always 16 on AArch64, 4 on 32-bit x86 before 1.12): there,
 `struct S; u::Union{Int128,Int8}; end` lowers to `{ i64, i64, i8 }` before 1.12 and
-`{ i128, i8 }` after. The port derives `MAX_ALIGN` from the alignment Julia gives a
-256-bit primitive type, which is `MAX_ALIGN` by Julia's rule for primitive types.
+`{ i128, i8 }` after. Julia doesn't expose `MAX_ALIGN`; the port reads it as the
+alignment Julia gives a 256-bit primitive type. That relies on Julia's rule for
+primitive types (their size rounded up to a power of two, capped at `MAX_ALIGN`; the
+4-byte alignment of 8-byte types on 32-bit x86 doesn't affect a 32-byte type) and on
+`MAX_ALIGN` being at most 32 bytes, which holds on every platform and version.
 
 ### Deviations from Julia's C++
 
@@ -129,9 +135,10 @@ target):
 - AMDGPU, Metal (AIR) and SPIR-V align them to 8 bytes, so from Julia 1.12 on, `Int128`,
   primitive types of 16 bytes or more, and structs containing them diverge (the same `S`
   is 32 bytes in Julia and 24 in LLVM).
-- AMDGPU's pointers in address spaces 3 (local) and 5 (private) are 4 bytes, Julia's
-  `Core.LLVMPtr` always 8: `Core.LLVMPtr{T,3}` and structs containing such pointers
-  diverge.
+- AMDGPU's pointers in address spaces 3 (local) and 5 (private) are 4 bytes, while
+  Julia's `Core.LLVMPtr` has the host's pointer size (8 bytes on 64-bit hosts):
+  `Core.LLVMPtr{T,3}` and structs containing such pointers diverge, even where padding
+  keeps the struct's size and field offsets the same.
 
 ## Testing
 

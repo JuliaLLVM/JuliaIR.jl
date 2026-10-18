@@ -441,8 +441,10 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   <rev>:<file>` (absolute path, nothing else in the command).
 - Julia 1.10's inference fails internally ("Internal error: encountered unexpected error
   in runtime: BoundsError(a=Type{Core.TypeofBottom}, i=1)", printed while compiling a
-  caller) when a `DataType`-typed value is compared with `===` to `Core.TypeofBottom`;
-  `is_bottom_alias` compares through `Base.inferencebarrier`.
+  caller) when it merges the results of comparing a `DataType` with `===` to both
+  `Core.TypeofBottom` and `Type{Union{}}`, which are `==` (JuliaLang/julia#56913, fixed
+  by #56915 in 1.11.4, not backported to 1.10); `is_bottom_alias` hides
+  `Core.TypeofBottom` behind `Base.inferencebarrier`.
 - A `ccall(..., llvmcall)` inside a `@testset` closure fails ("could not evaluate ccall
   return type"); define such functions at top level. `llvm.ptrmask.p3.i32` is invalid
   under the host data layout (index width 64).
