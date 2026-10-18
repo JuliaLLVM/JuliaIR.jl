@@ -9,6 +9,7 @@ include("registration.jl")
 include("runtime.jl")
 include("jlopt.jl")
 include("irutils.jl")
+include("codegen_shared.jl")
 
 include("allocations.jl")
 
