@@ -137,6 +137,26 @@ end
     @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 22, 23)[1] == text
     @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 15, 21)[1] == text
 
+    # a fixture with a mode-A patch gets an after-A patch when the composed fixture needs
+    # one, also when the pristine one doesn't; its counts are checked like the others'
+    rule = DeriveB.Rule("test", 23, "test", Dict("1.10/x.ll after A" => 1),
+                        (line, kind) -> kind == :check ? replace(line, "old" => "new") : line)
+    pristine = "; RUN: opt -S %s | FileCheck %s\n; CHECK: kept\n"
+    a_patch = "--- a/x.ll\n+++ b/x.ll\n@@ -2,1 +2,1 @@\n-; CHECK: kept\n+; CHECK: old\n"
+    patches, seen = Dict{String,String}(), Dict{Tuple{String,String},Int}()
+    DeriveB.derive_fixture!(patches, seen, pristine, "x.ll", "1.10", 15, 23; a_patch, rules=[rule])
+    @test collect(keys(patches)) == ["1.10/x.ll.after-A.patch"]
+    @test apply_patch(apply_patch(pristine, a_patch), patches["1.10/x.ll.after-A.patch"]) ==
+          "; RUN: opt -S %s | FileCheck %s\n; CHECK: new\n"
+    pins = Dict("1.10" => Dict("llvm" => 15))
+    DeriveB.check_counts(seen, pins, 23; rules=[rule])
+    @test_throws "rule test changes 2 lines of 1.10/x.ll after A, expected 1" DeriveB.check_counts(
+        Dict(("test", "1.10/x.ll after A") => 2), pins, 23; rules=[rule])
+    @test_throws "rule test changes no line of 1.10/x.ll after A" DeriveB.check_counts(
+        Dict{Tuple{String,String},Int}(), pins, 23; rules=[rule])
+    @test_throws "rule test changes 1 lines of 1.10/x.ll, expected 0" DeriveB.check_counts(
+        merge(seen, Dict(("test", "1.10/x.ll") => 1)), pins, 23; rules=[rule])
+
     # the generated patches apply with the harness
     long = join(["line $i" for i in 1:20], '\n') * '\n'
     changed = replace(long, "line 3\n" => "LINE 3\n", "line 4\n" => "LINE 4\n", "line 18\n" => "LINE 18\n")
@@ -154,17 +174,22 @@ if !Sys.iswindows()
         write(joinpath(dir, "jlopt"), raw"""
             #!/bin/bash
             [ "$1" = crash ] && kill -ABRT $$
-            out=-
+            [ "$1" = fail ] && { echo "partial output"; exit 3; }
+            out=-; output="jlopt output"
             while [ $# -gt 0 ]; do
-                [ "$1" = -o ] && out=$2
+                case "$1" in
+                    -o) out=$2; shift;;
+                    -o*) out=${1#-o};;
+                    -) output="jlopt read $(cat)";;
+                esac
                 shift
             done
-            if [ "$out" = - ]; then echo "jlopt output"; else echo "jlopt output" > "$out"; fi
+            if [ "$out" = - ]; then echo "$output"; else echo "$output" > "$out"; fi
             """)
         write(joinpath(dir, "newer-opt"), raw"""
             #!/bin/bash
             in=$2; out=$4
-            if [ "$out" = - ]; then echo "re-printed: $(cat "$in")"; else echo "re-printed: $(cat "$in")" > "$out.new"; mv "$out.new" "$out"; fi
+            if [ "$out" = - ]; then echo "re-printed: $(cat "$in")"; else echo "re-printed: $(cat -- "$in")" > "$out.new"; mv -- "$out.new" "$out"; fi
             """)
         chmod(joinpath(dir, "jlopt"), 0o755)
         chmod(joinpath(dir, "newer-opt"), 0o755)
@@ -172,13 +197,27 @@ if !Sys.iswindows()
         opt = joinpath(dir, "opt")
         @test readchomp(`$opt -passes=x -S in.ll`) == "re-printed: jlopt output"
         @test readchomp(`$opt -passes=x -S in.ll -o -`) == "re-printed: jlopt output"
+        @test readchomp(pipeline(`$opt -passes=x -S -`; stdin=IOBuffer("input"))) ==
+              "re-printed: jlopt read input"
         file = joinpath(dir, "out.ll")
         run(`$opt -passes=x -S in.ll -o $file`)
         @test readchomp(file) == "re-printed: jlopt output"
+        rm(file)
+        run(`$opt -passes=x -S in.ll -o$file`)
+        @test readchomp(file) == "re-printed: jlopt output"
+        # an output file whose name looks like an option
+        cd(dir) do
+            run(`$opt -passes=x -S in.ll -o -out.ll`)
+            @test readchomp("-out.ll") == "re-printed: jlopt output"
+        end
         # bitcode, and output that is thrown away, aren't re-printed
         @test readchomp(`$opt -passes=x in.ll`) == "jlopt output"
         @test readchomp(`$opt -passes=x -S in.ll -o /dev/null`) == ""
-        # a crash is passed on
+        # a failure, and a crash, are passed on
+        out = IOBuffer()
+        proc = run(pipeline(ignorestatus(`$opt fail -S`); stdout=out))
+        @test proc.exitcode == 3
+        @test String(take!(out)) == "partial output\n"
         proc = run(pipeline(ignorestatus(`$opt crash -S`); stdout=devnull))
         @test proc.termsignal == 6  # SIGABRT
     end
