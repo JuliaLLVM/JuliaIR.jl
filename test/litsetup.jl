@@ -68,13 +68,35 @@ function unknown_julia_features(dir::String)
     return unknown
 end
 
+# The LLVM tools that RUN lines use besides `opt` (FileCheck, llvm-dis, ...) and the library
+# path they need. They must be of the LLVM that the passes run on: bitcode that a newer LLVM
+# writes doesn't load in an older one. LLVM_utils_unified_jll has the tools of Julia's LLVM;
+# with another library, `JULIAIR_LLVM_TOOLS` names a directory with the tools of its version
+# that find their libraries themselves, without a library path: e.g. the `tools` directory
+# of LLVM_full_jll on Linux and macOS, the platforms that standalone libraries are built for.
+function llvm_tools()
+    if julia_llvm_in_use()
+        return (; dir=joinpath(LLVM_utils_unified_jll.artifact_dir, "tools"),
+                  libpath=LLVM_utils_unified_jll.LIBPATH_list)
+    end
+    major = LLVM.version().major
+    dir = get(ENV, "JULIAIR_LLVM_TOOLS", "")
+    isempty(dir) && error("LLVM.jl uses LLVM $major instead of Julia's LLVM; set JULIAIR_LLVM_TOOLS to a directory with the LLVM tools of that version")
+    tool = joinpath(dir, "llvm-dis" * (Sys.iswindows() ? ".exe" : ""))
+    version = isfile(tool) ? read(`$tool --version`, String) : ""
+    m = match(r"LLVM version (\d+)\.", version)
+    m !== nothing && parse(Int, m[1]) == major ||
+        error("JULIAIR_LLVM_TOOLS ($dir) doesn't have the tools of LLVM $major")
+    return (; dir, libpath=String[])
+end
+
 function lit_params(; exec_root::String, bindir::String)
-    tools = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools")
+    tools = llvm_tools()
     return Dict(
         "exec_root" => exec_root,
         "bindir" => bindir,
-        "toolsdir" => tools,
-        "libpath" => join(LLVM_utils_unified_jll.LIBPATH_list, Sys.iswindows() ? ';' : ':'),
+        "toolsdir" => tools.dir,
+        "libpath" => join(tools.libpath, Sys.iswindows() ? ';' : ':'),
         "libpath_env" => Sys.iswindows() ? "PATH" :
                          Sys.isapple() ? "DYLD_FALLBACK_LIBRARY_PATH" : "LD_LIBRARY_PATH",
         "shlibext" => "." * Base.Libc.Libdl.dlext,
