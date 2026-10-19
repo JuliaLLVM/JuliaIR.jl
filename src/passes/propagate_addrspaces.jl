@@ -193,8 +193,9 @@ function visit_memop!(p::PropagateAddrspaces, f::LLVM.Function, inst::Instructio
     return
 end
 
-const MEMSET_INTRINSICS = ("llvm.memset", "llvm.memset.inline")
-const MEMTRANSFER_INTRINSICS = ("llvm.memcpy", "llvm.memcpy.inline", "llvm.memmove")
+const MEMSET_INTRINSICS = (Intrinsic("llvm.memset"), Intrinsic("llvm.memset.inline"))
+const MEMTRANSFER_INTRINSICS = (Intrinsic("llvm.memcpy"), Intrinsic("llvm.memcpy.inline"),
+                                Intrinsic("llvm.memmove"))
 
 function visit_memintrinsic!(p::PropagateAddrspaces, f::LLVM.Function, call::Instruction,
                              intr::LLVM.Intrinsic, transfer::Bool)
@@ -254,10 +255,9 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
                 callee = inst.called_function
                 (callee isa LLVM.Function && LLVM.isintrinsic(callee)) || continue
                 intr = callee.intrinsic
-                name = LLVM.name(intr)
-                if name in MEMSET_INTRINSICS
+                if intr in MEMSET_INTRINSICS
                     visit_memintrinsic!(p, f, inst, intr, false)
-                elseif name in MEMTRANSFER_INTRINSICS
+                elseif intr in MEMTRANSFER_INTRINSICS
                     visit_memintrinsic!(p, f, inst, intr, true)
                 end
             end
