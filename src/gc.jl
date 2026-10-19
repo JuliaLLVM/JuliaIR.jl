@@ -25,7 +25,7 @@ const GC_FRAME_HEADER_SLOTS = 2
 
 # A pass that uses these helpers has the fields `dialect`, `mod`, `builder`, `dl`
 # (the module's data layout), `T_prjlvalue` (a tracked pointer) and `T_size` (the
-# integer of a pointer's size).
+# integer of a pointer's size), and a method of `tbaa_tags` that returns its `TBAATags`.
 abstract type GCLowering end
 
 pointer_size(p::GCLowering) = storage_size(p.dl, LLVM.PointerType(AS_GENERIC))
@@ -259,10 +259,21 @@ tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
 tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
 tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
 
-# set a TBAA tag, and mark loads of constant memory invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction)
+# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
+# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
+struct TBAATags
+    gcframe::MDNode
+    tag::MDNode
+    constant::MDNode
+end
+
+TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
+
+# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
+# invariant (`tbaa_decorate`)
+function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
     inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == tbaa_const()
+    if inst isa LLVM.LoadInst && md == constant
         inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
     end
     return inst
@@ -283,7 +294,7 @@ function emit_load_tag!(p::GCLowering, @nospecialize(v::Value))
     load = load!(p.builder, p.T_size, addr, name; align=pointer_align(p),
                  ordering=LLVM.API.LLVMAtomicOrderingUnordered,
                  volatile=p.dialect.gc_tag_load_volatile)
-    load.metadata[LLVM.MD_tbaa] = tbaa_tag()
+    load.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
     load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, TAG_ALIGNMENT),
                                            i64_metadata_of(p.T_size, 0)])

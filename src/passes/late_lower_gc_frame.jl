@@ -586,11 +586,22 @@ mutable struct LateLowerGCFrame <: GCLowering
     # the facts about Julia's runtime (`RuntimeFacts`), read when needed
     layout::Any
     cfg_modified::Bool
+    # built on first use (`tbaa_tags`)
+    tbaa::Union{Nothing,TBAATags}
+    # the TBAA tags of the input, memoized: whether they derive from the dialect's
+    # `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces them with
+    immutable_tbaa::Dict{MDNode,Bool}
+    downgraded_tbaa::Dict{MDNode,MDNode}
 end
 
 function dominator_tree(p::LateLowerGCFrame)
     p.domtree === nothing && (p.domtree = p.am[DomTree])
     return p.domtree::DomTree
+end
+
+function tbaa_tags(p::LateLowerGCFrame)
+    p.tbaa === nothing && (p.tbaa = TBAATags())
+    return p.tbaa::TBAATags
 end
 
 function runtime_layout(p::LateLowerGCFrame)
@@ -1135,7 +1146,10 @@ function is_load_from_rooted_region(p::LateLowerGCFrame, li::Instruction)
     haskey(md, LLVM.MD_invariant_load) && return true
     if p.dialect.gc_rooted_loads === :tbaa
         tbaa = haskey(md, LLVM.MD_tbaa) ? md[LLVM.MD_tbaa] : nothing
-        return tbaa isa MDNode && tbaa_derives_from(tbaa, p.dialect.gc_immutable_tbaa)
+        tbaa isa MDNode || return false
+        return get!(p.immutable_tbaa, tbaa) do
+            tbaa_derives_from(tbaa, p.dialect.gc_immutable_tbaa)
+        end
     end
     haskey(md, LLVM.MD_alias_scope) || return false
     scopes = md[LLVM.MD_alias_scope]
@@ -2272,7 +2286,7 @@ function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value)
                       [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
     end
     ptls_load = load!(builder, T_ptr, pptls, "ptls_load"; align=pointer_align(p))
-    tbaa_decorate!(tbaa, ptls_load)
+    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(p).constant)
     return ptls_load
 end
 
@@ -2316,7 +2330,7 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
         task = inbounds_gep!(builder, LLVM.Int8Type(), pgcstack,
                              [ConstantInt(LLVM.Int32Type(), -runtime_layout(p).task_gcstack)],
                              "current_task")
-        ptls = current_ptls_from_task!(p, task, tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, task, tbaa_tags(p).gcframe)
     else
         position_before!(builder, call; debug=true)
         ptls = first(LLVM.inputs(bundle))
@@ -2331,7 +2345,7 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
                           ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
-    tbaa = tbaa_const()
+    tbaa = tbaa_tags(p).constant
     emit_gc_safepoint!(p, ptls, tbaa)
     next = call.next
     position_before!(builder, next; debug=true)
@@ -2371,7 +2385,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     new_call = nothing
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
@@ -2404,7 +2418,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # `julia.gc_alloc_bytes` specializes on the size of the object, and doesn't set
         # its tag
         alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
@@ -2420,7 +2434,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     # set the tag in IR, rather than in the allocation function
     store = store!(builder, tag, emit_tag_ptr!(p, tag_type, new_call);
                    align=pointer_align(p), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tag()
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
     # sees valid pointers before the object is initialized
@@ -2684,6 +2698,14 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
     return true
 end
 
+# the TBAA tag that an access tagged `tag` gets: the tag without its immutability flag if
+# it derives from one of the dialect's `tbaa_downgrade` types
+downgraded_tbaa_tag(p::LateLowerGCFrame, tag::MDNode) =
+    get!(p.downgraded_tbaa, tag) do
+        length(tag.operands) == 4 && tbaa_derives_from(tag, p.dialect.tbaa_downgrade) ?
+            mutable_tbaa_tag(tag) : tag
+    end
+
 # returns the instruction to visit next: the one after `inst` once it is lowered, which
 # may be one that the lowering inserted (and that is cleaned up too, as in the C++)
 function cleanup_instruction!(p::LateLowerGCFrame, inst::Instruction, S, frame::Instruction,
@@ -2696,10 +2718,9 @@ function cleanup_instruction!(p::LateLowerGCFrame, inst::Instruction, S, frame::
     end
     md = inst.metadata
     tag = haskey(md, LLVM.MD_tbaa) ? md[LLVM.MD_tbaa] : nothing
-    if tag isa MDNode && length(tag.operands) == 4 &&
-       tbaa_derives_from(tag, p.dialect.tbaa_downgrade)
-        mutable = mutable_tbaa_tag(tag)
-        mutable != tag && (inst.metadata[LLVM.MD_tbaa] = mutable)
+    if tag isa MDNode
+        new_tag = downgraded_tbaa_tag(p, tag)
+        new_tag != tag && (inst.metadata[LLVM.MD_tbaa] = new_tag)
     end
     # FCA chains created by SROA start with an undef value; with tracked pointers that
     # can lead to partial initialization, and this pass might have extracted an undef
@@ -2832,7 +2853,8 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder, dl,
                              LLVM.PointerType(AS_TRACKED),
                              LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                             nothing, nothing, nothing, false)
+                             nothing, nothing, nothing, false, nothing,
+                             Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
         declare_small_alloc && get_or_declare(p, :gc_small_alloc)
         p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing

@@ -18,13 +18,20 @@ mutable struct FinalLowerGC <: GCLowering
     # the runtime functions the intrinsics are lowered to, once declared
     runtime::Dict{Symbol,LLVM.Function}
     cfg_modified::Bool
+    # built on first use (`tbaa_tags`)
+    tbaa::Union{Nothing,TBAATags}
 end
 
 function FinalLowerGC(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder)
     dl = mod.datalayout
     return FinalLowerGC(dialect, mod, builder, dl, LLVM.PointerType(AS_TRACKED),
                         LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                        nothing, Dict{Symbol,LLVM.Function}(), false)
+                        nothing, Dict{Symbol,LLVM.Function}(), false, nothing)
+end
+
+function tbaa_tags(p::FinalLowerGC)
+    p.tbaa === nothing && (p.tbaa = TBAATags())
+    return p.tbaa::TBAATags
 end
 
 # the runtime functions that FinalLowerGC declares, in the order the C++ declares them
