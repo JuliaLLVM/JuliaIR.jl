@@ -166,7 +166,9 @@ Two things differ from mode A, the default run of the previous section:
   of them that isn't ported (`FinalLowerGC`, `JuliaMultiVersioning`, `julia`, ...) are
   skipped, and the harness lists them. Mode B skips them on Julia's own LLVM too, so
   that a run there (a dry run of mode B) tests the same lines. A pass name that no LLVM
-  knows is not skipped: the line fails.
+  knows is not skipped: the line fails. Julia's pipeline (`julia<...>`) is rebuilt from
+  the ports, but it also runs LLVM's own passes, which optimize differently on another
+  LLVM than the pin's: its RUN lines are skipped there too.
 - A newer LLVM prints the same IR differently: it upgrades old constructs when it reads
   a module, and prints some constants in a new syntax. The fixtures expect the spelling
   of the pin's LLVM, so they get a second layer of patches,

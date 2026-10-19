@@ -68,22 +68,25 @@ end
 @testset "pipeline" begin
 
 @testset "structure: $(julia_element(config))" for config in configurations()
-    # the C++ pipeline and its rebuilt version with Julia's C++ passes
-    cpp = normalize_cpp(printed(julia_element(config)))
-    rebuilt = normalize_rebuilt(printed(JuliaIR.pipeline(; ports=false, config...)))
-    @test cpp == rebuilt
-
     # with the ports, which take the place of the C++ passes (except for those in
-    # `CPP_FALLBACKS`)
-    cpp_names = Dict(def.name => def.cpp_name for def in JuliaIR.PASSES
-                     if !isempty(def.cpp_name))
+    # `CPP_FALLBACKS`), on any LLVM
     ports = printed(JuliaIR.pipeline(; config...))
     @test !any(name -> occursin(Regex("\\b$name\\b"), ports),
                setdiff(keys(JuliaIR.cpp_mapping()), values(JuliaIR.CPP_FALLBACKS)))
-    unported = replace(ports, r"jl-[a-z0-9-]+(<[^>]*>)?" => function (s)
-        get(cpp_names, match(r"jl-[a-z0-9-]+", s).match, s)
-    end)
-    @test normalize_rebuilt(unported) == rebuilt
+
+    # the C++ pipeline and its rebuilt version with Julia's C++ passes, which only Julia's
+    # LLVM has
+    if julia_llvm_in_use()
+        cpp = normalize_cpp(printed(julia_element(config)))
+        rebuilt = normalize_rebuilt(printed(JuliaIR.pipeline(; ports=false, config...)))
+        @test cpp == rebuilt
+        cpp_names = Dict(def.name => def.cpp_name for def in JuliaIR.PASSES
+                         if !isempty(def.cpp_name))
+        unported = replace(ports, r"jl-[a-z0-9-]+(<[^>]*>)?" => function (s)
+            get(cpp_names, match(r"jl-[a-z0-9-]+", s).match, s)
+        end)
+        @test normalize_rebuilt(unported) == rebuilt
+    end
 end
 
 @testset "options" begin
@@ -164,7 +167,7 @@ end
             end
             # LateLowerGCFrame's order of GC frame slots varies between runs (it iterates
             # over pointer-keyed containers), so a difference is retried a few times
-            @test any(1:10) do _
+            julia_llvm_in_use() && @test any(1:10) do _
                 optimized(julia_element((; level))) ==
                     optimized(JuliaIR.pipeline(; level, ports=false))
             end

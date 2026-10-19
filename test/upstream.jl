@@ -74,6 +74,10 @@ end
     st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
     @test st == :run
     @test startswith(only(pipelines), "jl-remove-ni,BeforeOptimization,")
+    # but not on another LLVM than the pin's, whose own passes optimize differently
+    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B",
+                              other_llvm=true)
+    @test st == :skip && occursin("Julia's pipeline", why)
     # (Julia's pipeline is rebuilt, as every pass in it is ported)
     for name in setdiff(JULIA_CPP_PASSES, ported_passes(), ["julia"])
         @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
@@ -588,23 +592,25 @@ mktempdir() do dir
         @test_throws "good.ll has no mode-A patch at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
     end
 
-    # Julia's pipeline runs in mode B, as it is rebuilt from the ports only
+    # Julia's pipeline runs in mode B, as it is rebuilt from the ports only, unless the
+    # ports run on another LLVM than the pin's (whose own passes optimize differently)
     manifest = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
-    pipelined = mkpath(joinpath(dir, "pipelined", "test", "llvmpasses"))
-    write(joinpath(pipelined, "good.ll"), """
+    planned = mkpath(joinpath(dir, "planned", "test", "llvmpasses"))
+    write(joinpath(planned, "good.ll"), """
         ; RUN: opt -passes='julia<level=2>' -S %s | FileCheck %s
         """)
-    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(pipelined)), "good.ll", minor;
+    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(planned)), "good.ll", minor;
                                      cpp=false, mode="B", manifest_dir=dir)
-    @test f.included
-    @test only(f.runs)[2] == :run
+    other_llvm = LLVM.version().major != Base.libllvm_version.major
+    @test f.included == !other_llvm
+    @test only(f.runs)[2] == (other_llvm ? :skip : :run)
 
     # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
     # whose RUN lines all check stderr sees the pin's printing only
     for (run, reprinted) in (("opt -passes=jl-remove-ni -S %s | FileCheck %s", true),
                              ("opt -passes='print<memoryssa>' -S -o /dev/null %s 2>&1 | FileCheck %s", false))
-        write(joinpath(cpponly, "good.ll"), "; RUN: $run\n")
-        f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+        write(joinpath(planned, "good.ll"), "; RUN: $run\n")
+        f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(planned)), "good.ll", minor;
                                          cpp=true, manifest_dir=dir)
         @test UpstreamHarness.reprints(f.runs) == reprinted
     end
