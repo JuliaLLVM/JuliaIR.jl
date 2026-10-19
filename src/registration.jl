@@ -169,10 +169,12 @@ function parse_value(spec::OptionSpec, key, value::Union{Nothing,String}, negate
     if form === :flag
         value === nothing ||
             throw(ArgumentError("option $key is a flag, write $key or no-$key"))
-        return !negated
+    else
+        (value === nothing || negated) && throw(ArgumentError("option $key requires a value"))
     end
-    (value === nothing || negated) && throw(ArgumentError("option $key requires a value"))
-    parsed = if form === :yes_no
+    parsed = if form === :flag
+        !negated
+    elseif form === :yes_no
         value == "yes" ? true : value == "no" ? false : nothing
     elseif form === :symbol
         Symbol(replace(value, '-' => '_'))
@@ -254,13 +256,16 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
             throw(ArgumentError("unknown option $key; expected one of $(join(known, ", "))"))
         end
     end
+    for (k, spec) in pairs(specs)
+        check_value(spec, given[k], "option $(option_key(k))")
+    end
     dialect = Dialect(VERSION; fp16, bf16, gc_barrier)
     return PassOptions(dialect, NamedTuple{keys(specs)}(Tuple(given[k] for k in keys(specs))))
 end
 
-# the options as text, the inverse of `parse_options`, without the options that are
-# unspecified or keyword-only
-function options_string(opts::PassOptions, options::NamedTuple=(;))
+# the options as text, the inverse of `parse_options` with the same `options`, without the
+# options that are unspecified or keyword-only
+function options_string(opts::PassOptions, options::NamedTuple)
     specs = option_specs(options)
     policies = options_string(opts.dialect)
     parts = isempty(policies) ? String[] : [policies]

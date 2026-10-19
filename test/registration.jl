@@ -74,6 +74,23 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string, option
         @test options_string(opts, options) == "strong"
     end
 
+    # the declaration's predicate applies to flags, and to the values of options not given
+    let options = (; flag=option(Bool, false; valid=!, requirement="off"),
+                     n=option(Int, 0; valid=(>=(0)), requirement="a non-negative integer"))
+        @test parse_options("no-flag"; options).extra.flag === false
+        @test_throws "option flag requires off" parse_options("flag"; options)
+        @test_throws "option n must be a non-negative integer" parse_options("";
+            options, values=(; flag=false, n=-1))
+        @test_throws "option flag must be off" parse_options("n=1";
+            options, values=(; flag=true, n=0))
+        @test_throws "option flag must be off" parse_options("n=1";
+            options, values=(; flag=nothing, n=0))
+    end
+    let values = merge(JuliaIR.option_defaults(JuliaIR.CPU_FEATURES.options), (; target_cpu=42))
+        @test_throws "option target-cpu must be a string or `nothing`" parse_options(
+            JuliaIR.CPU_FEATURES, ""; values)
+    end
+
     # declarations
     @test_throws "have no text form" option(Vector{String}, String[])
     @test_throws "have no text form" option(Float64, 1.0)
@@ -87,8 +104,8 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string, option
     # round trip
     for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
                 "gc-barrier=snapshot-field-precise"]
-        @test options_string(parse_options(str)) == str
-        @test parse_options(options_string(parse_options(str))) == parse_options(str)
+        @test options_string(parse_options(str), (;)) == str
+        @test parse_options(options_string(parse_options(str), (;))) == parse_options(str)
     end
     @test options_string(parse_options(""; options), options) == "no-strong;mode=fast"
     let opts = parse_options("fp16=keep;strong;mode=slow"; options)
