@@ -71,7 +71,6 @@ const OperandUse = Tuple{Instruction,Int}
 use_value(use::OperandUse) = use[1].operands[use[2]]
 set_use!(use::OperandUse, @nospecialize(val::Value)) = (use[1].operands[use[2]] = val)
 
-has_no_uses(@nospecialize(v::Value)) = API.LLVMGetFirstUse(v) == C_NULL
 
 may_read_or_write_memory(inst::Instruction) =
     may_read_from_memory(inst) || may_write_to_memory(inst)

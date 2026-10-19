@@ -157,7 +157,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
         # step 2: one buffer per nesting level, in the entry block; separate allocas, so
         # that the optimizer can merge or rearrange them
         first_inst = first(first(f.blocks).instructions)
-        alloca_as = alloca_addrspace(unsafe_string(API.LLVMGetDataLayoutStr(mod)))
+        alloca_as = alloca_addrspace(mod)
         allocas = Value[]
         buffs = Value[]
         position!(builder, LLVM.before(first_inst))

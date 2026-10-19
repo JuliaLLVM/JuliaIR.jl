@@ -531,10 +531,6 @@ end
 
 ## checks
 
-# the instructions that have to come first in their block
-const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
-                    LLVM.CatchSwitchInst}
-
 # Whether a module has a table like `jl_fvars` that the `external` option accepts: one
 # with an array of constants (which rules out a zero initializer, like the C++ pass).
 function has_table(mod::LLVM.Module, name::String)

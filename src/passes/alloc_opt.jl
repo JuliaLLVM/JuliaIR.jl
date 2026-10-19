@@ -268,7 +268,7 @@ end
 # the first instruction where non-PHI instructions can be inserted
 function first_insertion_inst(bb::BasicBlock)
     for inst in bb.instructions
-        inst isa Union{PHIInst,LandingPadInst,CatchPadInst,CleanupPadInst,CatchSwitchInst} &&
+        inst isa Union{PHIInst,EHPad} &&
             continue
         return inst
     end
@@ -933,7 +933,7 @@ struct AllocOptModuleFacts
 end
 
 function AllocOptModuleFacts(mod::LLVM.Module)
-    layout = unsafe_string(API.LLVMGetDataLayoutStr(mod))
+    layout = datalayout_string(mod)
     ptr = LLVM.PointerType(alloca_addrspace(layout))
     return AllocOptModuleFacts(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
                           ptr, LLVM.overloaded_name(LIFETIME_START, LLVMType[ptr]),

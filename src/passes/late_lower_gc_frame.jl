@@ -1937,7 +1937,7 @@ end
 function prologue_null_store(S::State, inst::Instruction)
     if inst isa LLVM.StoreInst
         ptr, val, vol = inst.operands[2], inst.operands[1], inst.volatile
-    elseif inst isa LLVM.CallInst && intrinsic_is(inst, MEMSET_INTR)
+    elseif inst isa LLVM.CallInst && intrinsic_is(inst, MEMSET)
         ptr, val = inst.operands[1], inst.operands[2]
         vol = convert(Int, inst.operands[4]) != 0
     else
@@ -1950,8 +1950,6 @@ function prologue_null_store(S::State, inst::Instruction)
     (vol || !(val isa LLVM.Constant) || !is_null_value(val)) && return nothing
     return true
 end
-
-const MEMSET_INTR = Intrinsic("llvm.memset")
 
 is_null_value(c::LLVM.Constant) = API.LLVMIsNull(c) != 0
 
