@@ -37,6 +37,7 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
 | `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
+| `jl-cancellation-lowering` | `CancellationLowering` (Julia master) | yes |
 
 ## Passes that exist in some Julia versions only
 
@@ -45,7 +46,9 @@ versions: LowerExcHandlers only exists in Julia 1.10 to 1.12 (later versions emi
 exception handlers directly), so `jl-lower-exc-handlers` leaves the IR of Julia 1.13 and
 later alone, and CombineMulAdd only in Julia 1.10 and 1.11. ExpandAtomicModify only
 exists from Julia 1.13 on, whose code generator emits the `julia.atomicmodify` calls it
-lowers; for the IR of earlier versions, `jl-expand-atomic-modify` does nothing.
+lowers; for the IR of earlier versions, `jl-expand-atomic-modify` does nothing. Likewise,
+CancellationLowering only exists on Julia master, whose code generator emits the
+`julia.cancellation_point` calls it lowers.
 
 ## Facts about the Julia runtime
 
@@ -124,3 +127,6 @@ Differences with Julia's C++ passes:
   see [LateLowerGCFrame](@ref) for these and the fixes of later Julia versions it applies.
   `jl-late-gc-cleanup` runs it on functions without a GC frame after checking an input
   contract (on the same page); `jlopt` does not map Julia's pass name to it.
+- CancellationLowering reports the control-flow graph as changed when it splits blocks,
+  rejects cancellation points it can't lower, and uses the data layout's pointer
+  alignment; see [CancellationLowering](@ref).

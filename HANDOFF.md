@@ -22,6 +22,7 @@ read it first, including its Log). This file says where things are and how to co
 | S6b LateLowerGCFrame (`jl-late-lower-gc-frame`) | port done, every dialect; branch `tb/s6b-late-lower-gc-frame` (on S8, PR #10) | see `git log` |
 | S10 ExpandAtomicModify (`jl-expand-atomic-modify`) | done, branch `tb/s10-expand-atomic-modify` (on S6b, PR #11) | see `git log` |
 | S26 `julia` option removed, S27 master fixtures at the nightly's commit, S28 `required` flags | done, branch `tb/s26-drop-julia-option` (on S10) | see `git log` |
+| S19 CancellationLowering (`jl-cancellation-lowering`) | done, branch `tb/s19-cancellation-lowering` (on S26) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -138,6 +139,21 @@ mismatch). Validated: `Pkg.test()` 1.10 431, 1.11 431, 1.12 428, 1.13 396, night
 lit RUN lines executed 104/107/112/112/114 (549 over the five versions, 765 before, when
 every version ran every dialect's lines); mode A 20/21/22/24/27 and `--cpp` 28/32/33/35/
 40 + 2 unsupported, master at the nightly's commit 08e5253dc0.
+
+S19 details: `src/passes/cancellation_lowering.jl`, faithful to master's C++ (the only
+version with the pass; `Dialect.has_cancellation_lowering`, a no-op before). Required.
+The safepoint emission it shares with LateLowerGCFrame moved to `src/codegen_shared.jl`;
+`GCFunctions` gained `cancellation_point` and `get_pgcstack(fns, dialect, f)` serves both
+passes. Facts: the task, `jl_reset_ctx_t` and `setjmp` facts of S24c, read only for
+functions with points or runtime calls in `"julia.ipo_reset_safe"` functions; the setjmp
+arity uses LowerExcHandlers' unnormalized triple rule (`setjmp_savemask`). Deviations
+(docs/src/cancellation_lowering.md): the CFG is reported changed when blocks are split
+(the C++'s stale dominator tree makes LateLowerGCFrame, the C++ and the port alike, drop
+a `GC.@preserve` root; `test/passes.jl` checks it end to end), `CancellationLoweringError`
+for a point without an entry-block GC stack and for an `invoke`d point, DataLayout
+pointer alignment. Upstream `cancellation-lowering.ll` runs with the port at the nightly's
+commit. Lit: `cancellation-lowering.ll` (update_test_checks, facts as options),
+`-targets.ll` (Windows arity, i686, name order, errors), `-noop.ll` (1.13 and older).
 
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
@@ -366,6 +382,16 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   helper referring to the caller's alloca (unparsable); ExpandAtomicModify's inlining
   hides it. Julia's C++ ExpandAtomicModify aborts (bad_variant_access) on an `fadd` op
   inlined into a `strictfp` caller and hangs on multi-block ops that reach the loop.
+- update_test_checks.py captures value and block names as FileCheck variables, so its
+  CHECK lines don't notice when a port names things differently (e.g. creates them in
+  another order: `%reset_ctx_prev3` instead of `%reset_ctx_prev`); check names that
+  matter by hand (`cancellation-lowering-targets.ll`), and compare text in the
+  differential.
+- LLVM 23's verifier no longer accepts a bitcast between a `musttail` call and its `ret`
+  (with opaque pointers there is nothing to cast); the ports keep the C++'s handling.
+- The worktree sandbox refuses commands that point git outside the worktree unless they
+  are plain: read Julia's sources with a lone `git -C /home/tim/Julia/src/julia show
+  <rev>:<file>` (absolute path, nothing else in the command).
 - Julia's C++ LowerSIMDLoop only reports remarks with
   `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
   "-pass-remarks-analysis=lower_simd_loop")`.

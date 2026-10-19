@@ -562,6 +562,7 @@ struct GCFunctions
     call::Union{Nothing,LLVM.Function}
     call2::Union{Nothing,LLVM.Function}
     call3::Union{Nothing,LLVM.Function}
+    cancellation_point::Union{Nothing,LLVM.Function}
 end
 
 function GCFunctions(mod::LLVM.Module, dialect::Dialect)
@@ -578,7 +579,9 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                        lookup("julia.blackbox"), barriers, field_barriers,
                        lookup("ijl_pop_handler_noexcept"), lookup("julia.call"),
                        lookup("julia.call2"),
-                       dialect.has_call3 ? lookup("julia.call3") : nothing)
+                       dialect.has_call3 ? lookup("julia.call3") : nothing,
+                       dialect.has_cancellation_lowering ?
+                           lookup("julia.cancellation_point") : nothing)
 end
 
 is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
@@ -620,8 +623,8 @@ pointer_size(p::LateLowerGCFrame) = storage_size(p.dl, LLVM.PointerType(AS_GENER
 pointer_align(p::LateLowerGCFrame) = abi_alignment(p.dl, LLVM.PointerType(AS_GENERIC))
 
 # the GC stack of a function (`JuliaPassContext::getPGCstack`)
-function get_pgcstack(p::LateLowerGCFrame, f::LLVM.Function)
-    fns = p.fns
+get_pgcstack(p::LateLowerGCFrame, f::LLVM.Function) = get_pgcstack(p.fns, p.dialect, f)
+function get_pgcstack(fns::GCFunctions, dialect::Dialect, f::LLVM.Function)
     if fns.pgcstack_getter !== nothing || fns.adoptthread !== nothing
         for inst in first(f.blocks).instructions
             inst isa LLVM.CallInst || continue
@@ -631,7 +634,7 @@ function get_pgcstack(p::LateLowerGCFrame, f::LLVM.Function)
             end
         end
     end
-    if p.dialect.gc_stack_argument
+    if dialect.gc_stack_argument
         for (i, arg) in enumerate(f.parameters)
             has_string_attribute(f.parameter_attributes[i], "gcstack") && return arg
         end
@@ -2441,38 +2444,10 @@ function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value)
     return ptls_load
 end
 
-# the safepoint page of a thread (`get_current_signal_page_from_ptls`)
-function signal_page_from_ptls!(p::LateLowerGCFrame, @nospecialize(ptls::Value), tbaa::MDNode)
-    builder = p.builder
-    style = p.dialect.gc_safepoint_load
-    psafepoint = inbounds_gep!(builder, LLVM.Int8Type(), ptls,
-                               [ConstantInt(LLVM.Int32Type(), runtime_layout(p).tls_safepoint)],
-                               style === :monotonic_named ? "safepoint_addr" : "")
-    load = load!(builder, LLVM.PointerType(AS_GENERIC), psafepoint, "safepoint";
-                 align=pointer_align(p),
-                 ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
-                                             LLVM.API.LLVMAtomicOrderingMonotonic)
-    tbaa_decorate!(tbaa, load)
-    return load
-end
-
-function emit_signal_fence!(p::LateLowerGCFrame)
-    fence!(p.builder, LLVM.API.LLVMAtomicOrderingSequentiallyConsistent; scope="singlethread")
-end
-
 # a safepoint (`emit_gc_safepoint`, not final)
-function emit_gc_safepoint!(p::LateLowerGCFrame, @nospecialize(ptls::Value), tbaa::MDNode)
-    signal_page = signal_page_from_ptls!(p, ptls, tbaa)
-    emit_signal_fence!(p)
-    f = get(p.mod.functions, "julia.safepoint", nothing)
-    if f === nothing
-        f = LLVM.Function(p.mod, "julia.safepoint",
-                          LLVM.FunctionType(LLVM.VoidType(), [LLVM.PointerType(AS_GENERIC)]))
-        push!(f.function_attributes, inaccessible_or_arg_mem_only())
-    end
-    call!(p.builder, f.function_type, f, Value[signal_page])
-    emit_signal_fence!(p)
-end
+emit_gc_safepoint!(p::LateLowerGCFrame, @nospecialize(ptls::Value), tbaa::MDNode) =
+    emit_gc_safepoint!(p.builder, p.mod, ptls, p.dialect.gc_safepoint_load,
+                       runtime_layout(p).tls_safepoint, pointer_align(p), tbaa)
 
 # the GC stack of the function, created if there is none (Julia 1.12's `getOrAddPGCstack`)
 function get_or_add_pgcstack!(p::LateLowerGCFrame)

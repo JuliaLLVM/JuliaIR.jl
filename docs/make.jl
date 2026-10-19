@@ -13,6 +13,7 @@ function main()
         pages = [
             "Home" => "index.md",
             "LateLowerGCFrame" => "late_lower_gc_frame.md",
+            "CancellationLowering" => "cancellation_lowering.md",
             "Runtime facts" => "runtime.md",
             "Testing" => "testing.md",
             "API reference" => "api.md",

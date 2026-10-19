@@ -664,4 +664,90 @@ end
     end
 end
 
+@testset "CancellationLowering" begin
+    @test JuliaIR.CancellationLoweringPass().required
+    ir = """
+        declare i32 @julia.cancellation_point()
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @get_obj()
+        declare void @some_call()
+        declare token @llvm.julia.gc_preserve_begin(...)
+        declare void @llvm.julia.gc_preserve_end(token)
+        define i32 @point() {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %r = call i32 @julia.cancellation_point()
+          ret i32 %r
+        }
+        define void @ipo() "julia.ipo_reset_safe" {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          call void @some_call()
+          ret void
+        }
+        define void @none() {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          call void @some_call()
+          ret void
+        }
+        define void @preserve() {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call ptr addrspace(10) @get_obj()
+          %tok = call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %obj)
+          %r = call i32 @julia.cancellation_point()
+          call void @some_call()
+          call void @llvm.julia.gc_preserve_end(token %tok)
+          ret void
+        }"""
+    opts = JuliaIR.parse_options(""; extra=JuliaIR.CANCELLATION_LOWERING.extra)
+    lower(mod, name) = JuliaIR.cancellation_lowering!(mod.functions[name], nothing, opts)
+
+    if !dialect.has_cancellation_lowering
+        # the IR of Julia 1.13 and earlier has no cancellation points
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            before = string(mod)
+            for name in ("point", "ipo")
+                @test lower(mod, name) == PreservedAnalyses(AllAnalyses)
+            end
+            @test string(mod) == before
+        end
+    else
+        # a function with nothing to lower reads no runtime facts
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            empty!(JuliaIR.NATIVE_FACTS)
+            @test lower(mod, "none") == PreservedAnalyses(AllAnalyses)
+            @test isempty(JuliaIR.NATIVE_FACTS)
+        end
+
+        # without options, the running Julia's facts
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            rt = JuliaIR.runtime_layout(dialect, mod)
+            lower(mod, "point")
+            str = string(mod.functions["point"])
+            @test occursin("alloca [$(rt.reset_ctx_size) x i8], align $(rt.reset_ctx_align)", str)
+            @test occursin("getelementptr i8, ptr %pgcstack, i64 -$(rt.task_gcstack)", str)
+            @test occursin("getelementptr i8, ptr %current_task, i64 $(rt.task_reset_ctx)", str)
+            @test occursin("getelementptr i8, ptr %cancel_ucontext, i64 $(rt.reset_ctx_mctx)", str)
+            @test occursin("call i32 @$(rt.setjmp)(ptr %cancel_mctx", str)
+        end
+
+        # Splitting a block for a point changes the CFG; only clears and annotations don't.
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            @test lower(mod, "point") == PreservedAnalyses()
+            @test lower(mod, "ipo") == PreservedAnalyses(CFGAnalyses)
+            @test lower(mod, "none") == PreservedAnalyses(AllAnalyses)
+        end
+        # Julia's pass reports the CFG as preserved also when it splits a block: a
+        # dominator tree computed before it then lacks the new blocks, and
+        # LateLowerGCFrame took the object that `GC.@preserve` keeps alive across the call
+        # after the point for dead, without a GC frame to root it.
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) pb=PassBuilder() begin
+            JuliaIR.register!(pb)
+            add!(pb, "function(require<domtree>,jl-cancellation-lowering,jl-late-lower-gc-frame)")
+            run!(pb, mod)
+            str = string(mod.functions["preserve"])
+            @test occursin("@julia.push_gc_frame", str)
+            @test occursin(r"store ptr addrspace\(10\) %obj, ptr %gc_slot_addr", str)
+        end
+    end
+end
+
 end

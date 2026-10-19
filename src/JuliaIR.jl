@@ -9,6 +9,7 @@ include("registration.jl")
 include("runtime.jl")
 include("jlopt.jl")
 include("irutils.jl")
+include("codegen_shared.jl")
 
 include("allocations.jl")
 
@@ -23,6 +24,7 @@ include("passes/combine_muladd.jl")
 include("passes/lower_exc_handlers.jl")
 include("passes/lower_simdloop.jl")
 include("passes/expand_atomic_modify.jl")
+include("passes/cancellation_lowering.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
