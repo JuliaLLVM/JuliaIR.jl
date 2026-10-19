@@ -38,7 +38,6 @@ mutable struct LowerPTLS
     triple::LLVM.Triple
     builder::IRBuilder
     gc::GCCodegen
-    T_size::LLVMType
     # set up when the first getter is found
     FT_getter::Union{Nothing,LLVM.FunctionType}
     T_pppjlvalue::Union{Nothing,LLVMType}
@@ -108,7 +107,7 @@ function emit_pgcstack_tp!(p::LowerPTLS, offset::Union{Nothing,Value}, insert_be
         asm = thread_pointer_asm(p)
         asm === nothing && throw(LowerPTLSError(unsupported_target(p)))
         if offset === nothing
-            offset = ConstantInt(p.T_size, layout(p).tls_offset, true)
+            offset = ConstantInt(p.gc.T_size, layout(p).tls_offset, true)
         end
         ft = LLVM.FunctionType(T_ptr)
         tp = call!(builder, ft, InlineAsm(ft, asm, "=r", false), Value[], "thread_ptr")
@@ -131,7 +130,7 @@ end
 
 function load_slot!(p::LowerPTLS, T::LLVMType, slot::String)
     load = load!(p.builder, T, p.slots[slot])
-    tbaa = p.gc.tbaa.constant
+    tbaa = tbaa_tags(p.gc).constant
     tbaa_decorate!(tbaa, load, tbaa)
     return load
 end
@@ -210,7 +209,8 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
 
         # (the debug location stays the split point's, which `fast_term` has too)
         position!(builder, LLVM.before(fast_term))
-        ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, call), gc.tbaa.gcframe)
+        ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, call),
+                                       tbaa_tags(gc).gcframe)
         prior = emit_gc_unsafe_enter!(gc, ptls)
         # the safepoint ends the block in a branch; the fast path continues after it
         move!(fast_term, LLVM.at_end(builder.insert_block))
@@ -229,11 +229,11 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
                 ret isa LLVM.RetInst || continue
                 position_before!(builder, ret; debug=true)
                 ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, phi),
-                                               gc.tbaa.gcframe)
+                                               tbaa_tags(gc).gcframe)
                 if p.dialect.ptls_exit_safepoint
                     store!(builder, last_gc_state, gc_state_address!(gc, ptls);
                            align=GC_STATE_ALIGN, ordering=LLVM.API.LLVMAtomicOrderingRelease)
-                    emit_gc_final_safepoint!(gc, ptls, gc.tbaa.gcframe)
+                    emit_gc_final_safepoint!(gc, ptls, tbaa_tags(gc).gcframe)
                 else
                     emit_gc_unsafe_leave!(gc, ptls, last_gc_state)
                 end
@@ -248,8 +248,8 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             # offset = <the image's TLS offset>
             # if offset != 0:  pgcstack = <thread pointer> + offset    (fast)
             # else:            pgcstack = <the image's getter>()       (slow)
-            offset = load_slot!(p, p.T_size, p.dialect.ptls_image_offset_slot)
-            cmp = icmp!(builder, LLVM.API.LLVMIntNE, offset, ConstantInt(p.T_size, 0))
+            offset = load_slot!(p, p.gc.T_size, p.dialect.ptls_image_offset_slot)
+            cmp = icmp!(builder, LLVM.API.LLVMIntNE, offset, ConstantInt(p.gc.T_size, 0))
             fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, call;
                                                                         weights=(9, 1))
             p.cfg_modified = true
@@ -269,7 +269,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         # another indirection)
         getter_ptr = load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT)
         if LLVM.isdarwin(p.triple)
-            key = load_slot!(p, p.T_size, PGCSTACK_KEY_SLOT)
+            key = load_slot!(p, p.gc.T_size, PGCSTACK_KEY_SLOT)
             new_call = call!(builder, p.FT_getter, getter_ptr, Value[key])
             take_name!(new_call, call)
             replace_uses!(call, new_call)
@@ -284,9 +284,9 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         erase!(call)
     elseif p.dialect.ptls_jit_getter === :address
         # the runtime's getter, at its address in this process
-        target = const_inttoptr(ConstantInt(p.T_size, layout(p).pgcstack_getter), T_ptr)
+        target = const_inttoptr(ConstantInt(p.gc.T_size, layout(p).pgcstack_getter), T_ptr)
         if LLVM.isdarwin(p.triple)
-            key = ConstantInt(p.T_size, layout(p).pgcstack_key)
+            key = ConstantInt(p.gc.T_size, layout(p).pgcstack_key)
             position_before!(builder, call; debug=false)
             new_call = call!(builder, p.FT_getter, target, Value[key])
             take_name!(new_call, call)
@@ -315,7 +315,7 @@ end
 # that exists already is reused (the C++ adds another, with a suffixed name).
 function slot_type(p::LowerPTLS, name::String)
     name == PGCSTACK_FUNC_SLOT && return LLVM.PointerType(AS_GENERIC)
-    return p.T_size
+    return p.gc.T_size
 end
 
 function check_slot(p::LowerPTLS, name::String)
@@ -346,7 +346,7 @@ slot_names(p::LowerPTLS) =
 function init!(p::LowerPTLS, getter::LLVM.Function)
     ft = getter.function_type
     if LLVM.isdarwin(p.triple)
-        ft = LLVM.FunctionType(LLVM.return_type(ft), [p.T_size])
+        ft = LLVM.FunctionType(LLVM.return_type(ft), [p.gc.T_size])
     end
     p.FT_getter = ft
     p.T_pppjlvalue = LLVM.return_type(ft)
@@ -423,11 +423,9 @@ function lower_ptls!(mod::LLVM.Module, am, opts::PassOptions)
                for name in (PGCSTACK_GETTER, PGCSTACK_GETTER_OR_NEW)]
     all(g -> g[2] === nothing, getters) && return PreservedAnalyses(AllAnalyses)
     @dispose builder=IRBuilder() begin
-        dl = mod.datalayout
-        T_size = intptr(dl)
-        gc = GCCodegen(builder, dialect, runtime_layout(opts, mod), dl, T_size)
+        gc = GCCodegen(dialect, mod, builder, runtime_layout(opts, mod))
         p = LowerPTLS(mod, dialect, imaging, tls_getters, effective_triple(mod), builder, gc,
-                      T_size, nothing, nothing, Dict{String,LLVM.GlobalVariable}(), false)
+                      nothing, nothing, Dict{String,LLVM.GlobalVariable}(), false)
         calls = check_lower_ptls(p, getters)
         for (name, getter, or_new) in getters
             getter === nothing && continue
