@@ -39,6 +39,7 @@ read it first, including its Log). This file says where things are and how to co
 | S29a local performance fixes (TBAA, attributes, type stability, module facts) | done, branch `tb/s29-local-perf` (on S11) | see `git log` |
 | S23 Julia's pipeline rebuilt from the ports (`julia<...>`), parts 2 and 3 | done, branch `tb/s23-pipelines` (on S29a) | see `git log` |
 | S33 pass options and GC codegen helpers consolidated (S-D33) | done, branch `tb/s33-consolidate` (on S23) | see `git log` |
+| jlopt as a Pkg app (`[apps]`, `@main` in `src/app.jl` on Julia 1.11+, docs in testing.md) | done, branch `tb/jlopt-app` (on S33) | see `git log` |
 
 S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
 LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks
