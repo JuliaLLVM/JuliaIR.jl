@@ -131,7 +131,8 @@ end
 
 function load_slot!(p::LowerPTLS, T::LLVMType, slot::String)
     load = load!(p.builder, T, p.slots[slot])
-    tbaa_decorate!(tbaa_const(), load)
+    tbaa = p.gc.tbaa.constant
+    tbaa_decorate!(tbaa, load, tbaa)
     return load
 end
 
@@ -209,7 +210,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
 
         # (the debug location stays the split point's, which `fast_term` has too)
         position!(builder, LLVM.before(fast_term))
-        ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, call), tbaa_gcframe())
+        ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, call), gc.tbaa.gcframe)
         prior = emit_gc_unsafe_enter!(gc, ptls)
         # the safepoint ends the block in a branch; the fast path continues after it
         move!(fast_term, LLVM.at_end(builder.insert_block))
@@ -228,11 +229,11 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
                 ret isa LLVM.RetInst || continue
                 position_before!(builder, ret; debug=true)
                 ptls = current_ptls_from_task!(gc, current_task_from_pgcstack!(gc, phi),
-                                               tbaa_gcframe())
+                                               gc.tbaa.gcframe)
                 if p.dialect.ptls_exit_safepoint
                     store!(builder, last_gc_state, gc_state_address!(gc, ptls);
                            align=GC_STATE_ALIGN, ordering=LLVM.API.LLVMAtomicOrderingRelease)
-                    emit_gc_final_safepoint!(gc, ptls, tbaa_gcframe())
+                    emit_gc_final_safepoint!(gc, ptls, gc.tbaa.gcframe)
                 else
                     emit_gc_unsafe_leave!(gc, ptls, last_gc_state)
                 end

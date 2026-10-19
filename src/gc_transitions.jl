@@ -6,14 +6,19 @@
 # expected to move to a shared file of GC helpers.
 
 # What the helpers need: the builder (positioned by the caller, with the debug location
-# the C++ builder would have), the dialect, the runtime facts, and the module's layout.
+# the C++ builder would have), the dialect, the runtime facts, the module's layout, and
+# Julia's TBAA tags.
 struct GCCodegen
     builder::IRBuilder
     dialect::Dialect
     layout::Any         # RuntimeFacts, or anything with the same properties
     dl::DataLayout
     T_size::LLVMType
+    tbaa::TBAATags
 end
+
+GCCodegen(builder::IRBuilder, dialect::Dialect, layout, dl::DataLayout, T_size::LLVMType) =
+    GCCodegen(builder, dialect, layout, dl, T_size, TBAATags())
 
 gc_pointer_size(g::GCCodegen) = storage_size(g.dl, LLVM.PointerType(AS_GENERIC))
 gc_pointer_align(g::GCCodegen) = abi_alignment(g.dl, LLVM.PointerType(AS_GENERIC))
@@ -45,7 +50,7 @@ function current_ptls_from_task!(g::GCCodegen, @nospecialize(task::Value), tbaa:
                       [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
     end
     ptls_load = load!(g.builder, T_ptr, pptls, "ptls_load"; align=gc_pointer_align(g))
-    tbaa_decorate!(tbaa, ptls_load)
+    tbaa_decorate!(tbaa, ptls_load, g.tbaa.constant)
     return ptls_load
 end
 
@@ -65,7 +70,7 @@ function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value), tbaa::
     load = load!(g.builder, T_ptr, psafepoint, "safepoint"; align=gc_pointer_align(g),
                  ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
                                              LLVM.API.LLVMAtomicOrderingMonotonic)
-    tbaa_decorate!(tbaa, load)
+    tbaa_decorate!(tbaa, load, g.tbaa.constant)
     return load
 end
 
@@ -129,7 +134,7 @@ function emit_gc_state_set!(g::GCCodegen, @nospecialize(ptls::Value), state::Val
     end
     br!(builder, cond, pass_bb, exit_bb)
     position!(builder, LLVM.at_end(pass_bb))
-    emit_gc_final_safepoint!(g, ptls, tbaa_const())
+    emit_gc_final_safepoint!(g, ptls, g.tbaa.constant)
     br!(builder, exit_bb)
     position!(builder, LLVM.at_end(exit_bb))
     return old_state
