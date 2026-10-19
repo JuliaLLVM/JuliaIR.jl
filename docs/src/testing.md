@@ -80,12 +80,20 @@ pkg> app develop /path/to/JuliaIR.jl
 Pkg writes the `jlopt` command into `~/.julia/bin`, which you need to add to your `PATH`
 yourself. `app add` installs the package into an environment of its own,
 `~/.julia/environments/apps/JuliaIR`; `app develop` runs the checkout, with its
-`Project.toml` and manifest.
+`Project.toml` and manifest. `app develop` instantiates the checkout first, which with
+JuliaIR's workspace also installs the dependencies of the tests and the docs.
 
 The command runs the Julia that installed it, and `jlopt` processes IR of the running
 Julia's version: an app installed with Julia 1.12 is a driver for the IR of 1.12. To
 work on another version's IR, install it again with that Julia (the command of the last
-installation wins).
+installation wins). The command that Pkg 1.12 and 1.13 write also runs the Julia that
+the environment variable `JULIA_APPS_JULIA_CMD` names, if it is set, which picks the
+version per run instead (the environment the app runs in must then work with that
+Julia too, e.g. a checkout with a manifest per Julia version).
+
+That command passes the arguments before a `--` to Julia rather than to `jlopt`, e.g.
+`jlopt --threads=4 -- -passes=jl-remove-ni -S in.ll`; to give `jlopt` itself a `--`,
+write another one before it. Both behaviours are Pkg's and may change with it.
 
 To run the passes on a standalone LLVM, as in mode B below, set LLVM.jl's `libLLVM`
 preference in the `LocalPreferences.toml` of the environment the app runs in: of

@@ -212,7 +212,6 @@ end
     @test proc.exitcode == 1 && proc.termsignal == 0
 end
 
-
 @testset "app entry point" begin
     # the `jlopt` app of Project.toml runs `JuliaIR.main` (`@main`, Julia 1.11 and later)
     @test isdefined(JuliaIR, :main) == isdefined(Base, Symbol("@main"))
@@ -233,7 +232,8 @@ end
                -m JuliaIR -passes=jl-remove-ni -S`
         out = read(pipeline(cmd; stdin=IOBuffer(ir)), String)
         @test occursin("; ModuleID = '<stdin>'", out)
-        @test !success(pipeline(`$cmd -frobnicate`; stdin=devnull, stderr=devnull))
+        proc = run(pipeline(ignorestatus(`$cmd -frobnicate`); stdin=devnull, stderr=devnull))
+        @test proc.exitcode == 1 && proc.termsignal == 0
     end
 end
 
