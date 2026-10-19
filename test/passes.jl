@@ -827,16 +827,18 @@ end
             end
             # the signature of setjmp, explicitly
             out = lower(""; handler_size=264, handler_align=16, setjmp="__sigsetjmp",
-                        setjmp_savemask=:no)
+                        setjmp_savemask=false)
             @test occursin("call i32 @__sigsetjmp(ptr %1)", out)
             out = lower("x86_64-w64-mingw32"; handler_size=320, handler_align=16,
-                        setjmp="jl_setjmp", setjmp_savemask=:yes)
+                        setjmp="jl_setjmp", setjmp_savemask=true)
             @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
             opts = JuliaIR.parse_options("setjmp-savemask=no";
                                          options=JuliaIR.LOWER_EXC_HANDLERS.options)
-            @test opts.extra.setjmp_savemask === :no
-            @test_throws "invalid option setjmp-savemask" lower(""; handler_size=264,
-                handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:maybe)
+            @test opts.extra.setjmp_savemask === false
+            @test_throws "option setjmp-savemask requires yes or no" JuliaIR.parse_options(
+                "setjmp-savemask=auto"; options=JuliaIR.LOWER_EXC_HANDLERS.options)
+            @test_throws "must be a Bool or `nothing`" lower(""; handler_size=264,
+                handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:auto)
         end
 
         @testset "lowering" begin

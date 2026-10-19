@@ -230,7 +230,7 @@ function lower_point!(p::CancellationLowering, point::Instruction,
     mctx = gep!(builder, T_int8, buffer, [ConstantInt(T_int64, rt.reset_ctx_mctx)],
                 "cancel_mctx")
     # like the code generator's setjmp: Windows' takes no savemask argument
-    savemask = setjmp_savemask(:auto, p.mod.triple)
+    savemask = setjmp_savemask(nothing, p.mod.triple)
     setjmp_type = LLVM.FunctionType(T_int32, savemask ? LLVMType[T_ptr, T_int32] : LLVMType[T_ptr])
     setjmp_func = get_or_insert_function!(p.mod, rt.setjmp, setjmp_type)
     setjmp = call!(builder, setjmp_type, setjmp_func,
@@ -484,10 +484,12 @@ const CANCELLATION_LOWERING =
                 cpp_name="CancellationLowering")
 
 """
-    JuliaIR.CancellationLoweringPass(; task_gcstack=0, task_ptls=0, task_eh=0,
-                                     task_reset_ctx=0, tls_safepoint=0, reset_ctx_size=0,
-                                     reset_ctx_align=0, reset_ctx_gcstack=0,
-                                     reset_ctx_eh=0, reset_ctx_mctx=0, setjmp="")
+    JuliaIR.CancellationLoweringPass(; task_gcstack=nothing, task_ptls=nothing,
+                                     task_eh=nothing, task_reset_ctx=nothing,
+                                     tls_safepoint=nothing, reset_ctx_size=nothing,
+                                     reset_ctx_align=nothing, reset_ctx_gcstack=nothing,
+                                     reset_ctx_eh=nothing, reset_ctx_mctx=nothing,
+                                     setjmp=nothing)
 
 Lower the cancellation points (`julia.cancellation_point()` calls, from
 `Base.@cancel_check`) that Julia 1.14 and later emit into reset regions

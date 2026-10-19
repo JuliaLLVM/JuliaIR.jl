@@ -239,11 +239,8 @@ end
 # triple is for Windows, whatever the running Julia's runtime (whose setjmp name is used
 # regardless). The triple is taken apart like LLVM's `Triple` constructor does, without
 # normalizing it: `x86_64-w64-mingw32` isn't Windows to the C++ pass either.
-function setjmp_savemask(option::Symbol, triple::String)
-    option === :yes && return true
-    option === :no && return false
-    option === :auto ||
-        throw(ArgumentError("invalid option setjmp-savemask=$option; expected yes or no"))
+function setjmp_savemask(option::Union{Nothing,Bool}, triple::String)
+    option === nothing || return option
     parts = split(triple, '-')
     windows = length(parts) >= 3 &&
               (startswith(parts[3], "windows") || startswith(parts[3], "win32"))
@@ -253,12 +250,12 @@ end
 const LOWER_EXC_HANDLERS =
     define_pass("jl-lower-exc-handlers", :function, lower_exc_handlers!; required=true,
                 options=(; runtime_options(:handler_size, :handler_align, :setjmp)...,
-                       setjmp_savemask=:auto),
+                       setjmp_savemask=option(Union{Nothing,Bool}, nothing)),
                 cpp_name="LowerExcHandlers")
 
 """
-    JuliaIR.LowerExcHandlersPass(; handler_size=0, handler_align=0, setjmp="",
-                                 setjmp_savemask=:auto)
+    JuliaIR.LowerExcHandlersPass(; handler_size=nothing, handler_align=nothing,
+                                 setjmp=nothing, setjmp_savemask=nothing)
 
 Lower Julia's exception handlers (`julia.except_enter` and the matching
 `jl_pop_handler` calls) to calls of the runtime's `jl_enter_handler` and `setjmp` on
@@ -270,6 +267,7 @@ exception handler structure and the name of its `setjmp`), which is taken from t
 running Julia (see [`JuliaIR.runtime_layout`](@ref)), only for functions that have
 handlers; `handler_size`, `handler_align` and `setjmp` give these facts explicitly. Like
 Julia's pass, `setjmp` is called with a `savemask` argument unless the module's triple is
-for Windows; `setjmp_savemask` (`:yes` or `:no`) overrides that.
+for Windows; `setjmp_savemask` (`true` or `false`, `setjmp-savemask=yes` or `no` in a
+pipeline) overrides that.
 """
 LowerExcHandlersPass(; kwargs...) = custom_pass(LOWER_EXC_HANDLERS; kwargs...)

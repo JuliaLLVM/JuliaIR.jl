@@ -32,14 +32,18 @@ const RUNTIME_FACTS = (
     cfuncdata_size = "the size of the call-site data of a `@cfunction` (`cfuncdata_t`)",
 )
 
-# the declaration of the option that gives a fact explicitly; its default means "not
-# given"
+# the declaration of the option that gives a fact explicitly (`nothing` when it isn't)
 function fact_option(name::Symbol)
-    name === :setjmp && return option(String, "")
-    name in (:tls_elf_support, :cfunction_cache) && return option(Symbol, :auto)
+    name === :setjmp && return option(Union{Nothing,String}, nothing; valid=!isempty,
+                                      requirement="a non-empty string")
+    name === :tls_elf_support && return option(Union{Nothing,Bool}, nothing)
+    name === :cfunction_cache &&
+        return option(Union{Nothing,Symbol}, nothing; valid=in((:arguments, :cfuncdata)),
+                      requirement="arguments or cfuncdata")
     name === :tls_offset && return option(Union{Nothing,Int}, nothing)
     name in (:pgcstack_getter, :pgcstack_key) && return option(Union{Nothing,UInt}, nothing)
-    return option(Int, 0; valid=(>=(0)), requirement="a non-negative integer")
+    return option(Union{Nothing,Int}, nothing; valid=(>=(0)),
+                  requirement="a non-negative integer")
 end
 
 """
@@ -92,17 +96,7 @@ running_julia() = "Julia $(VERSION.major).$(VERSION.minor)"
 function runtime_fact(rt::RuntimeFacts, name::Symbol)
     overrides = getfield(rt, :overrides)
     given = get(overrides, name, nothing)
-    if given !== nothing && given != fact_option(name).default
-        if name === :tls_elf_support
-            given === :yes && return true
-            given === :no && return false
-            throw(ArgumentError("invalid option $(option_key(name))=$given; expected yes or no"))
-        elseif name === :cfunction_cache
-            given in (:arguments, :cfuncdata) ||
-                throw(ArgumentError("invalid option $(option_key(name))=$given; expected arguments or cfuncdata"))
-        end
-        return given
-    end
+    given === nothing || return given
     dialect = getfield(rt, :dialect)
     julia = "Julia $(dialect.minor.major).$(dialect.minor.minor)"
     what = "$(RUNTIME_FACTS[name]) (`$name`) of $julia's runtime"
@@ -150,10 +144,11 @@ With `PassOptions`, the facts given explicitly come from the pass's options (see
 [`JuliaIR.runtime_options`](@ref)).
 """
 function runtime_layout(dialect::Dialect, mod::LLVM.Module; facts...)
-    for (k, _) in facts
+    given = map(collect(pairs(facts))) do (k, v)
         haskey(RUNTIME_FACTS, k) || throw(ArgumentError("unknown runtime fact $k"))
+        k => convert_option(fact_option(k), v, "the runtime fact $k")
     end
-    return RuntimeFacts(dialect, values(facts))
+    return RuntimeFacts(dialect, (; given...))
 end
 
 function runtime_layout(opts::PassOptions, mod::LLVM.Module)
