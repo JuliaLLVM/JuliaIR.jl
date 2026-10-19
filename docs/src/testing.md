@@ -358,3 +358,9 @@ GPU-like inputs of `jl-late-gc-cleanup`), the names of its remarks, or that the 
 aborts on rejected input. A pass with options is compared in each configuration by a
 `PassSpec` per configuration, each with its own name (the key of its exceptions) and the
 pipeline elements of both sides with the options, like `GCInvariantVerifier<strong>`.
+
+Julia's whole pipeline is compared the same way, at each level: `julia<level=N>` with
+Julia's C++ passes against the pipeline that JuliaIR rebuilds from the ports (with the
+C++ passes that have no port yet). The deviations recorded for the ports it runs apply
+to it as well (`inherits`); its own entries in `exceptions.toml` cover those whose
+rewrite differs once the whole pipeline ran.
