@@ -1,11 +1,11 @@
 ; LowerExcHandlers on the IR of Julia 1.12, whose `julia.except_enter` takes the current
 ; task and returns the result of setjmp together with the handler buffer. The runtime
 ; profile is given explicitly, so the output doesn't depend on the host: a Unix-like
-; one, and a Windows-like one whose setjmp takes no savemask argument. The lifetime
+; one, and a Windows one, whose triple drops setjmp's savemask argument. The lifetime
 ; markers lost their size argument in LLVM 22.
 
 ; RUN: opt -julia=1.12 -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=__sigsetjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,UNIX
-; RUN: opt -julia=1.12 -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS
+; RUN: opt -julia=1.12 -mtriple=x86_64-w64-windows-gnu -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS
 
 ; Julia 1.13 and later have no LowerExcHandlers: nothing changes, and no runtime facts
 ; are needed

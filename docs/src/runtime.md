@@ -1,0 +1,61 @@
+# Runtime facts
+
+Some of Julia's passes lower the IR to code that works with Julia's runtime directly: they
+load the thread-local state from the current task, or set up exception handlers. To do
+so, they need facts that the IR doesn't spell out: the offsets of fields in the runtime's
+task and thread-local state, the size of an exception handler (which contains the C
+library's `jmp_buf`), the name of the runtime's `setjmp`, and how to read the thread
+pointer. Julia's C++ passes compile these facts in from Julia's headers.
+
+JuliaIR.jl processes the IR of the Julia version it runs on, so the ports take these
+facts from the running Julia. Like the C++ passes, they use them whatever target the
+module is for: IR for targets without Julia's runtime, like GPUs, doesn't need them.
+What the C++ passes take from the module stays a property of the module: whether `setjmp`
+takes a `savemask` argument, for instance, follows the module's triple (none on Windows),
+not the running Julia. A pass reads the facts through [`JuliaIR.runtime_layout`](@ref):
+
+```julia
+rt = JuliaIR.runtime_layout(dialect, mod)
+rt.task_ptls      # 168 on Julia 1.12 on a 64-bit machine
+rt.handler_size   # 264 on Julia 1.12 on x86-64 Linux
+```
+
+## Where the facts come from
+
+A fact is looked up when a pass reads it, so IR that doesn't need it (e.g. a function
+without exception handlers) is processed without:
+
+1. A pass option of the same name gives the fact explicitly, e.g.
+   `jl-lower-exc-handlers<handler-size=264;setjmp=__sigsetjmp>`.
+2. Otherwise, the fact is read from the running Julia, if the IR is of its version (the
+   default of the passes' `julia` option).
+3. Otherwise, the pass throws a [`JuliaIR.RuntimeError`](@ref) that names the fact and
+   the option that gives it. The same error is thrown when the running Julia doesn't have
+   the fact (e.g. the reset context of cancellation points before Julia 1.14) or when it
+   can't be read.
+
+## How they are read
+
+Julia doesn't export most of these facts: `jl_task_t`'s runtime fields and
+`jl_tls_states_t` aren't Julia types, so `fieldoffset` doesn't reach them. Each fact is
+read the first time a pass needs it, once per process:
+
+| Facts | Read from |
+|-------|-----------|
+| `task_gcstack` | the task's `pgcstack` (`jl_get_pgcstack`) relative to the current task |
+| `task_eh` | the field of the current task that changes inside a `try` and is restored after it |
+| `tls_gc_state` | the byte of the thread-local state that becomes `JL_GC_STATE_SAFE` across `jl_gc_safe_enter` |
+| `tls_elf_support` | the runtime's `jl_tls_elf_support` |
+| `task_ptls`, `tls_safepoint`, `tp_asm` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it; the inline assembly that reads the thread pointer, where Julia's JIT uses one (not on macOS or Windows) |
+| `handler_size`, `handler_align`, `setjmp` | the code Julia generates for a `try`: the stack buffer that `setjmp` is called on (lowered by Julia's LowerExcHandlers up to Julia 1.12, emitted by its code generator later) |
+| `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.14 and later) |
+
+The generated code is the text that `code_llvm` prints for a small function, parsed
+into a context of the LLVM library that LLVM.jl uses, which may be newer than Julia's
+own. If that code doesn't have the expected shape, reading the fact throws a
+`RuntimeError` that shows it.
+
+The package tests compare every fact with an independent check where one exists (the
+runtime's `jl_get_ptls_states`, the C library's `setjmp`, the pool offsets Julia emits for
+an allocation against `jl_gc_classify_pools`, ...), and with the values measured on
+x86-64 Linux at each Julia version.

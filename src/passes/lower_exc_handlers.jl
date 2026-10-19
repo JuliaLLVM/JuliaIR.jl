@@ -5,8 +5,9 @@
 # `julia.except_enter` by `jl_enter_handler` on that buffer followed by `setjmp`, with
 # lifetime markers around the buffer's use. Port of Julia's `src/llvm-lower-handlers.cpp`
 # (Julia 1.10 to 1.12; later versions emit the handlers directly and don't have the
-# pass). The size of `jl_handler_t` and the name of `setjmp` come from the runtime
-# profile (`src/runtime.jl`).
+# pass). The size of `jl_handler_t` and the name of `setjmp` are facts of the runtime
+# (`src/runtime.jl`); whether `setjmp` takes a `savemask` argument follows the module's
+# triple, as in the C++ pass.
 #
 # Like the C++ pass, this assumes handlers are properly nested and that the nesting depth
 # at the start of a block doesn't depend on the path to it, which holds for the IR
@@ -125,7 +126,12 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
     # lowers handlers, so that the runtime facts are only needed then.
     isempty(enters) && isempty(leaves) && return PreservedAnalyses(AllAnalyses)
 
-    profile = resolve_runtime(opts.extra, dialect, mod)
+    rt = runtime_layout(opts, mod)
+    handler_size = rt.handler_size
+    # the C++ pass aligns the buffers to 16 bytes, more than any target's jl_handler_t needs
+    handler_align = max(16, rt.handler_align)
+    setjmp_name = rt.setjmp
+    savemask = setjmp_savemask(opts.extra.setjmp_savemask, mod.triple)
     facts = library_facts(context(f))
     T_ptr = LLVM.PointerType()
     T_void = LLVM.VoidType()
@@ -137,17 +143,17 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
                               LLVMType[T_ptr]
     jlenter_func = runtime_function!(mod, ENTER_HANDLER,
                                      LLVM.FunctionType(T_void, enter_params))
-    setjmp_func = get(fns, profile.setjmp, nothing)
+    setjmp_func = get(fns, setjmp_name, nothing)
     if setjmp_func === nothing
-        params = profile.setjmp_savemask ? LLVMType[T_ptr, T_int32] : LLVMType[T_ptr]
-        setjmp_func = runtime_function!(mod, profile.setjmp,
+        params = savemask ? LLVMType[T_ptr, T_int32] : LLVMType[T_ptr]
+        setjmp_func = runtime_function!(mod, setjmp_name,
                                         LLVM.FunctionType(T_int32, params))
         push!(setjmp_func.function_attributes, EnumAttribute("returns_twice"))
     end
     lifetime_start = LLVM.Function(mod, LIFETIME_START, LLVMType[T_ptr])
     lifetime_end = LLVM.Function(mod, LIFETIME_END, LLVMType[T_ptr])
     lifetime_args(buff) = facts.lifetime_size ?
-        Value[ConstantInt(T_int64, profile.handler_size), buff] : Value[buff]
+        Value[ConstantInt(T_int64, handler_size), buff] : Value[buff]
 
     @dispose builder=IRBuilder() begin
         # step 2: one buffer per nesting level, in the entry block; separate allocas, so
@@ -159,8 +165,8 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
         builder.debug_location = nothing
         for _ in 1:max_depth
             buff = array_alloca!(builder, LLVM.Int8Type(),
-                                 ConstantInt(T_int32, profile.handler_size);
-                                 align=profile.handler_align)
+                                 ConstantInt(T_int32, handler_size);
+                                 align=handler_align)
             if alloca_as != 0
                 buff = addrspacecast!(builder, buff, LLVM.PointerType(AS_GENERIC))
             end
@@ -174,7 +180,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
             call!(builder, lifetime_start.function_type, lifetime_start, lifetime_args(buff))
             args = task_arg ? Value[enter.arguments[1], buff] : Value[buff]
             new_enter = call!(builder, jlenter_func.function_type, jlenter_func, args)
-            sj_args = profile.setjmp_savemask ? Value[buff, ConstantInt(T_int32, 0)] :
+            sj_args = savemask ? Value[buff, ConstantInt(T_int32, 0)] :
                                                 Value[buff]
             sj = call!(builder, setjmp_func.function_type, setjmp_func, sj_args)
             # also on the call site, see JuliaLang/julia#6757
@@ -218,14 +224,30 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
     return PreservedAnalyses(CFGAnalyses)
 end
 
-const LOWER_EXC_HANDLERS = define_pass("jl-lower-exc-handlers", :function,
-                                       lower_exc_handlers!; required=true,
-                                       extra=RUNTIME_OPTIONS,
-                                       cpp_name="LowerExcHandlers")
+# Whether setjmp takes a `savemask` argument: as in the C++ pass, unless the module's
+# triple is for Windows, whatever the running Julia's runtime (whose setjmp name is used
+# regardless). The triple is taken apart like LLVM's `Triple` constructor does, without
+# normalizing it: `x86_64-w64-mingw32` isn't Windows to the C++ pass either.
+function setjmp_savemask(option::Symbol, triple::String)
+    option === :yes && return true
+    option === :no && return false
+    option === :auto ||
+        throw(ArgumentError("invalid option setjmp-savemask=$option; expected yes or no"))
+    parts = split(triple, '-')
+    windows = length(parts) >= 3 &&
+              (startswith(parts[3], "windows") || startswith(parts[3], "win32"))
+    return !windows
+end
+
+const LOWER_EXC_HANDLERS =
+    define_pass("jl-lower-exc-handlers", :function, lower_exc_handlers!; required=true,
+                extra=(; runtime_options(:handler_size, :handler_align, :setjmp)...,
+                       setjmp_savemask=:auto),
+                cpp_name="LowerExcHandlers")
 
 """
-    JuliaIR.LowerExcHandlersPass(; julia=VERSION, runtime=:auto, handler_size=0,
-                                 handler_align=0, setjmp="")
+    JuliaIR.LowerExcHandlersPass(; julia=VERSION, handler_size=0, handler_align=0,
+                                 setjmp="", setjmp_savemask=:auto)
 
 Lower Julia's exception handlers (`julia.except_enter` and the matching
 `jl_pop_handler` calls) to calls of the runtime's `jl_enter_handler` and `setjmp` on
@@ -233,9 +255,10 @@ stack buffers (`jl-lower-exc-handlers` in a pipeline). Only Julia 1.10 to 1.12 e
 these; for later dialects the pass does nothing.
 
 The lowering depends on the Julia runtime the code will run with (the size of its
-exception handler structure and the name of its `setjmp`): give them with
-`handler_size`, `handler_align` and `setjmp`, or use the running Julia's with
-`runtime=:native` (see [`JuliaIR.resolve_runtime`](@ref)). They are only needed for
-functions that have handlers.
+exception handler structure and the name of its `setjmp`), which is taken from the
+running Julia (see [`JuliaIR.runtime_layout`](@ref)), only for functions that have
+handlers; `handler_size`, `handler_align` and `setjmp` give these facts explicitly. Like
+Julia's pass, `setjmp` is called with a `savemask` argument unless the module's triple is
+for Windows; `setjmp_savemask` (`:yes` or `:no`) overrides that.
 """
 LowerExcHandlersPass(; kwargs...) = custom_pass(LOWER_EXC_HANDLERS; kwargs...)

@@ -18,14 +18,27 @@ GCInvariantVerifier (`jl-gc-invariant-verifier`), LowerExcHandlers
 (`jl-lower-exc-handlers`), and the cleanup part of LateLowerGCFrame for functions without
 a GC frame, as on GPUs (`jl-late-gc-cleanup`).
 
-## Supported dialects and libraries
+## What is supported
 
-- The IR dialect of Julia 1.10 up to the current development version, selected with a
-  `julia` version option on every pass (defaulting to the running Julia's `VERSION`).
-- Opaque pointers only. Julia 1.10 emits typed pointers by default; its IR is supported
-  when parsed into a context with opaque pointers (`Context(; opaque_pointers=true)`),
-  which upgrades it.
-- Any LLVM library supported by LLVM.jl.
+- **The IR of the running Julia.** JuliaIR.jl processes the IR that the Julia version it
+  runs on generates: Julia 1.12 processes Julia 1.12's IR, not that of an older or newer
+  Julia. Every Julia version from 1.10 up to the current development version is
+  supported this way.
+- **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
+  Julia bundles, and on newer LLVM versions, e.g. a separately built library like
+  libLLVMGPU.
+- **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
+  supported when parsed into a context with opaque pointers
+  (`Context(; opaque_pointers=true)`), which upgrades it.
+
+Every pass has a `julia` version option, which defaults to the running Julia's `VERSION`.
+It exists for testing (the package's tests check the passes on the IR of every Julia
+version, on any Julia); don't use it to process the IR of another Julia version.
+
+Some passes need facts about Julia's runtime that the IR doesn't state, such as the
+offsets of fields in the current task or the size of an exception handler. They take
+these from the running Julia, or from pass options that give them explicitly; IR for
+GPUs doesn't need them.
 
 ## Usage
 
@@ -37,13 +50,13 @@ using LLVM, LLVM.IR, LLVM.Passes, JuliaIR
 
 @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
     mod = parse(LLVM.Module, ir)
-    JuliaIR.register!(pb; julia=v"1.12")
+    JuliaIR.register!(pb)
     add!(pb, "jl-remove-ni")
     run!(pb, mod)
 end
 ```
 
-or construct a single pass: `run!(JuliaIR.RemoveNIPass(; julia=v"1.12"), mod)`. The pass
+or construct a single pass: `run!(JuliaIR.RemoveNIPass(), mod)`. The pass
 names start with `jl-`, so they never clash with Julia's own C++ passes, which are also
 available when running on Julia's LLVM.
 

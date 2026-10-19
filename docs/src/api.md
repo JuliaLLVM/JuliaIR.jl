@@ -33,8 +33,10 @@ JuliaIR.parse_options
 ## Runtime facts
 
 ```@docs
-JuliaIR.RuntimeProfile
-JuliaIR.resolve_runtime
+JuliaIR.runtime_layout
+JuliaIR.runtime_fact
+JuliaIR.RuntimeFacts
+JuliaIR.runtime_options
 JuliaIR.RuntimeError
 ```
 

@@ -289,61 +289,76 @@ end
           ret void
         }"""
     lowered(mod) = !occursin("call { i32, ptr } @julia.except_enter", string(mod))
-    resolve(mod; julia=v"1.12", kwargs...) =
-        JuliaIR.resolve_runtime(merge(JuliaIR.RUNTIME_OPTIONS, values(kwargs)),
-                                JuliaIR.Dialect(julia), mod)
-
-    @testset "runtime profile" begin
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
-            # explicit profiles; the setjmp name implies its signature
-            p = resolve(mod; handler_size=264, handler_align=16, setjmp="__sigsetjmp")
-            @test p == JuliaIR.RuntimeProfile(264, 16, "__sigsetjmp", true)
-            p = resolve(mod; julia=v"1.10", handler_size=256, handler_align=16, setjmp="jl_setjmp")
-            @test !p.setjmp_savemask
-            @test_throws "needs all of" resolve(mod; handler_size=264)
-            @test resolve(mod; runtime=:native, handler_size=264, handler_align=16,
-                          setjmp="sigsetjmp") == JuliaIR.RuntimeProfile(264, 16, "sigsetjmp", true)
-            @test_throws "invalid option runtime" resolve(mod; runtime=:host)
-            @test_throws "invalid handler alignment" resolve(mod; handler_size=264,
-                                                              handler_align=3, setjmp="x")
-
-            # the running Julia's facts, only for its own dialect; a module without a
-            # triple only gets them with runtime=native
-            if native_minor <= v"1.12"
-                @test_throws "no target triple" resolve(mod; julia=VERSION)
-                p = resolve(mod; julia=VERSION, runtime=:native)
-                @test p.handler_size > 64 && p.handler_align == 16
-                @test p.setjmp == (Sys.iswindows() ? p.setjmp : Sys.islinux() ? "__sigsetjmp" : "sigsetjmp")
-                @test p.setjmp_savemask
-            else
-                @test_throws JuliaIR.RuntimeError resolve(mod; julia=v"1.12", runtime=:native)
-            end
-            if VERSION >= v"1.11"
-                @test_throws "not of the running Julia" resolve(mod; julia=v"1.10", runtime=:native)
-            end
+    function lower(triple; julia=v"1.12", kwargs...)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir(; triple)) begin
+            run!(JuliaIR.LowerExcHandlersPass(; julia, kwargs...), mod)
+            @test lowered(mod)
+            return string(mod)
         end
-        # a module for the host gets the running Julia's facts in both modes
-        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module,
-                                                             ir(; triple=LLVM.default_triple())) begin
-            if native_minor <= v"1.12"
-                p = resolve(mod; julia=VERSION)
-                @test p.handler_size > 64
-                @test resolve(mod; julia=VERSION, runtime=:native) == p
-            end
-        end
-        # a module for another target needs an explicit profile, in both modes
-        foreign = [Sys.ARCH === :x86_64 ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu"]
-        Sys.iswindows() || push!(foreign, "x86_64-w64-mingw32")
-        for triple in foreign
-            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir(; triple)) begin
-                if native_minor <= v"1.12"
-                    @test_throws "not the host's" resolve(mod; julia=VERSION)
-                    @test_throws "not the host's" resolve(mod; julia=VERSION, runtime=:native)
+    end
+
+    @testset "runtime facts" begin
+        # the running Julia's, whatever the target (the upstream fixtures cover this for
+        # Julia 1.10 and 1.11)
+        if native_minor == v"1.12"
+            @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
+                rt = JuliaIR.runtime_layout(JuliaIR.Dialect(VERSION), mod)
+                for triple in ("", LLVM.default_triple(), "amdgcn-amd-amdhsa")
+                    out = lower(triple; julia=VERSION)
+                    @test occursin("alloca i8, i32 $(rt.handler_size), align 16", out)
+                    # Windows Julia's default triple, `x86_64-w64-mingw32`, isn't
+                    # normalized, so the C++ pass passes a savemask there too
+                    @test occursin("call i32 @$(rt.setjmp)(ptr %1, i32 0)", out)
                 end
-                @test resolve(mod; handler_size=256, handler_align=16,
-                              setjmp="jl_setjmp") == JuliaIR.RuntimeProfile(256, 16, "jl_setjmp", false)
             end
         end
+
+        # explicit facts win
+        out = lower("x86_64-unknown-linux-gnu"; handler_size=300, handler_align=16,
+                    setjmp="jl_setjmp")
+        @test occursin("alloca i8, i32 300, align 16", out)
+        @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
+        # the buffers are aligned to at least 16 bytes, like the C++ pass does
+        out = lower(""; handler_size=96, handler_align=4, setjmp="ijl_setjmp")
+        @test occursin("alloca i8, i32 96, align 16", out)
+    end
+
+    @testset "setjmp signature" begin
+        # the savemask argument follows the module's triple, not the runtime's setjmp,
+        # like the C++ pass: only (unnormalized) Windows triples drop it
+        for (triple, savemask) in ("" => true, "x86_64-unknown-linux-gnu" => true,
+                                   "amdgcn-amd-amdhsa" => true,
+                                   "x86_64-w64-windows-gnu" => false,
+                                   "i686-pc-win32" => false,
+                                   "x86_64-pc-windows-msvc" => false,
+                                   "x86_64-w64-mingw32" => true)
+            out = lower(triple; handler_size=264, handler_align=16, setjmp="__sigsetjmp")
+            args = savemask ? "ptr %1, i32 0" : "ptr %1"
+            @test occursin("call i32 @__sigsetjmp($args)", out)
+        end
+        # an existing declaration for a Windows target, with the Unix runtime's setjmp
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                target triple = "x86_64-w64-windows-gnu"
+                declare i32 @__sigsetjmp(ptr) returns_twice
+                $(ir())""") begin
+            run!(JuliaIR.LowerExcHandlersPass(; julia=v"1.12", handler_size=264,
+                                              handler_align=16, setjmp="__sigsetjmp"), mod)
+            @test lowered(mod)
+            @test occursin("call i32 @__sigsetjmp(ptr %1)", string(mod))
+            @test verify(mod) === nothing
+        end
+        # the signature of setjmp, explicitly
+        out = lower(""; handler_size=264, handler_align=16, setjmp="__sigsetjmp",
+                    setjmp_savemask=:no)
+        @test occursin("call i32 @__sigsetjmp(ptr %1)", out)
+        out = lower("x86_64-w64-mingw32"; handler_size=320, handler_align=16,
+                    setjmp="jl_setjmp", setjmp_savemask=:yes)
+        @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
+        opts = JuliaIR.parse_options("julia=1.12;setjmp-savemask=no";
+                                     extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+        @test opts.extra.setjmp_savemask === :no
+        @test_throws "invalid option setjmp-savemask" lower(""; handler_size=264,
+            handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:maybe)
     end
 
     @testset "lowering" begin
@@ -364,7 +379,7 @@ end
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module,
                                                              ir(; triple="armv7-unknown-linux-gnueabihf", call=false)) begin
             before = string(mod)
-            opts = JuliaIR.parse_options("julia=1.12"; extra=JuliaIR.RUNTIME_OPTIONS)
+            opts = JuliaIR.parse_options("julia=1.12"; extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
             @test JuliaIR.lower_exc_handlers!(mod.functions["f"], nothing, opts) ==
                   PreservedAnalyses(AllAnalyses)
             @test string(mod) == before
@@ -381,7 +396,7 @@ end
             before = string(mod)
             f = mod.functions["f"]
             opts = JuliaIR.parse_options("julia=1.12;handler-size=200;handler-align=16;setjmp=sigsetjmp";
-                                         extra=JuliaIR.RUNTIME_OPTIONS)
+                                         extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
             err = try
                 JuliaIR.lower_exc_handlers!(f, nothing, opts)
                 nothing

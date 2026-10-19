@@ -232,19 +232,16 @@ passes() = [def.name for def in PASSES]
 
 """
     JuliaIR.register!(pb::PassBuilder; julia=VERSION, fp16=:auto, bf16=:auto,
-                      gc_barrier=:stock, runtime=:auto)
+                      gc_barrier=:stock)
 
 Register every pass of this package with the pass builder `pb`, so that they can be used
 by name in its pipeline. The keyword arguments are the defaults of the options for
-occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)), and
-`runtime` the default of the passes that need facts about the Julia runtime (see
-[`JuliaIR.resolve_runtime`](@ref)).
+occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)).
 """
 function register!(pb::PassBuilder; julia=VERSION, fp16::Symbol=:auto,
-                   bf16::Symbol=:auto, gc_barrier::Symbol=:stock, runtime::Symbol=:auto)
+                   bf16::Symbol=:auto, gc_barrier::Symbol=:stock)
     for def in PASSES
-        kwargs = haskey(def.extra, :runtime) ? (; runtime) : (;)
-        LLVM.register!(pb, custom_pass(def; julia, fp16, bf16, gc_barrier, kwargs...))
+        LLVM.register!(pb, custom_pass(def; julia, fp16, bf16, gc_barrier))
     end
     return pb
 end
