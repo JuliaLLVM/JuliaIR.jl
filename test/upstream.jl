@@ -68,8 +68,10 @@ end
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
 
     # mode B: lines that need Julia's C++ passes are skipped, those of the ports run
-    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
-    @test st == :skip && why == "no port of Julia's julia"
+    # Julia's pipeline is rebuilt from the ports, and the C++ passes not ported yet
+    st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
+    @test st == (isempty(JuliaIR.CPP_FALLBACKS) ? :run : :skip)
+    @test startswith(only(pipelines), "jl-remove-ni,BeforeOptimization,")
     for name in setdiff(JULIA_CPP_PASSES, ported_passes())
         @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
     end
@@ -594,7 +596,8 @@ mktempdir() do dir
     f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
                                      cpp=false, mode="B", manifest_dir=dir)
     @test !f.included
-    @test f.reason == "every RUN line skipped: no port of Julia's julia"
+    # (Julia's pipeline, while some of its passes have no port)
+    @test startswith(f.reason, "every RUN line skipped: no port of Julia's ")
 
     # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
     # whose RUN lines all check stderr sees the pin's printing only

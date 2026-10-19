@@ -223,8 +223,8 @@ function opt_invocations(cmd::AbstractString)
 end
 
 # What happens to a RUN line: `(status, reason, pipelines)`, where pipelines are those of
-# its `opt` invocations after mapping Julia's pass names to the ports. In mode B, Julia's
-# C++ passes are not available.
+# its `opt` invocations after mapping Julia's pass names and pipeline to the ports. In mode
+# B, Julia's C++ passes are not available.
 function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A")
     occursin(r"--?opaque-pointers=0", run.command) &&
         return (:skip, "typed pointers (S-D1)", String[])

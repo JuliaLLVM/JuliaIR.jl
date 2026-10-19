@@ -107,6 +107,15 @@ ir = """
                       stdout=devnull)
                 @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
             end
+
+            # and the same for Julia's pipeline, which is rebuilt with the ports
+            jlopt(["-passes=julia<level=0>", "-S"]; stdin=IOBuffer(ir), stdout=devnull)
+            @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 2
+            if julia_llvm_in_use()
+                jlopt(["-map-julia-passes=0", "-passes=julia<level=0>", "-S"];
+                      stdin=IOBuffer(ir), stdout=devnull)
+                @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 2
+            end
         finally
             JuliaIR.LEDGER[] = old
         end

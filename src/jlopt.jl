@@ -87,9 +87,10 @@ end
 
 cpp_mapping() = Dict(def.cpp_name => def.name for def in PASSES if !isempty(def.cpp_name))
 
-# the pipeline that runs the ports in place of Julia's C++ passes
+# the pipeline that runs the ports in place of Julia's C++ passes and pipeline
 port_pipeline(pipeline::AbstractString) =
-    map_pipeline(nest_pipeline(pipeline, Dialect(VERSION)), cpp_mapping())
+    map_pipeline(nest_pipeline(expand_julia_pipeline(pipeline), Dialect(VERSION)),
+                 cpp_mapping())
 
 # raise an error that `opt` would report as a crash, for `not --crash` tests
 struct FatalPassError <: Exception
@@ -119,7 +120,8 @@ const JLOPT_USAGE = """
 
     Runs a pipeline of LLVM passes, including the passes of JuliaIR, on the module in
     `input` (textual IR or bitcode; `-` or nothing for stdin), like LLVM's `opt`. The
-    names of Julia's C++ passes that JuliaIR ports are replaced by the ports'.
+    names of Julia's C++ passes that JuliaIR ports are replaced by the ports', and
+    Julia's pipeline (`julia<level=N;...>`) by JuliaIR's rebuilt one.
 
       -passes=PIPELINE, --passes=PIPELINE, -p PIPELINE
                                 the pipeline, in the syntax of the new pass manager
@@ -131,8 +133,8 @@ const JLOPT_USAGE = """
                                 machine, as in opt; also the target that CPUFeatures
                                 (jl-cpu-features) folds for (which, unlike Julia's C++
                                 pass by name in opt, then uses them)
-      -map-julia-passes=0       don't replace Julia's C++ passes by the ports (default:
-                                \$JULIAIR_MAP_PASSES, or 1)
+      -map-julia-passes=0       don't replace Julia's C++ passes and pipeline by the ports
+                                (default: \$JULIAIR_MAP_PASSES, or 1)
       -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
       -print-after-all, -print-module-scope, -force-vector-width=N
                                 LLVM options, set for the whole process
