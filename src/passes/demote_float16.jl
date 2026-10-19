@@ -159,7 +159,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
 end
 
 const DEMOTE_FLOAT16 = define_pass("jl-demote-float16", :function, demote_float16!;
-                                   required=true, extra=(; jit_features=true),
+                                   required=true, options=(; jit_features=true),
                                    cpp_name="DemoteFloat16")
 
 """

@@ -44,14 +44,8 @@ function always_have_fma(name::AbstractString, triple::LLVM.Triple)
     return typ == "f32" || typ == "f64"
 end
 
-# the options that describe the target (keyword-only, so not checked by `parse_options`)
+# the options that describe the target, which can't be combined
 function check_cpu_target((; target_cpu, target_features, target_machine))
-    target_cpu isa Union{Nothing,AbstractString} ||
-        throw(ArgumentError("target_cpu must be a string, not a $(typeof(target_cpu))"))
-    target_features isa Union{Nothing,AbstractString} ||
-        throw(ArgumentError("target_features must be a string, not a $(typeof(target_features))"))
-    target_machine isa Union{Nothing,LLVM.TargetMachine} ||
-        throw(ArgumentError("target_machine must be an LLVM.TargetMachine, not a $(typeof(target_machine))"))
     target_machine !== nothing && (target_cpu !== nothing || target_features !== nothing) &&
         throw(ArgumentError("target_machine can't be combined with target_cpu or target_features"))
     return
@@ -72,9 +66,8 @@ mutable struct CPUFeaturesRun
 end
 
 function CPUFeaturesRun(dialect::Dialect, mod::LLVM.Module, extra::NamedTuple)
-    (; target_cpu, target_features, target_machine) = extra
-    cpu = target_cpu === nothing ? nothing : String(target_cpu)
-    features = target_features === nothing ? nothing : String(target_features)
+    cpu, features, target_machine = extra.target_cpu, extra.target_features,
+                                    extra.target_machine
     triple = LLVM.Triple(mod.triple)
     if dialect.cpu_features_rule === :tokens
         # the token rule only reads a target machine's feature string, as the C++ pass
@@ -303,9 +296,16 @@ function cpu_supports(run::CPUFeaturesRun, list::String, caller::LLVM.Function)
     return all(name -> LLVM.hasfeature(sti, name), names)
 end
 
+# the target, only as keyword arguments (feature strings contain `,`, which separates the
+# elements of a pipeline)
+const CPU_TARGET_OPTIONS = (
+    target_cpu = option(Union{Nothing,String}, nothing; text=false),
+    target_features = option(Union{Nothing,String}, nothing; text=false),
+    target_machine = option(Union{Nothing,LLVM.TargetMachine}, nothing; text=false,
+                            requirement="an LLVM.TargetMachine or `nothing`"))
+
 const CPU_FEATURES = define_pass("jl-cpu-features", :module, cpu_features!; required=true,
-                                 extra=(target_cpu=nothing, target_features=nothing,
-                                        target_machine=nothing),
+                                 options=CPU_TARGET_OPTIONS,
                                  cpp_name="CPUFeatures", check=check_cpu_target)
 
 """

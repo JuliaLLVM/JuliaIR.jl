@@ -1359,8 +1359,10 @@ end
 
 const MULTIVERSIONING = define_pass("jl-multiversioning", :module, multiversioning!;
                                     required=true, cpp_name="JuliaMultiVersioning",
-                                    extra=(; external=false,
-                                           targets=MultiVersioningTarget[]))
+                                    options=(; external=false,
+                                             targets=option(Vector{MultiVersioningTarget},
+                                                            MultiVersioningTarget[];
+                                                            text=false)))
 
 """
     JuliaIR.MultiVersioningPass(; external=false, targets=MultiVersioningTarget[])

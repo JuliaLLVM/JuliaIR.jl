@@ -453,7 +453,7 @@ const PTLS_RUNTIME_FACTS = (:task_gcstack, :task_ptls, :tls_safepoint, :tls_gc_s
 const LOWER_PTLS = define_pass("jl-lower-ptls", :module,
                                (mod, am, opts) -> lower_ptls!(mod, am, opts);
                                required=true,
-                               extra=(; imaging=false, tls_getters=false,
+                               options=(; imaging=false, tls_getters=false,
                                       runtime_options(PTLS_RUNTIME_FACTS...)...),
                                cpp_name="LowerPTLSPass")
 

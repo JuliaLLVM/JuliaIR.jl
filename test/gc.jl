@@ -20,7 +20,7 @@ FACTS = "task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
 # dialect of Julia `v`
 function lower(pass!, def, ir, v, options; target=:function)
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-        opts = JuliaIR.parse_options(options; extra=def.extra)
+        opts = JuliaIR.parse_options(options; options=def.options)
         opts = JuliaIR.PassOptions(JuliaIR.Dialect(v), opts.extra)
         if target === :module
             pass!(mod, nothing, opts)

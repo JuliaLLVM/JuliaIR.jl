@@ -480,7 +480,7 @@ cancellation_preserved(changed::Bool, cfg_changed::Bool) =
 
 const CANCELLATION_LOWERING =
     define_pass("jl-cancellation-lowering", :function, cancellation_lowering!; required=true,
-                extra=runtime_options(CANCELLATION_RUNTIME_FACTS...),
+                options=runtime_options(CANCELLATION_RUNTIME_FACTS...),
                 cpp_name="CancellationLowering")
 
 """

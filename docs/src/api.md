@@ -62,7 +62,8 @@ JuliaIR.expand_julia_pipeline
 ```@docs
 JuliaIR.Dialect
 JuliaIR.PassOptions
-JuliaIR.Optional
+JuliaIR.option
+JuliaIR.OptionSpec
 JuliaIR.parse_options
 ```
 

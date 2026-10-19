@@ -2670,7 +2670,7 @@ const GC_RUNTIME_FACTS = (:task_gcstack, :task_ptls, :tls_safepoint, :tls_gc_sta
 const LATE_LOWER_GC_FRAME = define_pass("jl-late-lower-gc-frame", :function,
                                         (f, am, opts) -> late_lower_gc_frame!(f, am, opts);
                                         required=true,
-                                        extra=runtime_options(GC_RUNTIME_FACTS...),
+                                        options=runtime_options(GC_RUNTIME_FACTS...),
                                         cpp_name="LateLowerGCFrame")
 
 """

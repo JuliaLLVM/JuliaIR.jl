@@ -167,8 +167,7 @@ end
     @test rt.tls_elf_support === false
     @test rt.task_gcstack == facts().task_gcstack
     @test facts(; tls_offset=-16).tls_offset == -16
-    @test facts(; tls_offset=JuliaIR.Optional{Int}(-1)).tls_offset == -1
-    @test facts(; tls_offset=JuliaIR.Optional{Int}()).tls_offset == facts().tls_offset
+    @test facts(; tls_offset=nothing).tls_offset == facts().tls_offset
     @test facts(; pgcstack_getter=0x1234).pgcstack_getter == 0x1234
     @test_throws "invalid option tls-elf-support" facts(; tls_elf_support=:maybe).tls_elf_support
     @test facts(; cfunction_cache=:arguments).cfunction_cache === :arguments
@@ -177,15 +176,17 @@ end
     @test propertynames(facts()) == keys(JuliaIR.RUNTIME_FACTS)
 
     # as pass options
-    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tls_offset,
-                                  :pgcstack_key, :cfunction_cache) ==
-          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tls_offset=JuliaIR.Optional{Int}(),
-           pgcstack_key=JuliaIR.Optional{UInt}(), cfunction_cache=:auto)
+    specs = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tls_offset,
+                                    :pgcstack_key, :cfunction_cache)
+    @test map(spec -> spec.default, specs) ==
+          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tls_offset=nothing,
+           pgcstack_key=nothing, cfunction_cache=:auto)
     @test_throws "unknown runtime fact" JuliaIR.runtime_options(:task_foo)
-    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :tls_offset, :pgcstack_key,
-                                    :cfunction_cache)
+    options = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :tls_offset, :pgcstack_key,
+                                      :cfunction_cache)
     opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;tls-offset=-4;pgcstack-key=0x10;cfunction-cache=arguments";
-                                 extra)
+                                 options)
+    @test_throws "requires a non-negative integer" JuliaIR.parse_options("task-ptls=-8"; options)
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
         rt = JuliaIR.runtime_layout(opts, mod)
         @test rt.task_ptls == 100

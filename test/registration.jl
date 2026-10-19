@@ -1,5 +1,5 @@
 using LLVM, LLVM.IR, LLVM.Passes
-using JuliaIR: Dialect, PassOptions, parse_options, options_string
+using JuliaIR: Dialect, PassOptions, parse_options, options_string, option
 
 @testset "registration" begin
 
@@ -16,60 +16,73 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test parse_options("fp16=demote"; fp16=:keep).dialect.fp16 === :demote
     @test parse_options("gc-barrier=field-precise").dialect.gc_barrier === :field_precise
 
-    # pass-specific options
-    extra = (; strong=false, mode=:fast)
-    @test parse_options(""; extra).extra == (; strong=false, mode=:fast)
-    @test parse_options("strong"; extra).extra == (; strong=true, mode=:fast)
-    @test parse_options("no-strong;mode=slow-ish"; extra).extra == (; strong=false, mode=:slow_ish)
-    @test_throws "is a flag" parse_options("strong=1"; extra)
-    @test_throws "requires a value" parse_options("mode"; extra)
-    @test_throws "requires a value" parse_options("no-mode"; extra)
-    let extra = (; size=0, name="")
-        @test parse_options("size=264;name=__sigsetjmp"; extra).extra ==
-              (; size=264, name="__sigsetjmp")
-        @test options_string(parse_options("size=8;name=a_b-c"; extra)) == "size=8;name=a_b-c"
-        @test_throws "non-negative integer" parse_options("size=x"; extra)
-        @test_throws "non-negative integer" parse_options("size=-1"; extra)
-        @test_throws "requires a value" parse_options("name"; extra)
-    end
-    # options that may be unspecified: signed integers and addresses
-    let extra = (; offset=JuliaIR.Optional{Int}(), addr=JuliaIR.Optional{UInt}())
-        opts = parse_options(""; extra)
-        @test opts.extra == extra
-        @test JuliaIR.option_value(opts.extra.offset) === nothing
-        @test options_string(opts) == ""
-        opts = parse_options("offset=-8;addr=0x4011c0"; extra)
-        @test JuliaIR.option_value(opts.extra.offset) === -8
-        @test JuliaIR.option_value(opts.extra.addr) === UInt(0x4011c0)
-        @test options_string(opts) == "offset=-8;addr=0x4011c0"
-        @test parse_options(options_string(opts); extra) == opts
-        @test JuliaIR.option_value(parse_options("addr=4198848"; extra).extra.addr) == 0x4011c0
-        @test_throws "requires an integer" parse_options("offset=x"; extra)
-        @test_throws "requires an address" parse_options("addr=-1"; extra)
-        @test_throws "requires a value" parse_options("offset"; extra)
-        # only for the integers they can be parsed and printed as
-        @test_throws TypeError JuliaIR.Optional{BigInt}()
+    # pass-specific options, declared by their defaults
+    options = (; strong=false, mode=:fast)
+    @test parse_options(""; options).extra == (; strong=false, mode=:fast)
+    @test parse_options("strong"; options).extra == (; strong=true, mode=:fast)
+    @test parse_options("no-strong;mode=slow-ish"; options).extra == (; strong=false, mode=:slow_ish)
+    @test_throws "is a flag" parse_options("strong=1"; options)
+    @test_throws "requires a value" parse_options("mode"; options)
+    @test_throws "requires a value" parse_options("no-mode"; options)
+    # values for the options not given
+    @test parse_options("strong"; options, values=(; strong=false, mode=:slow)).extra ==
+          (; strong=true, mode=:slow)
+
+    # integers and strings
+    let options = (; size=option(Int, 0; valid=(>=(0)), requirement="a non-negative integer"),
+                     offset=0, name="")
+        @test parse_options("size=264;offset=-8;name=__sigsetjmp"; options).extra ==
+              (; size=264, offset=-8, name="__sigsetjmp")
+        opts = parse_options("size=8;offset=-1;name=a_b-c"; options)
+        @test options_string(opts, options) == "size=8;offset=-1;name=a_b-c"
+        @test parse_options(options_string(opts, options); options) == opts
+        @test_throws "option size requires a non-negative integer" parse_options("size=x"; options)
+        @test_throws "option size requires a non-negative integer" parse_options("size=-1"; options)
+        @test_throws "option offset requires an integer" parse_options("offset=x"; options)
+        @test_throws "requires a value" parse_options("name"; options)
     end
 
-    # options that can't be given in text, only as keyword arguments
-    let extra = (; target=nothing, strong=false)
-        @test_throws "can't be given in a pipeline" parse_options("target=x86";
-                                                                    extra, keyword_only=(:target,))
-        opts = parse_options("strong"; extra=(; target="x86", strong=false),
-                             keyword_only=(:target,))
-        @test opts.extra == (; target="x86", strong=true)
-        # they have no text form
-        @test options_string(opts; keyword_only=(:target,)) == "strong"
+    # options that may be unspecified, and addresses
+    let options = (; offset=option(Union{Nothing,Int}, nothing),
+                     addr=option(Union{Nothing,UInt}, nothing),
+                     elf=option(Union{Nothing,Bool}, nothing))
+        opts = parse_options(""; options)
+        @test opts.extra == (; offset=nothing, addr=nothing, elf=nothing)
+        @test options_string(opts, options) == ""
+        opts = parse_options("offset=-8;addr=0x4011c0;elf=no"; options)
+        @test opts.extra == (; offset=-8, addr=UInt(0x4011c0), elf=false)
+        @test options_string(opts, options) == "offset=-8;addr=0x4011c0;elf=no"
+        @test parse_options(options_string(opts, options); options) == opts
+        @test parse_options("addr=4198848;elf=yes"; options).extra.addr === UInt(0x4011c0)
+        @test parse_options("elf=yes"; options).extra.elf === true
+        @test_throws "requires an integer" parse_options("offset=x"; options)
+        @test_throws "requires an address (a non-negative integer)" parse_options("addr=-1"; options)
+        @test_throws "requires yes or no" parse_options("elf=auto"; options)
+        @test_throws "requires a value" parse_options("offset"; options)
+        @test_throws "requires a value" parse_options("elf"; options)
     end
 
-    # vector-valued options can't be written in a pipeline
-    let extra = (; names=String[], strong=false)
-        @test parse_options("strong"; extra).extra == (; names=String[], strong=true)
-        @test parse_options(""; extra=(; names=["a"])).extra == (; names=["a"])
-        @test_throws "can't be given in a pipeline" parse_options("names=a"; extra)
-        @test_throws "can't be given in a pipeline" parse_options("names"; extra)
-        @test options_string(parse_options(""; extra)) == "no-strong"
+    # keyword-only options can't be given in text, and have no text form
+    let options = (; target=option(Union{Nothing,String}, nothing; text=false), strong=false,
+                     names=option(Vector{String}, String[]; text=false))
+        @test_throws "option target can't be given in a pipeline" parse_options("target=x86"; options)
+        @test_throws "option names can't be given in a pipeline" parse_options("names=a"; options)
+        @test_throws "option names can't be given in a pipeline" parse_options("names"; options)
+        opts = parse_options("strong"; options,
+                             values=(; target="x86", strong=false, names=["a"]))
+        @test opts.extra == (; target="x86", strong=true, names=["a"])
+        @test options_string(opts, options) == "strong"
     end
+
+    # declarations
+    @test_throws "have no text form" option(Vector{String}, String[])
+    @test_throws "have no text form" option(Float64, 1.0)
+    @test_throws "the default of the option must be an integer" option(Int, 1.0)
+    @test_throws "must be a non-negative integer" option(Int, -1; valid=(>=(0)),
+                                                         requirement="a non-negative integer")
+    @test_throws "have no text form" JuliaIR.PassDefinition("jl-test", :module, false,
+                                                            identity, (; target=nothing))
+    @test option(Union{Nothing,Int}, nothing).default === nothing
 
     # round trip
     for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
@@ -77,10 +90,10 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         @test options_string(parse_options(str)) == str
         @test parse_options(options_string(parse_options(str))) == parse_options(str)
     end
-    @test options_string(parse_options(""; extra)) == "no-strong;mode=fast"
-    let opts = parse_options("fp16=keep;strong;mode=slow"; extra)
-        @test options_string(opts) == "fp16=keep;strong;mode=slow"
-        @test parse_options(options_string(opts); extra) == opts
+    @test options_string(parse_options(""; options), options) == "no-strong;mode=fast"
+    let opts = parse_options("fp16=keep;strong;mode=slow"; options)
+        @test options_string(opts, options) == "fp16=keep;strong;mode=slow"
+        @test parse_options(options_string(opts, options); options) == opts
     end
 
     # rejections
@@ -90,8 +103,8 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     @test_throws "unknown option julia; expected one of fp16, bf16, gc-barrier" parse_options("julia=1.12")
     @test_throws "unknown option julia" parse_options("julia")
     @test_throws "more than once" parse_options("fp16=keep;fp16=demote")
-    @test_throws "more than once" parse_options("strong;no-strong"; extra)
-    @test_throws "more than once" parse_options("foo-bar;no-foo_bar"; extra=(; foo_bar=false))
+    @test_throws "more than once" parse_options("strong;no-strong"; options)
+    @test_throws "more than once" parse_options("foo-bar;no-foo_bar"; options=(; foo_bar=false))
     @test_throws "invalid fp16 policy" parse_options("fp16=maybe")
     @test_throws "invalid bf16 policy" parse_options("bf16=maybe")
     @test_throws "requires a value" parse_options("bf16")
@@ -141,47 +154,64 @@ test_ir = """
         @test_throws "invalid fp16 policy" JuliaIR.custom_pass(test_pass; fp16=:maybe)
         @test_throws "unknown option julia" JuliaIR.custom_pass(test_pass; julia=v"1.12")
         @test_throws "unknown option" JuliaIR.custom_pass(test_pass; frobnicate=true)
-        @test_throws "must be a Bool" JuliaIR.custom_pass(test_pass; strong=:no)
+        @test_throws "option strong of pass jl-test must be a Bool" JuliaIR.custom_pass(test_pass; strong=:no)
 
-        # keyword arguments of optional options take a value or `nothing`
-        optional_pass = JuliaIR.PassDefinition("jl-test-optional", :module, false, record_pass,
-                                               (; offset=JuliaIR.Optional{Int}(),
-                                                  addr=JuliaIR.Optional{UInt}()))
+        # keyword arguments are converted to the types of the options where that loses
+        # nothing, and options that may be unspecified take `nothing`
+        typed_pass = JuliaIR.PassDefinition("jl-test-typed", :module, false, record_pass,
+                                            (; offset=option(Union{Nothing,Int}, nothing),
+                                               addr=option(Union{Nothing,UInt}, nothing),
+                                               name=""))
         empty!(calls)
-        run!(JuliaIR.custom_pass(optional_pass; offset=-8, addr=Ptr{Cvoid}(UInt(0x10))), mod)
-        run!(JuliaIR.custom_pass(optional_pass; offset=nothing, addr=16), mod)
+        run!(JuliaIR.custom_pass(typed_pass; offset=Int32(-8), addr=Ptr{Cvoid}(UInt(0x10)),
+                                 name=SubString("abc", 1, 2)), mod)
+        run!(JuliaIR.custom_pass(typed_pass; offset=nothing, addr=16), mod)
         @test [c[2].extra for c in calls] ==
-              [(; offset=JuliaIR.Optional{Int}(-8), addr=JuliaIR.Optional{UInt}(0x10)),
-               (; offset=JuliaIR.Optional{Int}(), addr=JuliaIR.Optional{UInt}(0x10))]
-        @test_throws "must be an address or `nothing`" JuliaIR.custom_pass(optional_pass; addr=-1)
-        @test_throws "must be an integer or `nothing`" JuliaIR.custom_pass(optional_pass; offset="x")
+              [(; offset=-8, addr=UInt(0x10), name="ab"),
+               (; offset=nothing, addr=UInt(0x10), name="")]
+        @test calls[1][2].extra.name isa String
+        @test_throws "must be an address or `nothing`" JuliaIR.custom_pass(typed_pass; addr=-1)
+        @test_throws "must be an integer or `nothing`" JuliaIR.custom_pass(typed_pass; offset="x")
+        @test_throws "must be an integer or `nothing`" JuliaIR.custom_pass(typed_pass; offset=typemax(UInt))
+        @test_throws "option name of pass jl-test-typed must be a string" JuliaIR.custom_pass(typed_pass; name=nothing)
 
-        # options whose default is `nothing` are keyword-only, of any type
+        # keyword-only options can only be given as keyword arguments
         kw_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
-                                         (; target=nothing))
+                                         (; target=option(Union{Nothing,Symbol}, nothing;
+                                                          text=false)))
         empty!(calls)
         run!(JuliaIR.custom_pass(kw_pass; target=:x86), mod)
         @test calls == [("test", PassOptions(Dialect(VERSION), (; target=:x86)))]
+        @test_throws "must be a Symbol or `nothing`" JuliaIR.custom_pass(kw_pass; target="x86")
         @dispose pb=PassBuilder() begin
             LLVM.register!(pb, JuliaIR.custom_pass(kw_pass))
             add!(pb, "jl-test<target=x86>")
             @test_throws PassException run!(pb, mod)
         end
 
-        # a definition's check validates them when the pass is created
+        # a definition's check validates the combination of the values, whether they come
+        # from keyword arguments or the pipeline
         checked_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
-                                              (; target=nothing), "",
-                                              extra -> extra.target isa Union{Nothing,Symbol} ||
-                                                  throw(ArgumentError("target must be a Symbol")))
-        @test !JuliaIR.custom_pass(checked_pass; target=:x86).required
-        @test_throws "target must be a Symbol" JuliaIR.custom_pass(checked_pass; target="x86")
+                                              (; a=false, b=false), "",
+                                              values -> values.a && values.b &&
+                                                  throw(ArgumentError("a and b can't be combined")))
+        @test !JuliaIR.custom_pass(checked_pass; a=true).required
+        @test_throws "a and b can't be combined" JuliaIR.custom_pass(checked_pass; a=true, b=true)
+        @test_throws "a and b can't be combined" parse_options(checked_pass, "a;b")
+        @dispose pb=PassBuilder() begin
+            LLVM.register!(pb, JuliaIR.custom_pass(checked_pass; a=true))
+            add!(pb, "jl-test<b>")
+            @test_throws PassException run!(pb, mod)
+        end
 
-        # vector-valued options are set by keyword arguments only
+        # vectors of any element type the option's
         vector_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
-                                             (; names=String[]))
+                                             (; names=option(Vector{String}, String[];
+                                                             text=false)))
         empty!(calls)
         run!(JuliaIR.custom_pass(vector_pass; names=Any["a", "b"]), mod)
         @test calls == [("test", PassOptions(Dialect(VERSION), (; names=["a", "b"])))]
+        @test calls[1][2].extra.names isa Vector{String}
         @test_throws "must be a vector of String" JuliaIR.custom_pass(vector_pass; names=[1])
         @test_throws "must be a vector of String" JuliaIR.custom_pass(vector_pass; names="a")
     end

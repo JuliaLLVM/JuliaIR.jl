@@ -6,8 +6,8 @@
     JuliaIR.PassOptions
 
 The options of one occurrence of a pass in a pipeline: the [`JuliaIR.Dialect`](@ref) of
-the IR (`dialect`, the running Julia's, with the policies of the options) and the
-pass-specific options (`extra`, a `NamedTuple`).
+the IR (`dialect`, the running Julia's, with the policies of the options) and the values
+of the pass-specific options (`extra`, a `NamedTuple`).
 """
 struct PassOptions{T<:NamedTuple}
     dialect::Dialect
@@ -43,79 +43,182 @@ const POLICY_KEYS = ("fp16", "bf16", "gc-barrier")
 option_key(name::Symbol) = replace(string(name), '_' => '-')
 
 """
-    JuliaIR.Optional{T}(value=nothing)
+    JuliaIR.OptionSpec
 
-The value of a pass option that may be left unspecified (`nothing`), and its type `T`: a
-signed integer like an offset (`T = Int`, e.g. `tls-offset=-8` in a pipeline), or an
-address (`T = UInt`, written as `pgcstack-getter=0x4011c0`). A pass's default for such an
-option is `Optional{T}()`; its constructor's keyword takes a `T` or `nothing`.
+The declaration of a pass-specific option, made with [`JuliaIR.option`](@ref).
 """
-struct Optional{T<:Union{Int,UInt}}
-    value::Union{Nothing,T}
-    # (an inner constructor, so that there is no `Optional(nothing)` without a `T`)
-    Optional{T}(value=nothing) where {T<:Union{Int,UInt}} = new{T}(value)
+struct OptionSpec
+    type::Type
+    default::Any
+    # whether the option can be written in a pipeline
+    text::Bool
+    # `nothing`, or a predicate on the values of the option other than `nothing`, and what
+    # it requires of them, for error messages
+    valid::Any
+    requirement::String
 end
 
-# the value of an option, `nothing` for an unspecified `Optional`
-option_value(x) = x
-option_value(x::Optional) = x.value
+"""
+    JuliaIR.option(T, default; text=true, valid=nothing, requirement="")
 
-function parse_optional(::Type{Optional{T}}, key, value) where {T}
-    n = tryparse(T, value)
-    n === nothing &&
-        throw(ArgumentError(T <: Unsigned ? "option $key requires an address (a non-negative integer)" :
-                                            "option $key requires an integer"))
-    return Optional{T}(n)
+The declaration of a pass-specific option of type `T`, whose value is `default` unless it
+is given, for the `options` of a pass definition. An option whose type includes `Nothing`
+may be left unspecified, which its default `nothing` says; the pass then decides (e.g. by
+reading the running Julia). The type also decides how the option is written in a
+pipeline:
+
+| type | in a pipeline |
+|:-----|:--------------|
+| `Bool` | `name` or `no-name` |
+| `Union{Nothing,Bool}` | `name=yes` or `name=no` |
+| `Symbol` | `name=value` (a `-` in the value stands for `_`) |
+| `Int` | `name=-8`: a decimal integer |
+| `UInt` | `name=0x4011c0`: an address, hexadecimal or decimal |
+| `String` | `name=text` |
+
+Options of other types, and options declared with `text=false`, are keyword-only: they
+can only be given as keyword arguments of the pass's constructor (e.g. feature lists,
+which contain `,`, LLVM's separator of pipeline elements, or objects like a target
+machine). A keyword argument is converted to `T` where that loses nothing: an integer in
+range, a `Ptr` for an address, any `AbstractString` for a `String`, and any vector of the
+element type for a `Vector`.
+
+`valid(value)` says whether a value other than `nothing` is valid, and `requirement`
+what it requires, for error messages (e.g. `"a non-negative integer"`).
+"""
+function option(@nospecialize(T::Type), @nospecialize(default); text::Bool=true,
+                valid=nothing, requirement::String="")
+    text && text_form(T) === nothing &&
+        throw(ArgumentError("options of type $T have no text form; declare them with `text=false`"))
+    spec = OptionSpec(T, default, text, valid,
+                      isempty(requirement) ? describe(T) : requirement)
+    check_value(spec, default, "the default of the option")
+    return spec
 end
 
-# the value of an option given as a keyword argument, for a pass whose default is `default`
-function option_argument(default::Optional{T}, @nospecialize(v), key) where {T}
-    v isa Optional{T} && return v
-    v === nothing && return Optional{T}()
-    if v isa Integer || (T <: Unsigned && v isa Ptr)
-        n = tryparse_convert(T, v)
-        n === nothing || return Optional{T}(n)
+# the declaration of an option, given as one or by its default value (of its type)
+option_spec(spec::OptionSpec) = spec
+option_spec(@nospecialize(default)) = option(typeof(default), default)
+
+option_specs(options::NamedTuple) = map(option_spec, options)
+option_defaults(specs::NamedTuple) = map(spec -> spec.default, specs)
+
+# the type of the values of an option other than `nothing`
+function nonnothing(@nospecialize(T::Type))
+    T isa Union || return T
+    T.a === Nothing && return T.b
+    T.b === Nothing && return T.a
+    return T
+end
+nullable(@nospecialize(T::Type)) = T !== Nothing && Nothing <: T
+
+# how an option of type `T` is written in a pipeline, or `nothing` if it can't be
+function text_form(@nospecialize(T::Type))
+    S = nonnothing(T)
+    S === Bool && return nullable(T) ? :yes_no : :flag
+    S === Symbol && return :symbol
+    S === Int && return :int
+    S === UInt && return :address
+    S === String && return :string
+    return nothing
+end
+
+function describe(@nospecialize(T::Type))
+    S = nonnothing(T)
+    what = S === Int ? "an integer" :
+           S === UInt ? "an address" :
+           S === String ? "a string" :
+           S <: AbstractVector ? "a vector of $(eltype(S))" :
+           "a $S"
+    return nullable(T) ? "$what or `nothing`" : what
+end
+
+# throw if `value` isn't a value of the option (`what` names it in the error)
+function check_value(spec::OptionSpec, @nospecialize(value), what)
+    value === nothing && nullable(spec.type) && return
+    (value isa spec.type && (spec.valid === nothing || spec.valid(value))) ||
+        throw(ArgumentError("$what must be $(spec.requirement)"))
+    return
+end
+
+# a keyword argument for an option, converted to the option's type
+function convert_option(spec::OptionSpec, @nospecialize(v), what)
+    S = nonnothing(spec.type)
+    value = if v === nothing || v isa S
+        v
+    elseif (S === Int || S === UInt) && v isa Integer && typemin(S) <= v <= typemax(S)
+        S(v)
+    elseif S === UInt && v isa Ptr
+        UInt(v)
+    elseif S === String && v isa AbstractString
+        String(v)
+    elseif S <: AbstractVector && v isa AbstractVector && all(x -> x isa eltype(S), v)
+        convert(S, collect(v))
+    else
+        v
     end
-    throw(ArgumentError("option $key must be $(T <: Unsigned ? "an address" : "an integer") or `nothing`"))
-end
-function option_argument(default::AbstractVector, @nospecialize(v), key)
-    v isa AbstractVector && all(x -> x isa eltype(default), v) ||
-        throw(ArgumentError("option $key must be a vector of $(eltype(default))"))
-    return convert(typeof(default), collect(v))
-end
-# keyword-only options (default `nothing`) take any value, which the definition's
-# `check` validates
-option_argument(::Nothing, @nospecialize(v), key) = v
-function option_argument(default, @nospecialize(v), key)
-    v isa typeof(default) || throw(ArgumentError("option $key must be a $(typeof(default))"))
-    return v
+    check_value(spec, value, what)
+    return value
 end
 
-tryparse_convert(::Type{T}, v::Ptr) where {T} = T(UInt(v))
-function tryparse_convert(::Type{T}, v::Integer) where {T}
-    typemin(T) <= v <= typemax(T) || return nothing
-    return T(v)
+# the value of an option written in a pipeline
+function parse_value(spec::OptionSpec, key, value::Union{Nothing,String}, negated::Bool)
+    spec.text ||
+        throw(ArgumentError("option $key can't be given in a pipeline, only as a keyword argument of the pass's constructor"))
+    form = text_form(spec.type)
+    if form === :flag
+        value === nothing ||
+            throw(ArgumentError("option $key is a flag, write $key or no-$key"))
+        return !negated
+    end
+    (value === nothing || negated) && throw(ArgumentError("option $key requires a value"))
+    parsed = if form === :yes_no
+        value == "yes" ? true : value == "no" ? false : nothing
+    elseif form === :symbol
+        Symbol(replace(value, '-' => '_'))
+    elseif form === :int
+        tryparse(Int, value)
+    elseif form === :address
+        tryparse(UInt, value)
+    else
+        value
+    end
+    requirement = form === :yes_no ? "yes or no" :
+                  form === :address && spec.valid === nothing ?
+                      "an address (a non-negative integer)" : spec.requirement
+    (parsed !== nothing && (spec.valid === nothing || spec.valid(parsed))) ||
+        throw(ArgumentError("option $key requires $requirement"))
+    return parsed
+end
+
+# an option's value as written in a pipeline
+function value_string(spec::OptionSpec, @nospecialize(v))
+    form = text_form(spec.type)
+    form === :yes_no && return v ? "yes" : "no"
+    form === :symbol && return replace(string(v), '_' => '-')
+    form === :address && return "0x" * string(v; base=16)
+    return string(v)
 end
 
 """
-    JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, extra=(;))
+    JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, options=(;),
+                          values)
+    JuliaIR.parse_options(def::PassDefinition, str; kwargs...)
 
 Parse the option text of a pass in a pipeline (the part between `<` and `>`, e.g.
 `fp16=demote;strong`) into [`JuliaIR.PassOptions`](@ref), whose dialect is the running
-Julia's. Options are separated by `;`. The keyword arguments are the defaults for
-options that are not given. `extra`
-holds the defaults of the pass-specific options, which determine how they are parsed:
-a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`, an
-`Int` option a non-negative integer, a `String` option any text, and a
-[`JuliaIR.Optional`](@ref) option a signed integer or an address. Options whose values
-are vectors, and the options named in `keyword_only`, can't be given in the text, only as
-keyword arguments of the pass's constructor (e.g. feature lists, which contain `,`,
-LLVM's separator of pipeline elements). Unknown and repeated options are rejected.
+Julia's. Options are separated by `;`. The keyword arguments are the defaults for the
+policies that are not given; `options` declares the pass-specific options (as
+[`JuliaIR.option`](@ref)s, or by their default values), which decides how they are
+written, and `values` holds their values when they are not given (by default, the
+declared defaults). Unknown, repeated and keyword-only options are rejected. With a pass
+definition, its options are parsed, and its check of their combination applies.
 """
 function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
-                       gc_barrier::Symbol=:stock, extra::NamedTuple=(;),
-                       keyword_only=())
-    extra_values = Dict{Symbol,Any}(pairs(extra))
+                       gc_barrier::Symbol=:stock, options::NamedTuple=(;),
+                       values::NamedTuple=option_defaults(option_specs(options)))
+    specs = option_specs(options)
+    given = Dict{Symbol,Any}(pairs(values))
     seen = Set{Symbol}()
     for opt in split(str, ';'; keepempty=false)
         key, value = if occursin('=', opt)
@@ -127,7 +230,7 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
         # boolean options are negated with a `no-` prefix, like LLVM's pass options
         negated = false
         name = Symbol(replace(key, '-' => '_'))
-        if value === nothing && startswith(key, "no-") && !haskey(extra, name)
+        if value === nothing && startswith(key, "no-") && !haskey(specs, name)
             negated = true
             key = key[4:end]
             name = Symbol(replace(key, '-' => '_'))
@@ -144,61 +247,29 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
         elseif key == "gc-barrier"
             value === nothing && throw(ArgumentError("option gc-barrier requires a value"))
             gc_barrier = Symbol(replace(value, '-' => '_'))
-        elseif haskey(extra, name)
-            default = extra[name]
-            name in keyword_only &&
-                throw(ArgumentError("option $key can't be given in a pipeline, only as a keyword argument of the pass's constructor"))
-            if default isa Bool
-                value === nothing ||
-                    throw(ArgumentError("option $key is a flag, write $key or no-$key"))
-                extra_values[name] = !negated
-            elseif default isa Symbol
-                (value === nothing || negated) &&
-                    throw(ArgumentError("option $key requires a value"))
-                extra_values[name] = Symbol(replace(value, '-' => '_'))
-            elseif default isa Int
-                (value === nothing || negated) &&
-                    throw(ArgumentError("option $key requires a value"))
-                n = tryparse(Int, value)
-                (n === nothing || n < 0) &&
-                    throw(ArgumentError("option $key requires a non-negative integer"))
-                extra_values[name] = n
-            elseif default isa String
-                (value === nothing || negated) &&
-                    throw(ArgumentError("option $key requires a value"))
-                extra_values[name] = value
-            elseif default isa Optional
-                (value === nothing || negated) &&
-                    throw(ArgumentError("option $key requires a value"))
-                extra_values[name] = parse_optional(typeof(default), key, value)
-            elseif default isa AbstractVector
-                throw(ArgumentError("option $key can't be given in a pipeline; pass it as the `$name` keyword argument of the pass's constructor"))
-            else
-                error("unsupported type of option $key: $(typeof(default))")
-            end
+        elseif haskey(specs, name)
+            given[name] = parse_value(specs[name], key, value, negated)
         else
-            known = [POLICY_KEYS..., (option_key(k) for k in keys(extra))...]
+            known = [POLICY_KEYS..., (option_key(k) for k in keys(specs))...]
             throw(ArgumentError("unknown option $key; expected one of $(join(known, ", "))"))
         end
     end
     dialect = Dialect(VERSION; fp16, bf16, gc_barrier)
-    values = NamedTuple{keys(extra)}(Tuple(extra_values[k] for k in keys(extra)))
-    return PassOptions(dialect, values)
+    return PassOptions(dialect, NamedTuple{keys(specs)}(Tuple(given[k] for k in keys(specs))))
 end
 
-# the options as text, the inverse of `parse_options` (without the vector-valued and
-# keyword-only options, which have no text form)
-function options_string(opts::PassOptions; keyword_only=())
+# the options as text, the inverse of `parse_options`, without the options that are
+# unspecified or keyword-only
+function options_string(opts::PassOptions, options::NamedTuple=(;))
+    specs = option_specs(options)
     policies = options_string(opts.dialect)
     parts = isempty(policies) ? String[] : [policies]
     for (k, v) in pairs(opts.extra)
-        v isa Optional && v.value === nothing && continue
-        k in keyword_only && continue
-        v isa AbstractVector && continue
-        push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
-                     v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
-                     v isa Optional{<:Unsigned} ? "$(option_key(k))=0x$(string(v.value; base=16))" :
-                     "$(option_key(k))=$(option_value(v))")
+        spec = specs[k]
+        (spec.text && v !== nothing) || continue
+        push!(parts, text_form(spec.type) === :flag ?
+                         (v ? option_key(k) : "no-" * option_key(k)) :
+                         "$(option_key(k))=$(value_string(spec, v))")
     end
     return join(parts, ";")
 end
@@ -293,33 +364,31 @@ struct PassDefinition
     kind::Symbol
     required::Bool
     impl::Any
-    extra::NamedTuple
+    # the declarations of the pass-specific options (`OptionSpec`s)
+    options::NamedTuple
     cpp_name::String
-    # `check(extra)` throws an `ArgumentError` for invalid values of the pass-specific
-    # options, which `parse_options` can't tell (keyword-only options, combinations)
+    # `check(values)` throws an `ArgumentError` for values of the pass-specific options
+    # that are invalid together
     check::Any
+
+    PassDefinition(name, kind, required, impl, options=(;), cpp_name="", check=nothing) =
+        new(name, kind, required, impl, option_specs(options), cpp_name, check)
 end
-
-PassDefinition(name, kind, required, impl, extra=(;), cpp_name="") =
-    PassDefinition(name, kind, required, impl, extra, cpp_name, nothing)
-
-keyword_only_options(def::PassDefinition) =
-    Tuple(k for (k, v) in pairs(def.extra) if v === nothing)
 
 # the same pass with another implementation (e.g. one that captures a pass argument that
 # can't be a pipeline option)
 with_impl(def::PassDefinition, impl) =
-    PassDefinition(def.name, def.kind, def.required, impl, def.extra, def.cpp_name,
+    PassDefinition(def.name, def.kind, def.required, impl, def.options, def.cpp_name,
                    def.check)
 
 # all passes, in the order they were defined
 const PASSES = PassDefinition[]
 
-function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
+function define_pass(name, kind, impl; required::Bool, options::NamedTuple=(;),
                      cpp_name::String, check=nothing)
     startswith(name, "jl-") || error("pass names must start with jl-")
     kind in (:module, :function, :loop) || error("invalid pass kind $kind")
-    def = PassDefinition(name, kind, required, impl, extra, cpp_name, check)
+    def = PassDefinition(name, kind, required, impl, options, cpp_name, check)
     filter!(p -> p.name != name || p.kind != kind, PASSES)
     push!(PASSES, def)
     return def
@@ -331,25 +400,27 @@ function run_pass(def::PassDefinition, @nospecialize(ir), am, opts::PassOptions)
     return def.impl(ir, am, opts)
 end
 
+function parse_options(def::PassDefinition, str::AbstractString; kwargs...)
+    opts = parse_options(str; options=def.options, kwargs...)
+    def.check === nothing || def.check(opts.extra)
+    return opts
+end
+
 # The LLVM.jl pass for a definition, with the defaults for options not given in the
-# pipeline: the policies, and the pass-specific options (keyword arguments named like the
-# entries of `def.extra`, with values of the same type). Vector-valued options can only be
-# set this way, and so can options whose default in the definition is `nothing`
-# (keyword-only, see `parse_options`), of any type: the definition's `check` validates
-# them.
+# pipeline: the policies, and the pass-specific options (keyword arguments named like
+# the options, converted to their types). Keyword-only options can only be set this way.
 function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
                      gc_barrier::Symbol=:stock, kwargs...)
-    given = map(collect(pairs(kwargs))) do (k, v)
-        haskey(def.extra, k) ||
+    given = Dict{Symbol,Any}(pairs(option_defaults(def.options)))
+    for (k, v) in pairs(kwargs)
+        haskey(def.options, k) ||
             throw(ArgumentError("unknown option $k for pass $(def.name)"))
-        k => option_argument(def.extra[k], v, "$k of pass $(def.name)")
+        given[k] = convert_option(def.options[k], v, "option $k of pass $(def.name)")
     end
-    extra = merge(def.extra, (; given...))
-    keyword_only = keyword_only_options(def)
+    values = NamedTuple{keys(def.options)}(Tuple(given[k] for k in keys(def.options)))
+    parse = str -> parse_options(def, str; fp16, bf16, gc_barrier, values)
     # validate the defaults now, rather than when the pass is first used
-    parse_options(""; fp16, bf16, gc_barrier, extra, keyword_only)
-    def.check === nothing || def.check(extra)
-    parse = str -> parse_options(str; fp16, bf16, gc_barrier, extra, keyword_only)
+    parse("")
     callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
     constructor = def.kind === :module ? ModulePass :
                   def.kind === :function ? FunctionPass : LoopPass

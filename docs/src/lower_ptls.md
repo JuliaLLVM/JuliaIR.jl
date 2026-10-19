@@ -50,7 +50,8 @@ code keeps the names and the structure of the C++ (`fix_pgcstack_use!`,
 
 The facts left unspecified are [runtime facts](runtime.md) of the running Julia, read
 when a module needs them (never when it doesn't call a getter) and never at precompile
-time. The offset and the addresses are [`JuliaIR.Optional`](@ref) options. Like the C++
+time. The offset may be negative, and the addresses are written in hexadecimal or
+decimal (see [`JuliaIR.option`](@ref)). Like the C++
 pass, JIT mode produces code for the process that runs the pass: the addresses and the
 offset are the running Julia's, whatever the module's target.
 

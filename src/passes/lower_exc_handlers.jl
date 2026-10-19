@@ -252,7 +252,7 @@ end
 
 const LOWER_EXC_HANDLERS =
     define_pass("jl-lower-exc-handlers", :function, lower_exc_handlers!; required=true,
-                extra=(; runtime_options(:handler_size, :handler_align, :setjmp)...,
+                options=(; runtime_options(:handler_size, :handler_align, :setjmp)...,
                        setjmp_savemask=:auto),
                 cpp_name="LowerExcHandlers")
 
