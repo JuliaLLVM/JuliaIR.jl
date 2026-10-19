@@ -43,6 +43,15 @@ machine's at every level; `JuliaIR.alias_analyses!(pb, level)` sets up the same,
 `JuliaIR.optimize!` uses it. A pass builder without it (as in `opt` and `jlopt`) uses
 LLVM's default alias analyses at every level.
 
+## Target
+
+From Julia 1.14 on, Julia's JIT gives CPUFeatures the target machine it compiles for,
+whereas `opt -passes=julia` gives it none (so a function without a `target-cpu` is taken
+to be for the generic CPU). `JuliaIR.optimize!(mod, tm)` does the former (with the port:
+Julia's C++ pass, with `ports=false`, can't be given a target machine); the pipeline's
+text does the latter, except that in `jlopt`, `-mcpu` and `-mattr` also set the target of
+CPUFeatures (see [CPUFeatures](cpu_features.md)).
+
 ## Recipes
 
 Each Julia version has its own recipe (`src/pipeline/julia-1.*.jl`), written stage by

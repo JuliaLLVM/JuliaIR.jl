@@ -326,12 +326,19 @@ end
 
 Optimize `mod` like Julia does, with its optimization pipeline (see
 [`JuliaIR.JuliaPipeline`](@ref) for the keyword arguments) and its choice of alias
-analyses, for the target machine `tm`.
+analyses, for the target machine `tm`. Like Julia's JIT from Julia 1.14 on, CPUFeatures
+answers for `tm` where a function doesn't say its target; with `ports=false`, Julia's C++
+CPUFeatures runs by name, which can't be given a target machine (as in `opt`).
 """
 function optimize!(mod::LLVM.Module, tm::Union{Nothing,LLVM.TargetMachine}=nothing; kwargs...)
     p = JuliaPipeline(; kwargs...)
+    options = Dict{String,NamedTuple}()
+    # (earlier versions' CPUFeatures uses the JIT's features, whatever the target machine)
+    if tm !== nothing && Dialect(VERSION).cpu_features_rule === :subtarget
+        options[CPU_FEATURES.name] = (; target_machine=tm)
+    end
     @dispose pb=PassBuilder() begin
-        register!(pb)
+        register!(pb; options)
         alias_analyses!(pb, p.level)
         build_pipeline!(pb, p)
         run!(pb, mod, tm)

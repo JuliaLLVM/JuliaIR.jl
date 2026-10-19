@@ -178,6 +178,34 @@ end
     end
 end
 
+@testset "target of CPUFeatures" begin
+    # Julia's JIT gives CPUFeatures its target machine from Julia 1.14 on
+    ir = """
+        target triple = "x86_64-unknown-linux-gnu"
+        declare i1 @julia.cpu.have_fma.f64()
+        define i1 @f() {
+          %fma = call i1 @julia.cpu.have_fma.f64()
+          ret i1 %fma
+        }
+        """
+    if :X86 in LLVM.backends() && JuliaIR.Dialect(VERSION).cpu_features_rule === :subtarget
+        @dispose ctx=Context(; opaque_pointers=true) begin
+            answers = map(("x86-64", "haswell")) do cpu
+                mod = parse(LLVM.Module, ir)
+                tm = JuliaIR.target_machine(mod; cpu)
+                try
+                    JuliaIR.optimize!(mod, tm; level=0)
+                    occursin("ret i1 true", string(mod))
+                finally
+                    dispose(tm)
+                    dispose(mod)
+                end
+            end
+            @test answers == (false, true)
+        end
+    end
+end
+
 @testset "IRCE with cleanup" begin
     ir = """
         define void @changed(ptr %arr, ptr %len_ptr, i32 %n) {
