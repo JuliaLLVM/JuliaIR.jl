@@ -81,14 +81,16 @@ map_constant(m::AddrspaceMaterializer, @nospecialize(val::Value)) =
 function (m::AddrspaceMaterializer)(@nospecialize(val::Value))
     val isa ConstantExpr || return nothing
     typ = m.remapper(val.value_type)
-    op = val.opcode
-    if op == LLVM.Opcode.AddrSpaceCast
+    opcode = val.opcode
+    if opcode == LLVM.Opcode.AddrSpaceCast
         src = map_constant(m, val.operands[1])
         src === nothing && return nothing
         return pointer_addrspace(src) == pointer_addrspace(typ) ? src : nothing
     end
+    # the operands are mapped before giving up on a GEP, which fills the value map as in
+    # the C++
     ops = Constant[something(map_constant(m, op), op) for op in val.operands]
-    op == LLVM.Opcode.GetElementPtr && return nothing
+    opcode == LLVM.Opcode.GetElementPtr && return nothing
     return with_operands(val, ops; type=typ)
 end
 
@@ -150,7 +152,6 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
     r = AddrspaceRemapper(asmap)
     @dispose vmap=ValueMap() begin
         m = AddrspaceMaterializer(r, vmap)
-        map_constant(val) = map_value(val, vmap; type_mapper=r, materializer=m)
 
         # the new global values, without contents or attributes yet
         globals = collect(mod.globals)
@@ -187,7 +188,7 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
         ifuncs = collect(mod.ifuncs)
         for gi in ifuncs
             name = rename_bad!(gi)
-            new = GlobalIFunc(mod, r(gi.global_value_type), map_constant(gi.resolver), name)
+            new = GlobalIFunc(mod, r(gi.global_value_type), map_constant(m, gi.resolver), name)
             new.linkage = gi.linkage
             copy_attributes!(new, gi)
             vmap[gi] = new
@@ -197,7 +198,7 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
         for gv in globals
             isdeclaration(gv) && continue
             new = vmap[gv]
-            new.initializer = map_constant(gv.initializer)
+            new.initializer = map_constant(m, gv.initializer)
             copy_comdat!(new, gv)
             gv.initializer = nothing
         end
@@ -236,7 +237,7 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
 
         for ga in aliases
             aliasee = ga.aliasee
-            aliasee === nothing || (vmap[ga].aliasee = map_constant(aliasee))
+            aliasee === nothing || (vmap[ga].aliasee = map_constant(m, aliasee))
             ga.aliasee = nothing
         end
 
