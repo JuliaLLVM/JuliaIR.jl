@@ -63,10 +63,7 @@ mutable struct CancellationLowering
     f::LLVM.Function
     fns::GCFunctions
     builder::IRBuilder
-    dl::DataLayout
-    T_size::LLVMType
-    # the facts about Julia's runtime (`RuntimeFacts`), read when needed
-    layout::Any
+    gc::GCCodegen
     pgcstack::Union{Nothing,Value}
     # the GC stack's getter call, unless the GC stack is an argument
     pgcstack_inst::Union{Nothing,Instruction}
@@ -75,13 +72,6 @@ mutable struct CancellationLowering
     ptls_field_ptr::Union{Nothing,Instruction}
     eh_field_ptr::Union{Nothing,Instruction}
 end
-
-function runtime_layout(p::CancellationLowering)
-    p.layout === nothing && (p.layout = runtime_layout(p.opts, p.mod))
-    return p.layout
-end
-
-pointer_align(p::CancellationLowering) = abi_alignment(p.dl, LLVM.PointerType(AS_GENERIC))
 
 intrinsic_id(callee::LLVM.Function) =
     LLVM.isintrinsic(callee) ? callee.intrinsic : nothing
@@ -103,7 +93,7 @@ function is_implicit_runtime_call(p::CancellationLowering, call::Instruction)
     startswith(name, "julia.call") && return true
     # only read the setjmp fact for names it could be
     (startswith(name, "ijl_") || startswith(name, "jl_")) || return false
-    return name != runtime_layout(p).setjmp
+    return name != p.gc.layout.setjmp
 end
 
 # `BasicBlock::getTerminatingMustTailCall`
@@ -152,7 +142,7 @@ function compute_reset_ctx_ptr!(p::CancellationLowering)
             position_before!(builder, pos; debug=true)
         end
     end
-    rt = runtime_layout(p)
+    rt = p.gc.layout
     T_int8 = LLVM.Int8Type()
     T_int64 = LLVM.Int64Type()
     task = gep!(builder, T_int8, p.pgcstack, [ConstantInt(T_int64, -rt.task_gcstack)],
@@ -168,16 +158,16 @@ end
 
 function emit_safepoint!(p::CancellationLowering)
     builder = p.builder
-    ptls = load!(builder, LLVM.PointerType(), p.ptls_field_ptr, "ptls"; align=pointer_align(p))
-    # `emit_gc_safepoint` as of 1.14, without TBAA
-    emit_gc_safepoint!(builder, p.mod, ptls, :monotonic_named,
-                       runtime_layout(p).tls_safepoint, pointer_align(p), nothing)
+    ptls = load!(builder, LLVM.PointerType(), p.ptls_field_ptr, "ptls";
+                 align=pointer_align(p.gc))
+    # `emit_gc_safepoint`, without TBAA
+    emit_gc_safepoint!(p.gc, ptls, nothing; final=false)
 end
 
 # `reset_ctx = NULL` (release), before the builder's position
 function clear_region!(p::CancellationLowering)
     store = store!(p.builder, LLVM.null(LLVM.PointerType()), p.reset_ctx_ptr;
-                   align=pointer_align(p), volatile=true,
+                   align=pointer_align(p.gc), volatile=true,
                    ordering=LLVM.API.LLVMAtomicOrderingRelease)
     set_reset_safe_md!(store)
     return store
@@ -190,12 +180,12 @@ end
 function lower_point!(p::CancellationLowering, point::Instruction,
                       buffer::Union{Nothing,Instruction})
     builder = p.builder
-    rt = runtime_layout(p)
+    rt = p.gc.layout
     T_int8 = LLVM.Int8Type()
     T_int32 = LLVM.Int32Type()
     T_int64 = LLVM.Int64Type()
     T_ptr = LLVM.PointerType()
-    align = pointer_align(p)
+    align = pointer_align(p.gc)
     # every instruction created for the point gets its debug location
     loc = point.debug_location
 
@@ -221,10 +211,10 @@ function lower_point!(p::CancellationLowering, point::Instruction,
     position!(builder, LLVM.at_end(establish_bb))
     builder.debug_location = loc
     clear_region!(p)
-    emit_signal_fence!(builder)
+    emit_signal_fence!(p.gc)
     emit_safepoint!(p)
 
-    sp = ptrtoint!(builder, buffer, p.T_size)
+    sp = ptrtoint!(builder, buffer, p.gc.T_size)
     stamp = store!(builder, sp, buffer; align=rt.reset_ctx_align, volatile=true,
                    ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
     set_reset_safe_md!(stamp)
@@ -315,7 +305,7 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     is_fn(fns.alloc_obj, callee) && return true
     is_write_barrier(fns, callee) && return true
     # the name of setjmp last, so that its fact is read only for calls that are left
-    return name == runtime_layout(p).setjmp
+    return name == p.gc.layout.setjmp
 end
 
 # the instructions before which an open region must be closed
@@ -366,11 +356,10 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
     dialect.has_cancellation_lowering || return PreservedAnalyses(AllAnalyses)
     mod = LLVM.parent(f)
     @dispose builder=IRBuilder() begin
-        dl = mod.datalayout
         fns = GCFunctions(mod, dialect)
-        p = CancellationLowering(opts, mod, f, fns, builder, dl,
-                                 LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                                 nothing, nothing, nothing, nothing, nothing, nothing)
+        gc = GCCodegen(dialect, mod, builder, runtime_layout(opts, mod))
+        p = CancellationLowering(opts, mod, f, fns, builder, gc, nothing, nothing, nothing,
+                                 nothing, nothing)
         p.pgcstack = get_pgcstack(dialect, f, fns.pgcstack_getter, fns.adoptthread)
         p.pgcstack isa Instruction && (p.pgcstack_inst = p.pgcstack)
 
@@ -409,7 +398,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
             push!(publishes, publish)
             cfg_changed = true
         end
-        no_publish && return preserved(changed, cfg_changed)
+        no_publish && return cancellation_preserved(changed, cfg_changed)
 
         # a region can only be open where a publication reaches, or anywhere in a function
         # that may inherit one from its caller
@@ -440,7 +429,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
                 changed = true
                 position_before!(builder, inst; debug=true)
                 clear_region!(p)
-                emit_signal_fence!(builder)
+                emit_signal_fence!(p.gc)
             end
         end
 
@@ -478,14 +467,14 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
                 end
             end
         end
-        return preserved(changed, cfg_changed)
+        return cancellation_preserved(changed, cfg_changed)
     end
 end
 
 # The C++ pass reports the CFG as preserved also when it split blocks, which leaves a
 # cached dominator tree without the new blocks; LateLowerGCFrame then took a
 # `GC.@preserve`d object for dead across a call after a cancellation point.
-preserved(changed::Bool, cfg_changed::Bool) =
+cancellation_preserved(changed::Bool, cfg_changed::Bool) =
     !changed ? PreservedAnalyses(AllAnalyses) :
     cfg_changed ? PreservedAnalyses() : PreservedAnalyses(CFGAnalyses)
 

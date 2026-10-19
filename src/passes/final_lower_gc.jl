@@ -387,7 +387,7 @@ function final_lower_gc_function!(p::FinalLowerGC, f::LLVM.Function; declare::Bo
     return p.cfg_modified ? :cfg_changed : :changed
 end
 
-preserved(result::Symbol) =
+final_lower_gc_preserved(result::Symbol) =
     result === :skipped ? PreservedAnalyses(AllAnalyses) :
     result === :changed ? PreservedAnalyses(CFGAnalyses) : PreservedAnalyses()
 
@@ -396,7 +396,7 @@ preserved(result::Symbol) =
 function final_lower_gc!(f::LLVM.Function, am, opts::PassOptions)
     @dispose builder=IRBuilder() begin
         p = FinalLowerGC(opts.dialect, LLVM.parent(f), builder)
-        return preserved(final_lower_gc_function!(p, f; declare=true))
+        return final_lower_gc_preserved(final_lower_gc_function!(p, f; declare=true))
     end
 end
 
