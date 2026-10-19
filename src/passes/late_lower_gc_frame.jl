@@ -554,6 +554,19 @@ is_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
 is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
     callee isa LLVM.Function && callee in fns.field_write_barriers
 
+# What the pass knows of TBAA metadata, which is uniqued in the context and whose operands
+# passes don't set, so the same for all functions of a module (`module_facts`), as is what
+# follows from the operands of a tag's ancestors: its own tags, built on first use
+# (`tbaa_tags`), and about the tags of the input, whether they derive from the dialect's
+# `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces them with.
+mutable struct TBAACache
+    tags::Union{Nothing,TBAATags}
+    immutable::Dict{MDNode,Bool}
+    downgraded::Dict{MDNode,MDNode}
+end
+
+TBAACache() = TBAACache(nothing, Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
+
 mutable struct LateLowerGCFrame <: GCLowering
     dialect::Dialect
     opts::PassOptions
@@ -571,12 +584,7 @@ mutable struct LateLowerGCFrame <: GCLowering
     # the facts about Julia's runtime (`RuntimeFacts`), read when needed
     layout::Any
     cfg_modified::Bool
-    # built on first use (`tbaa_tags`)
-    tbaa::Union{Nothing,TBAATags}
-    # the TBAA tags of the input, memoized: whether they derive from the dialect's
-    # `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces them with
-    immutable_tbaa::Dict{MDNode,Bool}
-    downgraded_tbaa::Dict{MDNode,MDNode}
+    tbaa::TBAACache
 end
 
 function dominator_tree(p::LateLowerGCFrame)
@@ -585,8 +593,9 @@ function dominator_tree(p::LateLowerGCFrame)
 end
 
 function tbaa_tags(p::LateLowerGCFrame)
-    p.tbaa === nothing && (p.tbaa = TBAATags())
-    return p.tbaa::TBAATags
+    cache = p.tbaa
+    cache.tags === nothing && (cache.tags = TBAATags())
+    return cache.tags::TBAATags
 end
 
 function runtime_layout(p::LateLowerGCFrame)
@@ -1132,7 +1141,7 @@ function is_load_from_rooted_region(p::LateLowerGCFrame, li::Instruction)
     if p.dialect.gc_rooted_loads === :tbaa
         tbaa = haskey(md, LLVM.MD_tbaa) ? md[LLVM.MD_tbaa] : nothing
         tbaa isa MDNode || return false
-        return get!(p.immutable_tbaa, tbaa) do
+        return get!(p.tbaa.immutable, tbaa) do
             tbaa_derives_from(tbaa, p.dialect.gc_immutable_tbaa)
         end
     end
@@ -2675,7 +2684,7 @@ end
 # the TBAA tag that an access tagged `tag` gets: the tag without its immutability flag if
 # it derives from one of the dialect's `tbaa_downgrade` types
 downgraded_tbaa_tag(p::LateLowerGCFrame, tag::MDNode) =
-    get!(p.downgraded_tbaa, tag) do
+    get!(p.tbaa.downgraded, tag) do
         length(tag.operands) == 4 && tbaa_derives_from(tag, p.dialect.tbaa_downgrade) ?
             mutable_tbaa_tag(tag) : tag
     end
@@ -2824,8 +2833,8 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder, dl,
                              LLVM.PointerType(AS_TRACKED),
                              LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                             nothing, nothing, nothing, false, nothing,
-                             Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
+                             nothing, nothing, nothing, false,
+                             module_facts(TBAACache, opts, mod, TBAACache))
         declare_small_alloc && get_or_declare(p, :gc_small_alloc)
         p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing
