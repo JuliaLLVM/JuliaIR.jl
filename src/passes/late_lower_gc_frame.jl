@@ -1658,8 +1658,8 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
     return
 end
 
-function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState, inst::Instruction,
-                           phi_numbers::Vector{Int})
+function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState,
+                           @nospecialize(inst::Instruction), phi_numbers::Vector{Int})
     if inst isa LLVM.CallInst
         scan_call!(p, S, BBS, inst)
     elseif inst isa LLVM.LoadInst
