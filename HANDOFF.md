@@ -253,9 +253,9 @@ with B alone must fail; layer files must belong to fixtures of the pin. The pins
 checked with OPT's FileCheck against pristine + plain B patch; bitcode and stderr pass
 through (RUN lines checking stderr are listed); a crash of jlopt is re-raised for
 `not --crash`. `test/upstream/derive.jl JULIA_REPO --llvm 23 [--check]` generates the layer
-from six rules (lifetime-size, masked-align, target-features-sign (input repair), splat,
+from seven rules (memoryssa-alias, lifetime-size, masked-align, target-features-sign (input repair), splat,
 null-pointer-splat, decimal-fp), each with its LLVM PR and the Julia commit whose fixture
-adaptation it reproduces, and an exact per-(pin, fixture) count of lines changed. 20 patches
+adaptation it reproduces, and an exact per-(pin, fixture) count of lines changed. 21 patches
 for 1.10–1.13; the oracle passes at every pin with them and at master without. Mode B was
 only run on Julia's own LLVM (nightly 20/20, 1.12 15/15), since no LLVM.jl branch loads a
 standalone library with the pass APIs yet (S11 step 1).

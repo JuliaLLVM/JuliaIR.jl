@@ -97,6 +97,11 @@ end
     input = "  call void @llvm.lifetime.start.p0(i64 8, ptr %a)"
     @test rewrite("lifetime-size", input, :input) == input
 
+    @test rewrite("memoryssa-alias", "; CHECK: MemoryUse([[MPHI]]) MayAlias") ==
+          "; CHECK: MemoryUse([[MPHI]])"
+    @test rewrite("memoryssa-alias", "; CHECK: [[MSSA_USE]] = MemoryDef([[MPHI]])") ==
+          "; CHECK: [[MSSA_USE]] = MemoryDef([[MPHI]])"
+
     @test rewrite("masked-align", "; CHECK: call <2 x ptr> @llvm.masked.gather.v2p0.v2p11(<2 x ptr addrspace(11)> %ptrs, i32 16, <2 x i1> %m, <2 x ptr> %p)") ==
           "; CHECK: call <2 x ptr> @llvm.masked.gather.v2p0.v2p11(<2 x ptr addrspace(11)> align 16 %ptrs, <2 x i1> %m, <2 x ptr> %p)"
 

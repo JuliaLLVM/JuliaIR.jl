@@ -204,6 +204,7 @@ opaque pointers use, except for input repairs, which say so. For LLVM 23:
 
 | rule | LLVM | change |
 |---|---|---|
+| `memoryssa-alias` | 16 | `print<memoryssa>` no longer prints the alias result of an access (`MayAlias`) |
 | `lifetime-size` | 22 | `llvm.lifetime.start/end` lost their size argument |
 | `masked-align` | 22 | the alignment of `llvm.masked.load/gather` became an `align` attribute |
 | `target-features-sign` | 22 | the verifier requires `+`/`-` in `"target-features"`; an input repair of `multiversioning-clone-only.ll` |
