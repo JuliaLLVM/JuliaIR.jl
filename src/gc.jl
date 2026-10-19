@@ -46,7 +46,7 @@ function get_pgcstack(dialect::Dialect, f::LLVM.Function, getter, adopt)
     end
     if dialect.gc_stack_argument
         for (i, arg) in enumerate(f.parameters)
-            has_string_attribute(f.parameter_attributes[i], "gcstack") && return arg
+            haskey(f.parameter_attributes[i], "gcstack") && return arg
         end
     end
     return nothing

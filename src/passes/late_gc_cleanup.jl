@@ -84,13 +84,6 @@ function cleanup_functions(dialect::Dialect)
     return names
 end
 
-function has_string_attribute(attrs, kind::String)
-    for attr in attrs
-        attr isa StringAttribute && LLVM.kind(attr) == kind && return true
-    end
-    return false
-end
-
 # the constructs of a function that need Julia's runtime or a GC frame
 function unsupported_constructs(f::LLVM.Function, dialect::Dialect)
     mod = LLVM.parent(f)
@@ -109,7 +102,7 @@ function unsupported_constructs(f::LLVM.Function, dialect::Dialect)
     # Julia's frame lowering roots values in a frame on the GC stack, used or not
     gcstack = "the function has a GC stack, which needs GC frame lowering"
     for (i, arg) in enumerate(f.parameters)
-        if has_string_attribute(f.parameter_attributes[i], "gcstack")
+        if haskey(f.parameter_attributes[i], "gcstack")
             push!(found, UnsupportedConstruct("gcstack argument: $gcstack", string(arg), ""))
         end
     end

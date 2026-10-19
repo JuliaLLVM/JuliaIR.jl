@@ -75,10 +75,8 @@ end
 # the argument of a function that holds its GC stack
 function gc_stack_argument(p::LowerPTLS, f::LLVM.Function)
     for (i, arg) in enumerate(f.parameters)
-        attrs = collect(f.parameter_attributes[i])
-        found = p.dialect.ptls_stack_argument === :gcstack ?
-            has_string_fn_attr(attrs, "gcstack") : has_enum_fn_attr(attrs, "swiftself")
-        found && return arg
+        kind = p.dialect.ptls_stack_argument === :gcstack ? "gcstack" : :swiftself
+        haskey(f.parameter_attributes[i], kind) && return arg
     end
     return nothing
 end

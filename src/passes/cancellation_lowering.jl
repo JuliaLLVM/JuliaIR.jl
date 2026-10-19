@@ -392,14 +392,14 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
         instrumented = !isempty(points)
         # a function without points of its own only needs instrumentation when it may run
         # inside its caller's region
-        fn_attrs = collect(LLVM.function_attributes(f))
-        inherits_region = has_string_fn_attr(fn_attrs, "julia.ipo_reset_safe")
+        fn_attrs = LLVM.function_attributes(f)
+        inherits_region = haskey(fn_attrs, "julia.ipo_reset_safe")
         !instrumented && (p.pgcstack === nothing || !inherits_region) &&
             return PreservedAnalyses(AllAnalyses)
         # Under TSan, whose instrumentation runs later and would turn the pass's own
         # bookkeeping into runtime calls a reset could abandon, no region is published:
         # a point is just a safepoint.
-        no_publish = has_enum_fn_attr(fn_attrs, "sanitize_thread")
+        no_publish = haskey(fn_attrs, :sanitize_thread)
         no_publish && !instrumented && return PreservedAnalyses(AllAnalyses)
         # the C++ pass emits instructions with null operands here
         if instrumented && p.pgcstack === nothing
