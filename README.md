@@ -72,5 +72,5 @@ project). With such a wrapper, LLVM's `update_test_checks.py --opt-binary=DIR/op
 the tests.
 
 `test/upstream/run.jl` runs Julia's own pass tests (`test/llvmpasses`) at pinned commits
-(and, for the nightly build, at the commit it was built from), with the ports;
+(and, for nightly builds, at the commit they were built from), with the ports;
 `test/upstream/manifest.toml` records which apply. See the documentation's "Testing" page.

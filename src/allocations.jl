@@ -1,5 +1,5 @@
 # Escape analysis of Julia's GC allocations (`julia.gc_alloc_obj`), used by AllocOpt and
-# later JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (master).
+# later JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (1.14).
 
 # Julia's address spaces (`src/llvm-codegen-shared.h`), which are the same in every dialect
 const AS_GENERIC = 0

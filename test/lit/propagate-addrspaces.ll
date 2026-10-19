@@ -1,5 +1,5 @@
 ; PropagateJuliaAddrspaces lifts chains into the common address space of their leaves
-; on every dialect (Julia master's behaviour, JuliaLang/julia#62807).
+; on every dialect (Julia 1.14's behaviour, JuliaLang/julia#62807).
 
 ; RUN: opt -passes='function(jl-propagate-addrspaces,dce)' -S %s | FileCheck %s
 ; RUN: opt -passes='function(PropagateJuliaAddrspaces,dce)' -S %s | FileCheck %s

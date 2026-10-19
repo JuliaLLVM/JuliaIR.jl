@@ -43,8 +43,8 @@ without a GC frame, as GPU back-ends emit them, after checking an input contract
 The pass follows the C++ pass of the running Julia's version. The differences between
 versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
-|-----------|------|------|------|------|--------|
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
+|-----------|------|------|------|------|----------------|
 | loads that are rooted by the object they load from | `!invariant.load`, or TBAA of `jtbaa_immut`, `jtbaa_const`, `jtbaa_datatype` | same, and `jtbaa_memoryptr`, `jtbaa_memorylen`, `jtbaa_memoryown` | same | same | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten |
 | loads through an argument (jlcall argument arrays) rooted by the caller | yes | yes | yes | no | no |
 | no frame without a safepoint after the first definition | no | no | no | yes | yes |
@@ -61,7 +61,7 @@ versions are fields of `JuliaIR.Dialect`:
 | `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same |
 | `ijl_gc_small_alloc` declared | no | no | yes | yes | yes |
 
-On Julia master, the `gc_barrier` policy of the dialect selects the write-barrier build
+From Julia 1.14 on, the `gc_barrier` policy of the dialect selects the write-barrier build
 configuration: with `:snapshot` (or `:snapshot_field_precise`), barriers are never
 elided. Builds with MMTk are not supported.
 
@@ -97,13 +97,13 @@ not contain:
 | Construct | Why | Who removes it |
 |-----------|-----|----------------|
 | `julia.gc_alloc_obj` calls | Julia's allocator and object headers | the back-end's GC lowering (GPUCompiler: calls of `gpu_gc_pool_alloc`) |
-| write barriers (`julia.write_barrier`; on Julia master `julia.object_write_barrier` and `julia.field_write_barrier.p11/.p13`) | there is no generational GC | the back-end's GC lowering |
+| write barriers (`julia.write_barrier`; from Julia 1.14 on `julia.object_write_barrier` and `julia.field_write_barrier.p11/.p13`) | there is no generational GC | the back-end's GC lowering |
 | a GC stack: a `julia.get_pgcstack` or `julia.get_pgcstack_or_new` call, or an argument with the `gcstack` attribute, even if unused | Julia's root placement pushes a frame onto it as soon as a value must be rooted | GPUCompiler's `GPULowerPTLS` removes unused `julia.get_pgcstack` calls; GPU code is compiled without `gcstack` arguments |
 | `julia.typeof` calls | reads the type tag from the object header | (not supported on GPUs) |
 | `julia.blackbox` calls | lowered to inline assembly for the CPU | (not supported on GPUs) |
 | GC frame intrinsics and `julia.gc_alloc_bytes`, `julia.queue_gc_root` | created by `LateLowerGCFrame` for Julia's runtime, lowered by `FinalLowerGC` | |
 | `gc-transition` operand bundles (Julia 1.12 and later) | GC state transitions of `ccall(...; gc_safe=true)` | (not supported on GPUs) |
-| `julia.gc_alloc_ptr_offsets` and `julia.gc_alloc_zeroinit` operand bundles (Julia master) | they ask for the fields of a new object to be initialized, which the lowering of `julia.gc_alloc_obj` must do | the back-end's GC lowering |
+| `julia.gc_alloc_ptr_offsets` and `julia.gc_alloc_zeroinit` operand bundles (Julia 1.14 and later) | they ask for the fields of a new object to be initialized, which the lowering of `julia.gc_alloc_obj` must do | the back-end's GC lowering |
 | `invoke` or `callbr` of Julia's intrinsics, or with Julia's operand bundles | Julia only emits calls, and the pass only lowers those | |
 
 The function may contain the following, which the pass rewrites:
@@ -111,13 +111,13 @@ The function may contain the following, which the pass rewrites:
 | Input | Output |
 |-------|--------|
 | a load through a pointer in address space 10 to 13 with `!invariant.load` | the load without `!invariant.load`: memory is only constant while the GC keeps its object alive, which is not known after GC lowering (JuliaLang/julia#32215) |
-| an access with a TBAA tag (4 operands, immutable) whose type derives from `jtbaa_const` (Julia 1.10), from `jtbaa_const`, `jtbaa_memoryptr` or `jtbaa_memorylen` (1.11 to 1.13), or from `jtbaa_const` or `jtbaa_memory` (master) | the same tag without the immutability flag |
+| an access with a TBAA tag (4 operands, immutable) whose type derives from `jtbaa_const` (Julia 1.10), from `jtbaa_const`, `jtbaa_memoryptr` or `jtbaa_memorylen` (1.11 to 1.13), or from `jtbaa_const` or `jtbaa_memory` (1.14 and later) | the same tag without the immutability flag |
 | `insertvalue undef, ...` or `insertvalue poison, ...` | `insertvalue zeroinitializer, ...` (SROA starts such chains from `undef`, and the fields of aggregates with tracked pointers must not be) |
 | `llvm.julia.gc_preserve_begin`, `llvm.julia.gc_preserve_end`, `julia.gcroot_flush` calls | removed |
 | `julia.pointer_from_objref(obj)` | `addrspacecast obj` |
 | `julia.gc_loaded(parent, ptr)` (Julia 1.11 and later) | `addrspacecast ptr` |
 | `julia.call(fptr, f, args...)`, `julia.call2(fptr, arg1, f, args...)`, `julia.call3(fptr, f, args...)` (1.11 and later) | `fptr(f, frame, nargs)` (or `fptr(f, frame, nargs, arg1)`), with `args` stored in an array (`jlcallframe` from Julia 1.11 on) allocated once per function, as large as the largest jlcall needs |
-| a call with the `julia.gc_alloc_zeroinit_indirect(offset, size)` operand bundle (Julia master, on `jl_alloc_genericmemory_unchecked`) | the call, followed by a `memset` of `size` bytes at the data pointer stored at `offset` in the new object (nothing for a constant size of 0) |
+| a call with the `julia.gc_alloc_zeroinit_indirect(offset, size)` operand bundle (Julia 1.14 and later, on `jl_alloc_genericmemory_unchecked`) | the call, followed by a `memset` of `size` bytes at the data pointer stored at `offset` in the new object (nothing for a constant size of 0) |
 | a call with Julia's operand bundles (`jl_roots`, ...) | the same call without them; other operand bundles are kept |
 
 GPUCompiler's IR validator relies on the jlcall lowering: it reports dynamic calls by
@@ -159,7 +159,7 @@ Deliberate differences, on the IR of every Julia version:
   including, e.g., `align` assumptions and convergence control tokens.
 - The GC state byte of a thread is accessed with an alignment that holds: the C++ pass
   claims pointer alignment, which the byte at offset 25 of Julia 1.12 and 1.13 doesn't
-  have (it does at master's offset 128).
+  have (it does at 1.14's offset 128).
 - Allocas that are moved into the GC frame get their slots in the order of the
   function. The C++ pass iterates over a hash map keyed by the allocas' addresses, so its
   order changes from run to run (upstream's tests check these slots with `CHECK-DAG`).
@@ -168,10 +168,10 @@ Deliberate differences, on the IR of every Julia version:
   target Julia supports.
 - The C++ pass declares `ijl_gc_small_alloc` in every module it runs on (Julia 1.12 and
   later); `jl-late-gc-cleanup` does not, since GPU modules don't link Julia's runtime.
-- For calls marked `julia.safepoint` (Julia master), the memory effects of the function
-  they call are dropped too, not only those of the call: LLVM combines both, so with the
-  C++ pass a callee declared `memory(none)` still lets DSE delete the root stored for the
-  call (a bug of the C++ pass, reproduced on Julia master with
+- For calls marked `julia.safepoint` (Julia 1.14 and later), the memory effects of the
+  function they call are dropped too, not only those of the call: LLVM combines both, so
+  with the C++ pass a callee declared `memory(none)` still lets DSE delete the root stored
+  for the call (a bug of the C++ pass, reproduced on Julia 1.14 with
   `function(LateLowerGCFrame,FinalLowerGC,sroa,dse,instcombine)`).
 - Inputs on which the C++ pass crashes or asserts (an unexpected user of an alloca moved
   into the frame, a returned-roots argument that isn't an alloca, an `insertelement` of a
@@ -184,7 +184,7 @@ Deliberate differences, on the IR of every Julia version:
 Fixes and features of later Julia versions that are applied to the IR of every version
 (none of them changes the output on IR that the older C++ pass handles):
 
-- Julia master: extractelements of tracked or derived pointers at a dynamic index are
+- Julia 1.14: extractelements of tracked or derived pointers at a dynamic index are
   lifted (the C++ pass of 1.13 and older crashes).
 - Julia 1.13: allocas that rooted pointers are stored to are found through selects and
   phis, as are the allocas of returned roots, and a trampoline that forwards its own
@@ -199,8 +199,8 @@ Fixes and features of later Julia versions that are applied to the IR of every v
   loaded values, and selects and phis of aggregates of derived pointers are lifted (1.10
   only handles vectors).
 
-The pass also handles, on the IR of every version, constructs that only Julia master
-emits, so older versions' IR doesn't contain them: calls marked `julia.safepoint` are
+The pass also handles, on the IR of every version, constructs that only Julia 1.14 and
+later emit, so older versions' IR doesn't contain them: calls marked `julia.safepoint` are
 safepoints whatever their memory effects claim, and their memory effects are dropped
 (with LLVM 15, the attributes that LLVM 16 replaced by `memory`); `julia.blackbox` is
 lowered; thunks are skipped; `julia.gc_alloc_obj` calls with `julia.gc_alloc_ptr_offsets`

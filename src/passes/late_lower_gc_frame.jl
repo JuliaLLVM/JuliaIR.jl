@@ -1173,7 +1173,7 @@ function note_operand_uses!(p::LateLowerGCFrame, S::State, BBS::BBState, inst::I
 end
 
 # whether a load reads from memory that its base object keeps alive for as long as it
-# is alive (`isLoadFromImmut` up to Julia 1.13, `isLoadFromRootedRegion` on master)
+# is alive (`isLoadFromImmut` up to Julia 1.13, `isLoadFromRootedRegion` from 1.14 on)
 function is_load_from_rooted_region(p::LateLowerGCFrame, li::Instruction)
     md = li.metadata
     haskey(md, LLVM.MD_invariant_load) && return true
@@ -1526,7 +1526,7 @@ function string_param_attr(call::Instruction, i::Int, name::String)
     return nothing
 end
 
-# the roots a call returns in memory (`julia.return_roots` on master, `sret` before);
+# the roots a call returns in memory (`julia.return_roots` from 1.14 on, `sret` before);
 # returns whether the call defines them
 function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
     has_def_before = false
@@ -2488,7 +2488,7 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
         ptls = first(LLVM.inputs(bundle))
     end
     offset = runtime_layout(p).tls_gc_state
-    # the C++ claims pointer alignment for this byte, which only holds on master's layout
+    # the C++ claims pointer alignment for this byte, which only holds on 1.14's layout
     align = gcd(pointer_align(p), offset)
     T_int8 = LLVM.Int8Type()
     gc_state = inbounds_gep!(builder, T_int8, ptls, [ConstantInt(LLVM.Int32Type(), offset)],
@@ -2588,8 +2588,8 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
                    align=pointer_align(p), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
     store.metadata[LLVM.MD_tbaa] = tbaa_tag()
 
-    # null the reference fields, or zero a region (Julia master), so that the GC sees
-    # valid pointers before the object is initialized
+    # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
+    # sees valid pointers before the object is initialized
     bundles = Dict(LLVM.tag(b) => b for b in call.operand_bundles)
     ptr_offsets = get(bundles, "julia.gc_alloc_ptr_offsets", nothing)
     zeroinit = get(bundles, "julia.gc_alloc_zeroinit", nothing)
@@ -2804,7 +2804,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     return length(frame_values)
 end
 
-# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia master, on
+# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia 1.14 and later, on
 # `jl_alloc_genericmemory_unchecked`): zero `size` bytes at the data pointer stored at
 # `offset` in the new object, after the call
 function zeroinit_indirect!(p::LateLowerGCFrame, call::Instruction, bundle::OperandBundle)
@@ -2943,14 +2943,14 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
     T_size = p.T_size
     for ci in write_barriers
         parent = ci.arguments[1]
-        # the insertion-barrier optimization, invalid for snapshot barriers (master)
+        # the insertion-barrier optimization, invalid for snapshot barriers (1.14 and later)
         if !(lowering === :deferred && snapshot) &&
            all(child -> vref(child) == vref(parent) || is_perm_rooted(S, child),
                write_barrier_children(p, ci))
             erase!(ci)
             continue
         end
-        # lowered by FinalLowerGC on Julia master
+        # lowered by FinalLowerGC from Julia 1.14 on
         lowering === :deferred && continue
         p.cfg_modified = true
 
@@ -3052,8 +3052,8 @@ has_gcstack_attribute(attrs) =
 
 # Drop the optimistic memory effects that codegen puts on calls marked `julia.safepoint`:
 # they were only valid while the GC frame was implicit, and would let DSE or GVN remove
-# or forward the frame stores (Julia master). LLVM intersects a call's effects with its
-# callee's, so the callee's are dropped too (Julia master only drops the call's).
+# or forward the frame stores (Julia 1.14). LLVM intersects a call's effects with its
+# callee's, so the callee's are dropped too (Julia 1.14 only drops the call's).
 function drop_safepoint_memory_effects!(f::LLVM.Function)
     for bb in f.blocks, inst in bb.instructions
         inst isa LLVM.CallInst || continue
@@ -3076,7 +3076,7 @@ end
 function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
                               declare_small_alloc::Bool=opts.dialect.gc_declare_small_alloc)
     dialect = opts.dialect
-    # thunks are not lowered (Julia master; adopted for every dialect)
+    # thunks are not lowered (Julia 1.14; adopted for every dialect)
     has_string_attribute(f.function_attributes, "thunk") &&
         return PreservedAnalyses(AllAnalyses)
     mod = LLVM.parent(f)

@@ -111,7 +111,7 @@ top:
 }
 
 ; write barriers: lowered with names from Julia 1.12 on, checking whether the parent is
-; in the system image from 1.13 on, and only elided (lowered by FinalLowerGC) on master
+; in the system image from 1.13 on, and only elided (lowered by FinalLowerGC) from 1.14 on
 ; CHECK-LABEL: @barrier(
 ; V110: [[BITS:%[0-9]+]] = and i64 {{%[0-9]+}}, 3
 ; V110: icmp eq i64 {{%[0-9]+}}, 0

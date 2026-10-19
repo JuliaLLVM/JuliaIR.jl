@@ -1,6 +1,6 @@
 # AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`) whose object does not
 # escape, or move them to the stack, whole or split into their fields. Port of Julia's
-# `src/llvm-alloc-opt.cpp` (master), with the representation choices of older Julia
+# `src/llvm-alloc-opt.cpp` (1.14), with the representation choices of older Julia
 # versions where their tests check them (see `alloc_layout` and `alloc_initialization`
 # in `Dialect`).
 

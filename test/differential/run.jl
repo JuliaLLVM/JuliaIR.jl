@@ -514,8 +514,15 @@ end
 
 minor() = "$(VERSION.major).$(VERSION.minor)"
 
+# exceptions are recorded per dialect: a Julia newer than the known versions has the
+# newest one's
+function dialect_minor()
+    minor = JuliaIR.Dialect(VERSION).minor
+    return "$(minor.major).$(minor.minor)"
+end
+
 applies(e::Recorded, job::Job) = e.pass == job.spec.name &&
-    occursin(e.input, job.input.id) && (isempty(e.julia) || minor() in e.julia) &&
+    occursin(e.input, job.input.id) && (isempty(e.julia) || dialect_minor() in e.julia) &&
     (isempty(e.prefix) || e.prefix == job.prefix)
 
 # The lines of an output that are compared (blank lines carry nothing), after the rewrites

@@ -1,6 +1,6 @@
-# CancellationLowering: lower the `julia.cancellation_point()` calls that Julia master's
-# code generator emits for `Base.@cancel_check` into reset regions. Port of Julia's
-# `src/llvm-cancellation-lowering.cpp` (master; no release has the pass).
+# CancellationLowering: lower the `julia.cancellation_point()` calls that the code
+# generator of Julia 1.14 and later emits for `Base.@cancel_check` into reset regions.
+# Port of Julia's `src/llvm-cancellation-lowering.cpp` (1.14).
 #
 # At a cancellation point, the function publishes a stack buffer, a `jl_reset_ctx_t`, in
 # its task's `reset_ctx` field, after saving the task's GC stack and exception handler in
@@ -18,7 +18,7 @@
 # The layout of the task and of `jl_reset_ctx_t`, and the name of `setjmp`, are facts of
 # the runtime (`src/runtime.jl`), read only for functions that need them; whether
 # `setjmp` takes a second argument follows the module's triple, as in the C++ pass. For
-# the IR of other Julia versions than master (`Dialect.has_cancellation_lowering`), the
+# the IR of Julia versions before 1.14 (`Dialect.has_cancellation_lowering`), the
 # pass does nothing. Like the C++ pass, it is required (it also runs on `optnone`
 # functions).
 
@@ -183,7 +183,7 @@ end
 function emit_safepoint!(p::CancellationLowering)
     builder = p.builder
     ptls = load!(builder, LLVM.PointerType(), p.ptls_field_ptr, "ptls"; align=pointer_align(p))
-    # `emit_gc_safepoint` as of master, without TBAA
+    # `emit_gc_safepoint` as of 1.14, without TBAA
     emit_gc_safepoint!(builder, p.mod, ptls, :monotonic_named,
                        runtime_layout(p).tls_safepoint, pointer_align(p), nothing)
 end
@@ -515,7 +515,7 @@ const CANCELLATION_LOWERING =
                                      reset_ctx_eh=0, reset_ctx_mctx=0, setjmp="")
 
 Lower the cancellation points (`julia.cancellation_point()` calls, from
-`Base.@cancel_check`) that Julia master emits into reset regions
+`Base.@cancel_check`) that Julia 1.14 and later emit into reset regions
 (`jl-cancellation-lowering` in a pipeline, `CancellationLowering` in Julia's pipeline):
 at a point, the function publishes a stack buffer in its task, filled by `setjmp`, to
 which the runtime can jump back to deliver a cancellation; the pass closes the region

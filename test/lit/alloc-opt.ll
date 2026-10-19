@@ -162,10 +162,10 @@ define void @preserved_ref(ptr addrspace(10) %w) {
 ; write barriers: on the object itself it is removed; as one of several children, only that
 ; child is (the others still need the barrier)
 ; CHECK-LABEL: @barriers(
-; on master, julia.write_barrier is not a barrier anymore, but an unknown call
+; from 1.14 on, julia.write_barrier is not a barrier anymore, but an unknown call
 ; MASTER: %v = call noalias ptr addrspace(10) @julia.gc_alloc_obj
 ; MASTER: call void (ptr addrspace(10), ...) @julia.write_barrier(ptr addrspace(10) %v, ptr addrspace(10) %w)
-; Julia 1.13 removes the barrier altogether, also for the other child (adopted fix from master)
+; Julia 1.13 removes the barrier altogether, also for the other child (adopted fix from 1.14)
 ; V113-NOT: @julia.gc_alloc_obj
 ; V113-NOT: @julia.write_barrier(ptr addrspace(10) %v
 ; V113: call void (ptr addrspace(10), ...) @julia.write_barrier(ptr addrspace(10) %parent, ptr addrspace(10) null, ptr addrspace(10) %other)
@@ -179,13 +179,13 @@ define void @barriers(ptr addrspace(10) %parent, ptr addrspace(10) %other, ptr a
   ret void
 }
 
-; the same with the barriers of Julia master
+; the same with the barriers of Julia 1.14 and later
 ; CHECK-LABEL: @barriers_master(
 ; MASTER-NOT: @julia.gc_alloc_obj
 ; MASTER-NOT: @julia.field_write_barrier
 ; MASTER: call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %parent, ptr addrspace(10) null)
 ; MASTER-NEXT: ret void
-; before master, these are unknown calls
+; before 1.14, these are unknown calls
 ; V113: call noalias ptr addrspace(10) @julia.gc_alloc_obj
 define void @barriers_master(ptr addrspace(10) %parent, ptr addrspace(11) %slot, ptr addrspace(10) %w) {
   %pgcstack = call ptr @julia.get_pgcstack()

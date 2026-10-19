@@ -37,7 +37,7 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
 | `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
-| `jl-cancellation-lowering` | `CancellationLowering` (Julia master) | yes |
+| `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.14 and later) | yes |
 
 ## Passes that exist in some Julia versions only
 
@@ -47,7 +47,7 @@ exception handlers directly), so `jl-lower-exc-handlers` leaves the IR of Julia 
 later alone, and CombineMulAdd only in Julia 1.10 and 1.11. ExpandAtomicModify only
 exists from Julia 1.13 on, whose code generator emits the `julia.atomicmodify` calls it
 lowers; for the IR of earlier versions, `jl-expand-atomic-modify` does nothing. Likewise,
-CancellationLowering only exists on Julia master, whose code generator emits the
+CancellationLowering only exists from Julia 1.14 on, whose code generator emits the
 `julia.cancellation_point` calls it lowers.
 
 ## Facts about the Julia runtime
@@ -71,7 +71,7 @@ Differences with Julia's C++ passes:
 
 - Fixes from later Julia versions are applied to the IR of every version: for AllocOpt,
   the handling of write barriers that have the allocation as one of several children
-  (Julia master), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots
+  (Julia 1.14), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots
   (Julia 1.13), and Julia 1.13's escape analysis: fields that don't overlap are not
   merged (JuliaLang/julia#62166), allocations with references can be split or moved to
   the stack (#61131), a field accessed by a `cmpxchg` or `atomicrmw` counts as read
@@ -81,8 +81,8 @@ Differences with Julia's C++ passes:
   1.12 IR the port removes or splits allocations that the C++ pass of those versions
   keeps. The layout and initialization of stack memory follow the Julia version.
   For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
-  instead of the alloca address space (Julia master), and not walking the uses of
-  constant data (Julia master).
+  instead of the alloca address space (Julia 1.14), and not walking the uses of
+  constant data (Julia 1.14).
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
   address space 10), where the C++ pass uses the host's pointer size. For IR that Julia
@@ -102,7 +102,7 @@ Differences with Julia's C++ passes:
   instead of printing them and aborting (`jlopt` prints the error and aborts, like
   `opt`). It reads the address space of vectors of pointers from their elements on
   every Julia version (the C++ pass of Julia 1.10 and 1.11 assumes scalar pointers in
-  address space casts), and names `ptrtoint` violations as Julia master does.
+  address space casts), and names `ptrtoint` violations as Julia 1.14 does.
 - CombineMulAdd only exists in Julia 1.10 and 1.11; for the IR of later versions it does
   nothing.
 - LowerExcHandlers declares the runtime functions and lifetime intrinsics only in
@@ -113,14 +113,14 @@ Differences with Julia's C++ passes:
   `JuliaIR.HandlerNestingError` (undefined behaviour in the C++ pass). On LLVM 22 and
   later, the lifetime markers take only the pointer.
 - LowerSIMDLoop makes the loop ID it creates distinct, for the IR of every Julia version
-  (Julia master): older versions create a uniqued node and then make it refer to itself,
+  (Julia 1.14): older versions create a uniqued node and then make it refer to itself,
   which also changes every other use of an identical node, e.g. `!{null}`, the type
   array of a subroutine type, when the loop ID has no other operands. The remark about
   a loop's flags is attached to the header's terminator (with the location of the start
   of the loop) instead of the header block.
 - ExpandAtomicModify places the `atomicrmw xchg` that replaces an operation that ignores
   the old value after the inlined code that computes the new one, for the IR of every
-  Julia version (Julia master): Julia 1.13 places it before that code, which is invalid
+  Julia version (Julia 1.14): Julia 1.13 places it before that code, which is invalid
   IR. Where the C++ pass crashes or emits invalid IR, the port throws a
   `JuliaIR.AtomicModifyError` instead: for values other than integers, floating-point
   numbers and pointers, a non-constant ordering, a compare-exchange loop for a pointer

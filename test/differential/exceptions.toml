@@ -3,7 +3,8 @@
 #
 #   [[Pass]]
 #   input = "llvmpasses/*.ll"   # glob over input names (default: every input)
-#   julia = ["1.10", "1.11"]    # Julia versions it applies to (default: all)
+#   julia = ["1.10", "1.11"]    # dialects it applies to (default: all); a Julia newer
+#                               # than the known versions has the newest one's
 #   prefix = "raw"              # the prefix pipeline it applies to (default: all)
 #   side = "cpp"                # whose output it rewrites: "cpp", "port" or "both"
 #   lines = '...'               # a regex over the lines of that output
@@ -61,7 +62,7 @@ input = "llvmpasses/gc-writebarrier-volatile.ll"
 julia = ["1.12", "1.13"]
 side = "port"
 lines = '^  call void @julia\.write_barrier\(ptr addrspace\(10\) %\d+, ptr addrspace\(10\) null\)$'
-reason = "a write barrier whose child is a removed allocation keeps its other operands, as on Julia master (the C++ of earlier versions erases the barrier)"
+reason = "a write barrier whose child is a removed allocation keeps its other operands, as on Julia 1.14 (the C++ of earlier versions erases the barrier)"
 decision = "S-D3 (Log, S4, exception 1)"
 
 [[GCInvariantVerifier]]
@@ -70,7 +71,7 @@ julia = ["1.10", "1.11", "1.12", "1.13"]
 side = "cpp"
 lines = '^! rejected \| Illegal inttoptr \| (%\w+ = ptrtoint ptr addrspace\(1[0-3]\) .*)$'
 replace = '! rejected | Illegal ptrtoint | \1'
-reason = "a ptrtoint of a tracked pointer is reported as \"Illegal ptrtoint\", as on Julia master (earlier versions say \"Illegal inttoptr\")"
+reason = "a ptrtoint of a tracked pointer is reported as \"Illegal ptrtoint\", as on Julia 1.14 (earlier versions say \"Illegal inttoptr\")"
 decision = "S-D3 (Log, S5 GCInvariantVerifier)"
 
 [["GCInvariantVerifier<strong>"]]

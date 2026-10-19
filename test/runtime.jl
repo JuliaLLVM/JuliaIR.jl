@@ -42,7 +42,7 @@ end
                                 :riscv64 => "mv \$0, tp")[Sys.ARCH]
     end
 
-    # the cancellation points of Julia master
+    # the cancellation points of Julia 1.14 and later
     has_cancel = isdefined(Base, Symbol("@cancel_check"))
     for name in (:task_reset_ctx, :reset_ctx_size, :reset_ctx_align, :reset_ctx_gcstack,
                  :reset_ctx_eh, :reset_ctx_mctx)
@@ -56,8 +56,9 @@ end
         @test (rt.reset_ctx_gcstack, rt.reset_ctx_eh) == (W, 2W)
     end
 
-    # the values measured on x86-64 Linux with glibc; the development version's were
-    # measured on a nightly build, so later ones only report differences
+    # the values measured on x86-64 Linux with glibc; 1.14's were measured on a nightly
+    # build, so prereleases (and newer versions, which have the newest dialect) only
+    # report differences
     if Sys.ARCH === :x86_64 && Sys.islinux() && libc == "glibc"
         measured = Dict(
             v"1.10" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
@@ -72,7 +73,8 @@ end
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
                         reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24))
         minor = JuliaIR.dialect_minor(VERSION)
-        exact = minor < JuliaIR.DEVELOPMENT_MINOR
+        exact = isempty(VERSION.prerelease) &&
+                VersionNumber(VERSION.major, VERSION.minor) == minor
         for (name, value) in pairs(measured[minor])
             if exact
                 @test getproperty(rt, name) == value

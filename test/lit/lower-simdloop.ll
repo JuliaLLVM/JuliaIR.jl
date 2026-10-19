@@ -308,7 +308,7 @@ exit:
 }
 
 ; a loop ID left with only the self reference is distinct, for every Julia version (as on
-; Julia master; older versions turn the uniqued `!{null}`, here also the type array of
+; Julia 1.14; older versions turn the uniqued `!{null}`, here also the type array of
 ; the subroutine type, into the loop ID)
 ; CHECK-LABEL: @debuginfo(
 ; CHECK: br i1 %done, label %exit, label %loop, !llvm.loop [[DEBUGINFO_ID:![0-9]+]]

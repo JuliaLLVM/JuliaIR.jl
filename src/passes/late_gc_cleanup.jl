@@ -51,8 +51,8 @@ function location_string(inst::Instruction)
     return string(file === nothing ? "unknown" : LLVM.filename(file), ":", LLVM.line(loc))
 end
 
-# the bundles of `julia.gc_alloc_obj` (Julia master) that ask for the new object to be
-# initialized
+# the bundles of `julia.gc_alloc_obj` (Julia 1.14 and later) that ask for the new object
+# to be initialized
 const ALLOCATION_BUNDLES = ("julia.gc_alloc_ptr_offsets", "julia.gc_alloc_zeroinit")
 
 const PGCSTACK_GETTERS = ("julia.get_pgcstack", "julia.get_pgcstack_or_new")

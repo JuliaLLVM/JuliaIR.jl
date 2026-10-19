@@ -23,9 +23,9 @@
 #   --manifest F   use another manifest (for testing the harness)
 #
 # JULIA_SRC is a git checkout of JuliaLang/julia (test/llvmpasses and test/testhelpers
-# suffice) at the commit pinned for the running Julia's minor version, or, for the
-# development version, at the commit the running nightly build was built from
-# (`Base.GIT_VERSION_INFO.commit`).
+# suffice) at the commit pinned for the running Julia's minor version, or, for a pin
+# without a commit (a prerelease: master, or a release branch before its first tag), at
+# the commit the running nightly build was built from (`Base.GIT_VERSION_INFO.commit`).
 
 module UpstreamHarness
 
@@ -630,9 +630,25 @@ function check_ledger(f, processes)
     return failures
 end
 
+# The pin (its key in the manifest) whose fixtures and entries a Julia version uses: the
+# one of its minor version. A prerelease newer than every pin, like master right after
+# its version was bumped, uses the newest pin if that one follows its build's commit, as
+# it has the newest pin's dialect too.
+function pin_minor(manifest, version::VersionNumber=VERSION)
+    minor = "$(version.major).$(version.minor)"
+    haskey(manifest["pins"], minor) && return minor
+    newest = argmax(VersionNumber, keys(manifest["pins"]))
+    if !isempty(version.prerelease) &&
+       VersionNumber(version.major, version.minor) > VersionNumber(newest) &&
+       !haskey(manifest["pins"][newest], "commit")
+        return newest
+    end
+    throw(HarnessError("no pin for Julia $minor in the manifest"))
+end
+
 # Check that `src` has the fixtures of the running Julia, and return its pin with the
-# commit of the fixtures. A pin without a commit (the development version's) takes the
-# commit the running Julia was built from (`running_commit`).
+# commit of the fixtures. A pin without a commit (one of a prerelease, like master's)
+# takes the commit the running Julia was built from (`running_commit`).
 function check_pin(manifest, src::String, minor::String;
                    running_commit::AbstractString=Base.GIT_VERSION_INFO.commit)
     haskey(manifest["pins"], minor) ||
@@ -726,7 +742,7 @@ function main(args)
 
     manifest = load_manifest(manifest_path)
     manifest_dir = dirname(manifest_path)
-    minor = "$(VERSION.major).$(VERSION.minor)"
+    minor = pin_minor(manifest)
     pin = check_pin(manifest, src, minor)
 
     # the mode-B patch layer: of the LLVM that the ports run on in mode B, or that

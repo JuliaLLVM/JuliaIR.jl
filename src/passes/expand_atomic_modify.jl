@@ -1,6 +1,6 @@
 # ExpandAtomicModify: lower the `julia.atomicmodify.*` calls that Julia 1.13 and later emit
 # for `@atomic` modify operations. Port of Julia's `src/llvm-expand-atomic-modify.cpp`
-# (v1.13 and master), which adapts the cmpxchg loop of LLVM's AtomicExpand pass.
+# (v1.13 and v1.14), which adapts the cmpxchg loop of LLVM's AtomicExpand pass.
 #
 # A call
 #
@@ -419,7 +419,7 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
                 elseif rmw_op == API.LLVMAtomicRMWBinOpXchg
                     # the operation ignores the old value, so the new value is computed
                     # by the inlined body, which may come after the atomicrmw: move it
-                    # down to the call, which the new value dominates (Julia master)
+                    # down to the call, which the new value dominates (Julia 1.14)
                     move!(rmw, LLVM.before(modify); debug_records=true)
                     val = new_val
                 else
