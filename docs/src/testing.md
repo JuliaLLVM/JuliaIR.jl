@@ -60,9 +60,37 @@ the mapping.
 
 To use it outside the test suite, run it with a project that provides JuliaIR, e.g.
 `julia --project=test bin/jlopt -passes=jl-remove-ni -S input.ll` (Julia 1.12 and later,
-where `test` is a workspace of the package). `jlopt_bindir(dir)` in `test/litsetup.jl`
-writes an `opt` wrapper for the running Julia and project into `dir`, which LLVM's
-`update_test_checks.py --opt-binary=dir/opt` can use to (re)generate the checks of a test.
+where `test` is a workspace of the package), or install it as an app (below).
+`jlopt_bindir(dir)` in `test/litsetup.jl` writes an `opt` wrapper for the running Julia
+and project into `dir`, which LLVM's `update_test_checks.py --opt-binary=dir/opt` can use
+to (re)generate the checks of a test.
+
+### Installing `jlopt` as an app
+
+On Julia 1.12 and later, `jlopt` can also be installed as a [Pkg
+app](https://pkgdocs.julialang.org/v1/apps/), a command on the `PATH` like `opt`. Apps
+are experimental in Pkg, and their commands and behaviour may still change. JuliaIR isn't
+registered yet, so add it by URL, or develop a checkout:
+
+```
+pkg> app add https://github.com/JuliaLLVM/JuliaIR.jl
+pkg> app develop /path/to/JuliaIR.jl
+```
+
+Pkg writes the `jlopt` command into `~/.julia/bin`, which you need to add to your `PATH`
+yourself. `app add` installs the package into an environment of its own,
+`~/.julia/environments/apps/JuliaIR`; `app develop` runs the checkout, with its
+`Project.toml` and manifest.
+
+The command runs the Julia that installed it, and `jlopt` processes IR of the running
+Julia's version: an app installed with Julia 1.12 is a driver for the IR of 1.12. To
+work on another version's IR, install it again with that Julia (the command of the last
+installation wins).
+
+To run the passes on a standalone LLVM, as in mode B below, set LLVM.jl's `libLLVM`
+preference in the `LocalPreferences.toml` of the environment the app runs in: of
+`~/.julia/environments/apps/JuliaIR` after `app add`, of the checkout after
+`app develop`.
 
 ## Julia's own pass tests
 
