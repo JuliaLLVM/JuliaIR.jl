@@ -187,6 +187,40 @@ test_ir = """
     end
 end
 
+@testset "module facts" begin
+    # computed on the first function of a run, reused for the others
+    computed = String[]
+    seen = Tuple{String,Int}[]
+    function facts_pass(f, am, opts)
+        mod = LLVM.parent(f)
+        n = JuliaIR.module_facts(opts, mod, Int) do
+            push!(computed, mod.name)
+            length(computed)
+        end
+        push!(seen, (LLVM.name(f), n))
+        return PreservedAnalyses(AllAnalyses)
+    end
+    facts_def = JuliaIR.PassDefinition("jl-test-facts", :function, false, facts_pass)
+    @dispose ctx=Context(; opaque_pointers=true) begin
+        mod = parse(LLVM.Module, """
+            define void @f() {
+              ret void
+            }
+            define void @g() {
+              ret void
+            }""")
+        mod.name = "first"
+        run!(JuliaIR.custom_pass(facts_def), mod)
+        @test computed == ["first"]
+        @test seen == [("f", 1), ("g", 1)]
+        # every run parses the pipeline, creating new options
+        run!(JuliaIR.custom_pass(facts_def), mod)
+        @test computed == ["first", "first"]
+        @test seen[3:4] == [("f", 2), ("g", 2)]
+        dispose(mod)
+    end
+end
+
 @testset "typed pointers are rejected" begin
     if LLVM.version() < v"17"
         @dispose ctx=Context(; opaque_pointers=false) mod=parse(LLVM.Module, test_ir) begin

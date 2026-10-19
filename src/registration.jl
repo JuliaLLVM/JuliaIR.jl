@@ -12,9 +12,30 @@ pass-specific options (`extra`, a `NamedTuple`).
 struct PassOptions{T<:NamedTuple}
     dialect::Dialect
     extra::T
+    # what the pass found out about the module it runs on (`module_facts`)
+    module_facts::Dict{Type,Pair{LLVM.Module,Any}}
 end
 
+PassOptions(dialect::Dialect, extra::NamedTuple) =
+    PassOptions(dialect, extra, Dict{Type,Pair{LLVM.Module,Any}}())
+
 Base.:(==)(a::PassOptions, b::PassOptions) = a.dialect == b.dialect && a.extra == b.extra
+
+# Facts of type `T` about the module `mod`, which `compute()` returns, computed once for
+# all the functions that one occurrence of a function pass runs on: LLVM.jl parses the
+# pipeline, creating the options, for every run on a module. As other passes run in
+# between, even module passes when the occurrence is repeated (`repeat<n>(...)`, up to
+# LLVM 18), only for facts that no pass changes: the data layout and what follows from it,
+# types, uniqued metadata (and what follows from its operands, which no pass sets in
+# place). Not functions or other globals, which may be added or removed.
+function module_facts(compute, opts::PassOptions, mod::LLVM.Module, ::Type{T}) where {T}
+    entry = get(opts.module_facts, T, nothing)
+    if entry === nothing || first(entry) != mod
+        entry = mod => compute()::T
+        opts.module_facts[T] = entry
+    end
+    return last(entry)::T
+end
 
 # option keys shared by all passes (the policies of the dialect), as written in a pipeline
 const POLICY_KEYS = ("fp16", "bf16", "gc-barrier")
