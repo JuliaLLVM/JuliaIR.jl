@@ -775,6 +775,24 @@ end
                 attributes #1 = { "julia.mv.clones"="2" }
                 """, ["f", "g"]))
 
+    # of several violations, the error names the first function of the module, whatever
+    # the order of the sets the checks start from
+    n = 20
+    rejects("f1 has a julia.mv.reloc attribute, but no julia.mv.clones attribute",
+            cloning_ir(join("define void @f$i() #0 {\n  ret void\n}\n" for i in 1:n) *
+                       """attributes #0 = { "julia.mv.reloc" }\n""", ["f$i" for i in 1:n]))
+    rejects("f1 is called by g1, which is cloned, but has no julia.mv.reloc",
+            cloning_ir(join("""
+                define void @f$i() #0 {
+                  ret void
+                }
+                define void @g$i() #0 {
+                  call void @f$i()
+                  ret void
+                }
+                """ for i in 1:n) * """attributes #0 = { "julia.mv.clones"="2" }\n""",
+                       ["f$i" for i in 1:n]))
+
     # a load from the slot can't come before an exception handling pad (the C++ pass emits
     # invalid IR)
     rejects("the load would come before an exception handling instruction",

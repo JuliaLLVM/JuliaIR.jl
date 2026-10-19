@@ -597,7 +597,10 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
 
     function_index(f) = f in fvars ||
         throw(MultiVersioningError("$(f.name) needs a relocation, but is not in the table jl_fvars"))
-    for f in sets.reloc
+    # the checks go over the functions in module order, so that of several violations, the
+    # error names the same one in every run (the sets are ordered by hash)
+    for f in mod.functions
+        f in sets.reloc || continue
         haskey(sets.clones, f) ||
             throw(MultiVersioningError("$(f.name) has a julia.mv.reloc attribute, but no julia.mv.clones attribute"))
         isdeclaration(f) || function_index(f)
@@ -613,7 +616,9 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
         end
     end
 
-    for (f, clones) in sets.clones
+    for f in mod.functions
+        clones = get(sets.clones, f, nothing)
+        clones === nothing && continue
         # uses by instructions of versions that call the version the image loader picks
         # (`fix_inst_uses`)
         if any(clones[i] && !targets[i].clone_all for i in 2:length(targets))
