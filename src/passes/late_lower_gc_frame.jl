@@ -1541,10 +1541,8 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
 end
 
 argument_index(arg::LLVM.Argument) = findfirst(==(arg), collect(LLVM.parent(arg).parameters))
-function argument_has_sret(arg::LLVM.Argument)
-    attrs = LLVM.parent(arg).parameter_attributes[argument_index(arg)]
-    return haskey(attrs, :sret) || haskey(attrs, "sret")
-end
+argument_has_sret(arg::LLVM.Argument) =
+    haskey(LLVM.parent(arg).parameter_attributes[argument_index(arg)], :sret)
 
 # calls emitted by codegen that are not safepoints
 const NON_SAFEPOINT_RUNTIME_CALLS = ("jl_egal__unboxed", "jl_lock_value", "jl_unlock_value",

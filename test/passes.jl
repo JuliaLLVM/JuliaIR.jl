@@ -205,6 +205,31 @@ end
         @test !occursin("julia.gc_alloc_obj(", string(mod.functions["alloc"]))
     end
 
+    # a function that passes its own `sret` argument on to a call returning roots in memory
+    # leaves them to its caller, which allocated it; an argument with a string attribute of
+    # that name is no such argument
+    if dialect.gc_return_roots === :sret
+        for (attr, ok) in (("sret({ ptr addrspace(10) })", true), ("\"sret\"", false))
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                    declare ptr @julia.get_pgcstack()
+                    declare void @callee(ptr sret({ ptr addrspace(10) }))
+                    define void @forward(ptr $attr %out) {
+                      %pgcstack = call ptr @julia.get_pgcstack()
+                      call void @callee(ptr sret({ ptr addrspace(10) }) %out)
+                      ret void
+                    }""") begin
+                err = try
+                    run!(JuliaIR.LateLowerGCFramePass(), mod)
+                    nothing
+                catch err
+                    err
+                end
+                @test ok ? err === nothing :
+                           err isa PassException && occursin("expected an alloca", sprint(showerror, err))
+            end
+        end
+    end
+
     ir = """
         declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
         declare ptr @julia.pointer_from_objref(ptr addrspace(10))
