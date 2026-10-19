@@ -42,7 +42,7 @@ code keeps the names and the structure of the C++ (`fix_pgcstack_use!`,
 |--------|---------|---------|
 | `imaging` | `imaging` | imaging mode instead of JIT mode |
 | `tls-getters` | `tls_getters` | always call the getter in JIT mode (Julia 1.14 and later, like the C++) |
-| `tls-elf-support=yes\|no` | `tls_elf_support` | whether the runtime uses ELF TLS (imaging mode) |
+| `tls-elf-support=yes\|no` | `tls_elf_support` (`true` or `false`) | whether the runtime uses ELF TLS (imaging mode) |
 | `tls-offset=N` | `tls_offset` | the GC stack's offset from the thread pointer, or -1 (JIT mode) |
 | `pgcstack-getter=0x...` | `pgcstack_getter` | the getter's address in the process (JIT mode, up to 1.13) |
 | `pgcstack-key=0x...` | `pgcstack_key` | the key of the GC stack's thread-local variable (Darwin) |
@@ -50,9 +50,9 @@ code keeps the names and the structure of the C++ (`fix_pgcstack_use!`,
 
 The facts left unspecified are [runtime facts](runtime.md) of the running Julia, read
 when a module needs them (never when it doesn't call a getter) and never at precompile
-time. The offset may be negative, and the addresses are written in hexadecimal or
-decimal (see [`JuliaIR.option`](@ref)). Like the C++
-pass, JIT mode produces code for the process that runs the pass: the addresses and the
+time; options that aren't given are `nothing`. The offset may be negative, and the
+addresses are written in hexadecimal or decimal (see [`JuliaIR.option`](@ref)). Like the
+C++ pass, JIT mode produces code for the process that runs the pass: the addresses and the
 offset are the running Julia's, whatever the module's target.
 
 ## What changes between Julia versions

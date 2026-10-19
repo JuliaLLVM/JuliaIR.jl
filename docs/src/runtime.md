@@ -29,7 +29,9 @@ without exception handlers) is processed without:
 1. A pass option of the same name gives the fact explicitly, e.g.
    `jl-lower-exc-handlers<handler-size=264;setjmp=__sigsetjmp>` or
    `jl-lower-ptls<tls-offset=-8>` (see [`JuliaIR.option`](@ref) for how options are
-   written, e.g. addresses).
+   written, e.g. addresses). Any value given is used, also `task-ptls=0`; an option
+   that isn't given is `nothing` (the keyword arguments of the passes' constructors
+   take `nothing` too).
 2. Otherwise, the fact is read from the running Julia, whose IR the passes process.
 3. When the running Julia doesn't have the fact (e.g. the reset context of cancellation
    points before Julia 1.14) or it can't be read, the pass throws a

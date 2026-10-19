@@ -23,8 +23,8 @@ flags. [`JuliaIR.target_specs`](@ref) reads them as
 least; a target either clones every function (`clone_all`), or only the functions that
 benefit from its features (its `clone` categories), and uses the versions of its base
 target (the first target, or one that clones every function) for the others. For modules
-without the flag, the `targets` keyword of `MultiVersioningPass` gives them, and the pass
-records them in the flag.
+without the flag, the `targets` keyword of `MultiVersioningPass` gives them (a non-empty
+vector; by default `nothing`, the module's), and the pass records them in the flag.
 
 ## What the pass does
 
