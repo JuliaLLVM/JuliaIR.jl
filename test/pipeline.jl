@@ -29,15 +29,21 @@ function normalize_cpp(s)
 end
 normalize_rebuilt(s) = replace(s, "vector-combine<early>" => "vector-combine")
 
-# every level, and each option toggled once at level 2
+# every level, alone and with each option toggled, and the combinations of options that
+# only matter together
 function configurations()
-    configs = NamedTuple[(; level) for level in 0:3]
-    for name in pipeline_option_names(PIPELINE_MINOR)
-        startswith(string(name), "sanitize_") && continue
-        name === :remove_ni && continue  # only when not lowering intrinsics, below
-        push!(configs, (; level=2, name => !PIPELINE_OPTIONS[name]))
+    configs = NamedTuple[]
+    for level in 0:3
+        push!(configs, (; level))
+        for name in pipeline_option_names(PIPELINE_MINOR)
+            startswith(string(name), "sanitize_") && continue
+            name === :remove_ni && continue  # only when not lowering intrinsics, below
+            push!(configs, (; level, name => !PIPELINE_OPTIONS[name]))
+        end
+        push!(configs, (; level, dump_native=true, external_use=true))
+        PIPELINE_MINOR >= v"1.11" &&
+            push!(configs, (; level, lower_intrinsics=false, remove_ni=false))
     end
-    PIPELINE_MINOR >= v"1.11" && push!(configs, (; level=2, lower_intrinsics=false, remove_ni=false))
     return configs
 end
 
