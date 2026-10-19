@@ -15,6 +15,7 @@ read it first, including its Log). This file says where things are and how to co
 | E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
 | S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, merged); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
 | S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done as a subset, PR #5; generalized by S6b | e672c86, d11ee73 |
+| S18 CombineMulAdd (`jl-combine-muladd`) | done, `tb/s18-combine-muladd` (sibling of S6b/S17 on PR #5) | 1ee4acf |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -46,6 +47,12 @@ be lowered before, what is rewritten, what is rejected with `UnsupportedInputErr
 `LateLowerGCFrame` for that name (frame fixtures and `alloc-opt-gcframe.ll` need it). The
 upstream harness has a new `derived` status (a patched fixture that tests a port, no
 stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
+
+S18 details: `src/passes/combine_muladd.jl`, a faithful port of the 1.10/1.11 C++ pass
+(identical in both versions), remarks included. `Dialect.has_combine_muladd` says which
+dialects have the pass; for 1.12 and later it is a no-op. Not required (skipped on
+`optnone`, like the C++). Reads no target information. Upstream `muladd.ll` runs in mode A
+at the 1.10 and 1.11 pins; `test/lit/combine-muladd.ll` covers the cases.
 
 ## Layout
 
@@ -113,7 +120,7 @@ stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
 2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
-   (plan item S6b). Independent: S17, S18, S24; then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
+   (plan item S6b). Independent: S17, S24 (S18 done); then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
    passes S15–S21.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
@@ -165,6 +172,12 @@ stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
   compare metadata by content (numbering shifts when the port rejects functions).
 - A pass with `required=false` is skipped on `optnone` functions, so its callback (and the
   ledger) doesn't see them.
+- Julia's C++ passes emit remarks through an `OptimizationRemarkEmitter`, which only
+  builds them when the diagnostic handler enables the pass's remarks: for LLVM.jl's
+  `remarks` callback to see them (e.g. in a differential), set
+  `LLVM.clopts("-pass-remarks=<pass>", "-pass-remarks-missed=<pass>")`. The ports'
+  `remark!` always reaches the callback. `ore::NV(key, inst)` renders an instruction as
+  its opcode name in the message.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
 - `IRBuilder` can't create an alloca in a block that isn't in a function (it needs the
   module's data layout; segfault).

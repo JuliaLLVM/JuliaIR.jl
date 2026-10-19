@@ -15,6 +15,7 @@ JuliaIR.GCInvariantVerifierPass
 JuliaIR.GCInvariantError
 JuliaIR.GCInvariantViolation
 JuliaIR.LateGCCleanupPass
+JuliaIR.CombineMulAddPass
 JuliaIR.UnsupportedInputError
 JuliaIR.UnsupportedConstruct
 ```
