@@ -12,7 +12,7 @@ lowers what that pass leaves behind to code for Julia's runtime:
 | `julia.gc_alloc_bytes(ptls, size[, tag])` | a call of the runtime's allocator: for a constant size, the pool allocator of its size class, or the big-object allocator; otherwise the typed allocator |
 | `julia.queue_gc_root(v)` | a call of `ijl_gc_queue_root` |
 | `julia.safepoint(page)` | a volatile load of the safepoint page, which the runtime protects to stop the thread |
-| `julia.object_write_barrier`, `julia.field_write_barrier.*` (Julia master) | the write barrier: a check of the parent's and the children's GC bits, and a call of `julia.queue_gc_root` on the slow path |
+| `julia.object_write_barrier`, `julia.field_write_barrier.*` (Julia 1.14 and later) | the write barrier: a check of the parent's and the children's GC bits, and a call of `julia.queue_gc_root` on the slow path |
 
 `jl-final-lower-gc` (`JuliaIR.FinalLowerGCPass`) ports the pass for the IR of every Julia
 version from 1.10 on, and `jlopt` runs it for Julia's name of the pass (`FinalLowerGC`). It
@@ -49,7 +49,7 @@ the running Julia's pass.
 The pass follows the C++ pass of the running Julia's version. The differences between
 versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
 |-----------|------|------|------|------|--------|
 | Julia's pass | module pass | function pass | function pass | function pass | function pass |
 | runtime functions declared | in every module | in modules with a function with a GC stack | same | in modules that use a GC intrinsic | same, also the `_reset_safe` variants |
@@ -84,10 +84,10 @@ precompiled package.
 
 Fixes of later Julia versions, applied to the IR of every version:
 
-- Julia master: the frame is zeroed by a non-volatile `memset` with the frame's TBAA tag
-  (JuliaLang/julia#62061). Julia 1.10 to 1.13 pass that tag as the `memset`'s volatility
-  flag by mistake, so their `memset` is volatile and has no TBAA tag, which keeps LLVM from
-  removing stores to the frame that are overwritten.
+- Julia 1.14 and later: the frame is zeroed by a non-volatile `memset` with the frame's
+  TBAA tag (JuliaLang/julia#62061). Julia 1.10 to 1.13 pass that tag as the `memset`'s
+  volatility flag by mistake, so their `memset` is volatile and has no TBAA tag, which
+  keeps LLVM from removing stores to the frame that are overwritten.
 - Julia 1.11: the result of an allocation of a constant size is `dereferenceable` for the
   object's size, and not at all for an empty object (JuliaLang/julia#51218). Julia 1.10
   claims the size of the pool's objects, or the size of a big object's allocation, from
@@ -107,13 +107,13 @@ Deliberate differences:
 - What the C++ pass takes from the host (`sizeof(void*)`, for the size of frame slots, the
   alignment of the frame's stores and loads, and the header of big objects) comes from the
   module's data layout; this is the same for every target Julia supports.
-- On Julia master, the pass reports the control-flow graph as preserved unless it lowered
-  a write barrier, like this package's LateLowerGCFrame. The C++ pass of Julia master
-  reports every analysis as invalidated.
+- From Julia 1.14 on, the pass reports the control-flow graph as preserved unless it
+  lowered a write barrier, like this package's LateLowerGCFrame. The C++ pass of Julia
+  1.14 reports every analysis as invalidated.
 
 Behaviours that are kept as they are:
 
-- A function without a GC stack keeps its GC intrinsics. On Julia master, this includes
+- A function without a GC stack keeps its GC intrinsics. From Julia 1.14 on, this includes
   write barriers, which then call undefined `julia.*` functions; Julia's code generator
   gives every function with write barriers a GC stack.
 - The runtime functions are declared where Julia's pass declares them (see the table

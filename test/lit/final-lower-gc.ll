@@ -42,7 +42,7 @@ declare void @julia.safepoint(ptr)
 declare void @julia.queue_gc_root(ptr addrspace(10))
 declare void @use(ptr)
 
-; the frame is zeroed by a non-volatile memset with the frame's TBAA tag (Julia master's
+; the frame is zeroed by a non-volatile memset with the frame's TBAA tag (Julia 1.14's
 ; fix, adopted for every version); its names are Julia 1.11's
 ; CHECK-LABEL: @frame(
 ; CHECK: %gcframe = alloca ptr addrspace(10), i32 4, align 16
@@ -318,7 +318,7 @@ declare void @julia.field_write_barrier.p11(ptr addrspace(10), ...)
 declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i64, i64)
 declare void @julia.queue_gc_root(ptr addrspace(10))
 
-; Julia master lowers the write barriers here, without the children that are null and
+; Julia 1.14 lowers the write barriers here, without the children that are null and
 ; the slots of field barriers; a barrier without children is removed
 ; CHECK-LABEL: @barriers(
 ; CHECK: %p.tag_addr = getelementptr inbounds i64, ptr addrspace(10) %p, i64 -1

@@ -957,8 +957,8 @@ end
         end
     end
 
-    # on Julia master, the write barriers call `julia.queue_gc_root`, unless every child is
-    # null; the intrinsic is only checked when one does
+    # from Julia 1.14 on, the write barriers call `julia.queue_gc_root`, unless every child
+    # is null; the intrinsic is only checked when one does
     if dialect.gc_barrier_lowering === :deferred
         barrier_ir(child) = """
             declare ptr @julia.get_pgcstack()

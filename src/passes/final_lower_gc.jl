@@ -1,7 +1,7 @@
 # FinalLowerGC: port of Julia's final GC lowering pass (`src/llvm-final-gc-lowering.cpp`,
-# and on Julia master `llvm-final-gc-lowering-stock.cpp`). It lowers what
+# and from Julia 1.14 on `llvm-final-gc-lowering-stock.cpp`). It lowers what
 # LateLowerGCFrame leaves behind to code for Julia's runtime: the GC frame intrinsics,
-# allocations, root queuing and safepoints, and on Julia master also the write barriers.
+# allocations, root queuing and safepoints, and from Julia 1.14 on also the write barriers.
 # The functions keep the names of the C++ ones; differences between Julia versions are
 # fields of `Dialect`, deviations from the C++ are documented in
 # docs/src/final_lower_gc.md.
@@ -44,7 +44,7 @@ end
 
 parent_function(inst::Instruction) = LLVM.parent(LLVM.parent(inst))
 
-# the calls of write barriers that FinalLowerGC lowers (Julia master)
+# the calls of write barriers that FinalLowerGC lowers (Julia 1.14 and later)
 function barrier_calls(p::FinalLowerGC)
     calls = Instruction[]
     for name in write_barrier_names(p.dialect)
@@ -61,7 +61,7 @@ end
 # The C++ pass calls an existing function of a runtime function's name whatever its type,
 # which gives invalid IR. Check what the functions in `functions` will call, before the
 # pass changes anything: the existing declarations, the calls of `julia.queue_gc_root`
-# (which become calls of the runtime's function), and on Julia master the intrinsic that
+# (which become calls of the runtime's function), and from Julia 1.14 on the intrinsic that
 # the write barriers call.
 function check_declarations(p::FinalLowerGC, functions)
     mod = p.mod
@@ -95,7 +95,7 @@ const FINAL_GC_INTRINSICS = ("julia.new_gc_frame", "julia.get_gc_frame_slot",
                              "julia.gc_alloc_bytes", "julia.queue_gc_root",
                              "julia.safepoint")
 
-# the write barriers, which FinalLowerGC lowers on Julia master
+# the write barriers, which FinalLowerGC lowers from Julia 1.14 on
 write_barrier_names(dialect::Dialect) =
     dialect.gc_barrier_lowering === :deferred ? dialect.write_barriers : String[]
 
@@ -156,7 +156,8 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     gcframe = addrspacecast!(builder, frame_alloca, LLVM.PointerType(AS_GENERIC))
     take_name!(gcframe, target)
     # the frame is zeroed with a non-volatile memset that only aliases the frame (Julia
-    # master; up to 1.13, a volatile one without TBAA, which keeps it from being removed)
+    # 1.14 and later; up to 1.13, a volatile one without TBAA, which keeps it from being
+    # removed)
     size = pointer_size(p) * (nroots + 2)
     memset = memset!(builder, gcframe, ConstantInt(LLVM.Int8Type(), 0),
                      ConstantInt(LLVM.Int64Type(), size), 16)
@@ -223,7 +224,7 @@ has_reset_region(inst::Instruction) =
 
 # `julia.queue_gc_root(v)`: the runtime's function, called in place
 function lower_queue_gc_root!(p::FinalLowerGC, target::Instruction)
-    # on Julia master, the call may run with a cancellation reset region published
+    # from Julia 1.14 on, the call may run with a cancellation reset region published
     callee = p.dialect.gc_alloc_reset_safe && has_reset_region(target) ?
         p.runtime[:gc_queue_root_reset_safe] : p.runtime[:gc_queue_root]
     target.called_type == callee.function_type ||
@@ -256,7 +257,7 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
     args = collect(target.arguments)
     ptls, size = args[1], args[2]
     tag = dialect.gc_alloc_bytes_tag ? Value[args[3]] : Value[]
-    # on Julia master, the allocation may run with a cancellation reset region published
+    # from Julia 1.14 on, the allocation may run with a cancellation reset region published
     reset_safe = dialect.gc_alloc_reset_safe && has_reset_region(target)
     runtime(which) = p.runtime[reset_safe ? Symbol(which, :_reset_safe) : which]
     deref = UInt64(0)
@@ -304,8 +305,8 @@ function barrier_children(call::Instruction)
             if (!field || iseven(i - 1)) && !(strip_pointer_casts(args[i]) isa LLVM.PointerNull)]
 end
 
-# a write barrier (Julia master), the stock GC's: like Julia 1.13's in LateLowerGCFrame,
-# without the children that are null (a field that is cleared)
+# a write barrier (Julia 1.14 and later), the stock GC's: like Julia 1.13's in
+# LateLowerGCFrame, without the children that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
     children = barrier_children(target)
@@ -343,7 +344,7 @@ function final_lower_gc_function!(p::FinalLowerGC, f::LLVM.Function; declare::Bo
 
     lookup(name) = get(mod.functions, name, nothing)
     if dialect.gc_barrier_lowering === :deferred
-        # Julia master lowers allocations and write barriers first, as barriers split
+        # Julia 1.14 lowers allocations and write barriers first, as barriers split
         # blocks and may add `julia.queue_gc_root` calls
         alloc_bytes = lookup("julia.gc_alloc_bytes")
         barriers = filter(!isnothing, lookup.(dialect.write_barriers))
@@ -447,7 +448,7 @@ const FINAL_LOWER_GC_FUNCTION = define_pass("jl-final-lower-gc", :function,
 
 Julia's final GC lowering (`jl-final-lower-gc` in a pipeline, `FinalLowerGC` in Julia's
 pipelines): lowers the GC frame intrinsics that LateLowerGCFrame emits, allocations,
-root queuing and safepoints to code for Julia's runtime, and on Julia master also the
+root queuing and safepoints to code for Julia's runtime, and from Julia 1.14 on also the
 write barriers. See the documentation for what it does on each Julia version.
 
 The pass is both a module pass and a function pass; `kind` selects one (`:module`,

@@ -115,7 +115,7 @@ function add_gc_alloc_attributes!(p::GCLowering, f::LLVM.Function)
 end
 
 # the attributes of the runtime's allocation functions for cancellation reset regions
-# (`addResetSafeGCAllocAttributes`, Julia master): without the memory effects, as they
+# (`addResetSafeGCAllocAttributes`, Julia 1.14): without the memory effects, as they
 # also update the task's reset context
 function add_reset_safe_gc_alloc_attributes!(f::LLVM.Function)
     push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc
@@ -296,7 +296,7 @@ i64_metadata_of(t::LLVMType, x::Integer) = Metadata(ConstantInt(t, x))
 ## write barriers
 
 # A write barrier of `parent` for `children`, before the barrier call `ci`, in the style of
-# `lowering` (`Dialect.gc_barrier_lowering`; `:image` for FinalLowerGC on Julia master):
+# `lowering` (`Dialect.gc_barrier_lowering`; `:image` for FinalLowerGC from Julia 1.14 on):
 # when the parent is old and marked, and one of the children isn't marked (or, with
 # `:image`, the parent is in the system image but not yet in its remembered set), queue
 # the parent. Returns the `julia.queue_gc_root` call.
