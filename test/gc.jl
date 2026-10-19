@@ -189,6 +189,7 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     @test occursin("ret void", llgcf(plain, foreign, ""))
     @test_throws JuliaIR.RuntimeError llgcf(transition(X86_64), foreign, "")
 end
+LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 
 # Julia 1.14's lowerings keep a call's cancellation reset region on the calls that replace
 # it, whatever the region's metadata node holds (also with LLVM 16's memory attribute)
@@ -232,6 +233,7 @@ LLVM.version() >= v"16" && @testset "reset regions" begin
         @test reset_region(out, "julia.gc_alloc_bytes") == node
     end
 end
+LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
 
 @testset "CancellationLowering" begin
     point = """
