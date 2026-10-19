@@ -23,6 +23,13 @@
 ; NOTARGET: jlopt: WARNING: failed to create target machine for 'nonsense-unknown-none'
 ; NOTARGET: target triple = "nonsense-unknown-none"
 
+; LLVM's printing options also apply to Julia's JIT, which compiles the passes as they
+; first run: only the module's IR is printed, once (here, at the start of Julia's pipeline)
+; RUN: opt -passes='julia<level=2>' -print-before=BeforeOptimization -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=PRINT
+; PRINT: IR Dump Before BeforeOptimization
+; PRINT-NEXT: ModuleID = '{{.*}}jlopt.ll'
+; PRINT-NOT: IR Dump
+
 ; errors
 ; RUN: not opt -passes=jl-remove-ni --opaque-pointers=0 -S %s 2>&1 | FileCheck %s --check-prefix=TYPED
 ; TYPED: jlopt: typed pointers are not supported

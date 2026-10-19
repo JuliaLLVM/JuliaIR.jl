@@ -248,7 +248,6 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     opts = parse_jlopt_args(args)
     opts.pipeline === nothing && throw(JloptError("no pipeline given; use -passes=..."))
     pipeline = opts.map_passes ? port_pipeline(opts.pipeline) : opts.pipeline
-    isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
 
     input = something(opts.input, "-")
     data = if input == "-"
@@ -259,7 +258,28 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     end
     name = input == "-" ? "<stdin>" : input
 
+    # LLVM's options also apply to the pipelines of Julia's JIT, which compiles the Julia
+    # code of the passes when they first run: with `-print-before` etc., those would print
+    # the IR of that code too. Running the pipeline once before setting the options
+    # compiles what the actual run needs.
+    if any(startswith(r"--?print-"), opts.llvm_options)
+        ledger = LEDGER[]
+        # (with a ledger, writing to it needs compiling too)
+        isempty(ledger) || (LEDGER[] = Sys.iswindows() ? "NUL" : "/dev/null")
+        try
+            run_jlopt(opts, pipeline, data, name, devnull)
+        catch
+        finally
+            LEDGER[] = ledger
+        end
+    end
     ledger_write("jlopt", pipeline)
+    isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
+    run_jlopt(opts, pipeline, data, name, stdout)
+    return
+end
+
+function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, stdout::IO)
     @dispose ctx=Context(; opaque_pointers=true) begin
         mod = parse_input(data, name)
         try
@@ -280,7 +300,12 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
                 tm === nothing || dispose(tm)
             end
             verify(mod)
-            write_output(mod, opts, stdout)
+            if stdout === devnull
+                # (a warm-up run) like writing the output, without writing to a file
+                opts.text ? string(mod) : convert(Vector{UInt8}, mod)
+            else
+                write_output(mod, opts, stdout)
+            end
         finally
             dispose(mod)
         end
