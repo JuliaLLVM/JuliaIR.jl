@@ -565,8 +565,7 @@ end
 # the library LLVM.jl uses, for the report
 function library_description()
     version = LLVM.version()
-    own = version == Base.libllvm_version &&
-          (!isdefined(LLVM, :julia_llvm) || getfield(LLVM, :julia_llvm) == true)
+    own = version == Base.libllvm_version && julia_llvm_in_use()
     return own ? "Julia's own LLVM $version" : "a standalone LLVM $version"
 end
 

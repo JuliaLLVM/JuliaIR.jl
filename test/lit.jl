@@ -1,5 +1,3 @@
-include("litsetup.jl")
-
 @testset "lit" begin
     # RUN lines are gated by the running Julia's version: a feature that doesn't exist
     # would skip them without a trace
@@ -10,6 +8,7 @@ include("litsetup.jl")
             ; RUN: %if julia-1.13 %{ opt -passes=jl-remove-ni -S %s %}
             ; RUN: %if julia-1.31 || julia-ge-1.1 %{ opt -passes=jl-remove-ni -S %s %}
             ; RUN: opt -map-julia-passes=0 --load-pass-plugin=libjulia-codegen%shlibext -S %s
+            ; REQUIRES: julia-llvm
             """)
         @test unknown_julia_features(dir) == ["typo.ll:3: julia-1.31", "typo.ll:3: julia-ge-1.1"]
     end

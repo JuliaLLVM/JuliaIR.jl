@@ -54,6 +54,11 @@ for target in params['targets'].split(','):
 for major in range(15, int(params['llvm_major']) + 1):
     config.available_features.add('llvm-ge-%d' % major)
 
+# Julia's own LLVM, with Julia's C++ passes, for `REQUIRES: julia-llvm`; not a standalone
+# library that LLVM.jl was told to use instead
+if params['julia_llvm'] == '1':
+    config.available_features.add('julia-llvm')
+
 # the Julia version, by the minor version of its dialect (a nightly newer than the known
 # versions has the newest one's), for `REQUIRES: julia-1.13` or `%if julia-1.12 %{ ... %}`;
 # `julia-ge-1.12` for 1.12 or later
