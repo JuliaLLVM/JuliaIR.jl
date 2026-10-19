@@ -80,6 +80,12 @@ end
           (:none, :pgcstack, :bundle, :bundle)
     @test map(d -> d.gc_safepoint_load, (d12, d13, dm)) == (:plain, :monotonic, :monotonic_named)
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
+
+    # type lowering
+    @test (d11.cpointer_type, d12.cpointer_type) == (:integer, :pointer)
+    @test map(d -> d.bottom_aliases, (d11, d12, d13, dm)) ==
+          (:bottom, :typeofbottom_super, :typeofbottom_super, :some_type)
+    @test !d13.boxes_kinds && dm.boxes_kinds
 end
 
 @testset "policies" begin

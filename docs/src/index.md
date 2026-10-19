@@ -63,6 +63,10 @@ C++ passes derive from the module, like whether `setjmp` takes a `savemask` argu
 (not for a Windows triple), the ports derive from it too. See
 [Runtime facts](runtime.md) for what these facts are and how they are read.
 
+Besides the passes, JuliaIR.jl ports how Julia's code generator lowers Julia types to LLVM
+types, for code that builds Julia's IR in contexts of another LLVM library; see
+[Type lowering](type_lowering.md).
+
 Differences with Julia's C++ passes:
 
 - Fixes from later Julia versions are applied to the IR of every version: for AllocOpt,

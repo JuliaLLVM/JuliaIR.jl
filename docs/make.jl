@@ -15,6 +15,7 @@ function main()
             "LateLowerGCFrame" => "late_lower_gc_frame.md",
             "CancellationLowering" => "cancellation_lowering.md",
             "Runtime facts" => "runtime.md",
+            "Type lowering" => "type_lowering.md",
             "Testing" => "testing.md",
             "API reference" => "api.md",
         ],

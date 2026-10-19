@@ -24,6 +24,7 @@ read it first, including its Log). This file says where things are and how to co
 | S26 `julia` option removed, S27 master fixtures at the nightly's commit, S28 `required` flags | done, branch `tb/s26-drop-julia-option` (on S10) | see `git log` |
 | S19 CancellationLowering (`jl-cancellation-lowering`) | done, branch `tb/s19-cancellation-lowering` (on S26) | see `git log` |
 | S30 AllocOpt on arrays/vectors of references, stale LLVM.jl API audit, Base corpus run | done, branch `tb/s30-allocopt-eltype` (on S19) | see `git log` |
+| S14 type lowering (`julia_type`, `isboxed`, `julia_struct_type`, `deserves_*`, `check_layout`) | done, branch `tb/s14-type-lowering` (on S32) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -178,6 +179,24 @@ stack slots, #62752's RMW slot, whose absence crashes 1.12's C++). Kept on every
 `alloc-opt-atomics.ll`; Julia 1.10-1.12's own LateLowerGCFrame/FinalLowerGC accept the
 result. A version-gated variant (`Dialect.alloc_exact_fields`, `alloc_lower_atomics`) is
 on the local branch `tb/s30-review-gated` should that be needed.
+
+S14 details (plan decision S-D28): `src/type_lowering.jl` ports Julia's lowering of Julia
+types to LLVM types (`cgutils.cpp`'s `_julia_type_to_llvm`, `_julia_struct_to_llvm`,
+`bitstype_to_llvm`) and the calling-convention queries of `codegen.cpp`, for any context
+with opaque pointers (typed contexts are rejected). Everything comes from the running
+Julia's layouts (Base reflection: `DataTypeLayout`, `DataTypeFieldDesc`,
+`uniontype_layout`, `datatype_arrayelem`); `MAX_ALIGN` is the alignment of a 256-bit
+primitive. Dialect fields `cpointer_type`, `bottom_aliases`, `boxes_kinds`; the rest
+(`BFloat16`, `GenericMemoryRef`, `TypeEq`, odd-bit primitives, the `jl_datatype_layout`
+fallback of 1.11+) follows from what the running Julia has. Where the C++ aborts (atomic
+fields, no layout, no fixed layout) the port throws `ArgumentError`. `check_layout(T, dl)`
+compares Julia's layout with LLVM's under a data layout; the GPU divergences are pinned in
+`test/type_lowering.jl` and documented in `docs/src/type_lowering.md`. No upstream
+fixtures exist; the oracle is Julia's `jl_type_to_llvm`/`jl_struct_to_llvm` in the same
+context (package tests: a corpus of ~100 types; a scratch sweep over 15-20k types of Core,
+Base and stdlibs found no difference on any version). The cross-library variant of the
+bitcode-carrier test needs LLVM.jl's multi-library support (S11); for now the carrier goes
+between two contexts of Julia's LLVM.
 
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
@@ -420,6 +439,18 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 - The worktree sandbox refuses commands that point git outside the worktree unless they
   are plain: read Julia's sources with a lone `git -C /home/tim/Julia/src/julia show
   <rev>:<file>` (absolute path, nothing else in the command).
+- Julia 1.10's inference fails internally ("Internal error: encountered unexpected error
+  in runtime: BoundsError(a=Type{Core.TypeofBottom}, i=1)", printed while compiling a
+  caller) when it merges the results of comparing a `DataType` with `===` to both
+  `Core.TypeofBottom` and `Type{Union{}}`, which are `==` (JuliaLang/julia#56913, fixed
+  by #56915 in 1.11.4, not backported to 1.10); `is_bottom_alias` hides
+  `Core.TypeofBottom` behind `Base.inferencebarrier`.
+- A `ccall(..., llvmcall)` inside a `@testset` closure fails ("could not evaluate ccall
+  return type"); define such functions at top level. `llvm.ptrmask.p3.i32` is invalid
+  under the host data layout (index width 64).
+- Julia passes an unboxed `VecElement{String}` as a by-value `ptr addrspace(10)`, and
+  aggregates with some references get an extra roots parameter: a test of
+  `deserves_argbox` can't just look for `addrspace(10)` parameters.
 - Julia's C++ LowerSIMDLoop only reports remarks with
   `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
   "-pass-remarks-analysis=lower_simd_loop")`.

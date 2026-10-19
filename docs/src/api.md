@@ -47,6 +47,20 @@ JuliaIR.runtime_options
 JuliaIR.RuntimeError
 ```
 
+## Type lowering
+
+```@docs
+JuliaIR.julia_type
+JuliaIR.isboxed
+JuliaIR.julia_struct_type
+JuliaIR.deserves_stack
+JuliaIR.deserves_argbox
+JuliaIR.deserves_retbox
+JuliaIR.deserves_sret
+JuliaIR.check_layout
+JuliaIR.LayoutDivergence
+```
+
 ## Libraries
 
 ```@docs
