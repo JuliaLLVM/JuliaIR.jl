@@ -180,7 +180,8 @@ function parse_jlopt_args(args::Vector{String})
         elseif (m = match(r"^--?mcpu=(.*)$", arg)) !== nothing
             opts.cpu = m[1]
         elseif (m = match(r"^--?mattr=(.*)$", arg)) !== nothing
-            opts.features = m[1]
+            # (a list, which repeated options extend)
+            opts.features = join(filter(!isempty, [something(opts.features, ""), m[1]]), ",")
         elseif (m = match(r"^--?map-julia-passes=([01])$", arg)) !== nothing
             opts.map_passes = m[1] == "1"
         elseif occursin(LLVM_OPTIONS, arg)

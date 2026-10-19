@@ -17,6 +17,8 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
     @test (opts.cpu, opts.features) == ("haswell", "+avx2,-fma")
     @test parse_jlopt_args(["-mattr="]).features == ""
     @test parse_jlopt_args(String[]).features === nothing
+    @test parse_jlopt_args(["-mattr=-avx512f", "-mattr=+avx2,+fma"]).features ==
+          "-avx512f,+avx2,+fma"
     @test parse_jlopt_args(["-verify-memoryssa"]).llvm_options == ["-verify-memoryssa"]
     @test parse_jlopt_args(["--print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]).llvm_options ==
           ["-print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]
