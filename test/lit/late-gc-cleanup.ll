@@ -19,6 +19,8 @@
 ; RUN: not opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/unsupported-calls.ll 2>&1 | FileCheck %t/unsupported-calls.ll
 ; a GC stack needs a GC frame as soon as values must be rooted, also when it is not used
 ; RUN: not opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/unused-gcstack.ll 2>&1 | FileCheck %t/unused-gcstack.ll
+; RUN: not opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/frame-intrinsics.ll 2>&1 | FileCheck %t/frame-intrinsics.ll
+; RUN: not opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/thunk.ll 2>&1 | FileCheck %t/thunk.ll
 
 ; Without the cleanup, a load of constant data through a by-pointer argument, inlined
 ; into a caller that passes a stack slot, is folded to undef (JuliaLang/julia#44285).
@@ -95,18 +97,20 @@ define i64 @intrinsics(ptr addrspace(10) %obj) {
   ret i64 %val
 }
 
-; jlcalls pass their arguments in one array per function, as large as needed
+; jlcalls pass their arguments in one array per function, as large as needed (named
+; since Julia 1.11)
 ; CHECK-LABEL: @jlcalls(
 ; CHECK-NEXT: top:
-; CHECK-NEXT: %jlcallframe = alloca ptr addrspace(10), i32 2, align 8
-; CHECK-NEXT: [[SLOT0:%.*]] = getelementptr inbounds ptr addrspace(10), ptr %jlcallframe, i32 0
+; V111-NEXT: [[FRAME:%jlcallframe]] = alloca ptr addrspace(10), i32 2, align 8
+; V110-NEXT: [[FRAME:%0]] = alloca ptr addrspace(10), i32 2, align 8
+; CHECK-NEXT: [[SLOT0:%.*]] = getelementptr inbounds ptr addrspace(10), ptr [[FRAME]], i32 0
 ; CHECK-NEXT: store ptr addrspace(10) %a, ptr [[SLOT0]], align 8, !dbg
-; CHECK-NEXT: [[SLOT1:%.*]] = getelementptr inbounds ptr addrspace(10), ptr %jlcallframe, i32 1
+; CHECK-NEXT: [[SLOT1:%.*]] = getelementptr inbounds ptr addrspace(10), ptr [[FRAME]], i32 1
 ; CHECK-NEXT: store ptr addrspace(10) %b, ptr [[SLOT1]], align 8, !dbg
-; CHECK-NEXT: %r1 = tail call nonnull ptr addrspace(10) @ijl_apply_generic(ptr addrspace(10) %f, ptr %jlcallframe, i32 2) [[NOUNWIND:#[0-9]+]], !dbg
-; CHECK-NEXT: [[SLOT0:%.*]] = getelementptr inbounds ptr addrspace(10), ptr %jlcallframe, i32 0
+; CHECK-NEXT: %r1 = tail call nonnull ptr addrspace(10) @ijl_apply_generic(ptr addrspace(10) %f, ptr [[FRAME]], i32 2) [[NOUNWIND:#[0-9]+]], !dbg
+; CHECK-NEXT: [[SLOT0:%.*]] = getelementptr inbounds ptr addrspace(10), ptr [[FRAME]], i32 0
 ; CHECK-NEXT: store ptr addrspace(10) %b, ptr [[SLOT0]], align 8
-; CHECK-NEXT: %r2 = call nonnull ptr addrspace(10) @ijl_invoke(ptr addrspace(10) %f, ptr %jlcallframe, i32 1, ptr addrspace(10) %a)
+; CHECK-NEXT: %r2 = call nonnull ptr addrspace(10) @ijl_invoke(ptr addrspace(10) %f, ptr [[FRAME]], i32 1, ptr addrspace(10) %a)
 ; V111-NEXT: %r3 = call nonnull ptr addrspace(10) @jlfunc3(ptr addrspace(11) %d, ptr null, i32 0)
 ; V110-NEXT: %r3 = call ptr addrspace(10) (ptr, ptr addrspace(11), ...) @julia.call3(
 ; CHECK-NEXT: %r4 = call nonnull ptr addrspace(10) @ijl_apply_generic(ptr addrspace(10) %f, ptr null, i32 0) [ "deopt"(i32 1) ]
@@ -292,6 +296,28 @@ define void @unsupported(ptr addrspace(10) %a, ptr swiftself "gcstack" %gcstack)
 !4 = distinct !DISubprogram(name: "unsupported", scope: !2, file: !2, line: 1, type: !5, unit: !1, spFlags: DISPFlagDefinition)
 !5 = !DISubroutineType(types: !{})
 !6 = !DILocation(line: 2, scope: !4)
+
+;--- frame-intrinsics.ll
+; the intrinsics that LateLowerGCFrame creates are lowered by FinalLowerGC
+; CHECK: UnsupportedInputError: function frame contains constructs that LateGCCleanup does not support
+; CHECK-NEXT: julia.new_gc_frame: GC frames and allocations of Julia's runtime are lowered by FinalLowerGC
+declare ptr @julia.new_gc_frame(i32)
+
+define void @frame() {
+  %f = call ptr @julia.new_gc_frame(i32 1)
+  ret void
+}
+
+;--- thunk.ll
+; functions that the general pass skips (thunks) are validated too
+; CHECK: UnsupportedInputError: function thunk contains constructs
+; CHECK-NEXT: julia.typeof: reading the type of an object needs the object headers of Julia's runtime
+declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
+
+define ptr addrspace(10) @thunk(ptr addrspace(10) %a) "thunk" {
+  %t = call ptr addrspace(10) @julia.typeof(ptr addrspace(10) %a)
+  ret ptr addrspace(10) %t
+}
 
 ;--- supported.ll
 ; calls of Julia's runtime are fine without a GC stack

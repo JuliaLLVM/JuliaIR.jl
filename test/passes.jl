@@ -93,6 +93,80 @@ end
 
 @testset "LateGCCleanup" begin
     @test JuliaIR.LateGCCleanupPass().required
+    @test JuliaIR.LateLowerGCFramePass().required
+
+    # Calls marked julia.safepoint are safepoints whatever memory effects they, or the
+    # functions they call, claim, and lose them, so that optimizations after FinalLowerGC
+    # (Julia's C++ pass, a module pass on 1.10) keep the roots stored for them.
+    final = VERSION < v"1.11-" ? "function(jl-late-lower-gc-frame),FinalLowerGC" :
+                                 "function(jl-late-lower-gc-frame,FinalLowerGC)"
+    for (decl, call) in (("", "readnone"), ("readnone", ""))
+        out = IOBuffer()
+        JuliaIR.jlopt(["-S", "-passes=$final,function(sroa,dse,instcombine)", "-"];
+                      stdin=IOBuffer("""
+                          declare ptr @julia.get_pgcstack()
+                          declare ptr addrspace(10) @alloc()
+                          declare void @callee(ptr addrspace(10)) $decl
+
+                          define ptr addrspace(10) @marked() {
+                          top:
+                            %pgcstack = call ptr @julia.get_pgcstack()
+                            %x = call ptr addrspace(10) @alloc()
+                            call void @callee(ptr addrspace(10) %x) $call "julia.safepoint"
+                            ret ptr addrspace(10) %x
+                          }"""), stdout=out)
+        @test occursin(r"store ptr addrspace\(10\) %x, ptr [^\n]*\n\s*call void @callee",
+                       String(take!(out)))
+    end
+
+    # the general pass lowers what the cleanup rejects
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
+
+            define ptr addrspace(10) @f(ptr addrspace(10) %obj) {
+              %t = call ptr addrspace(10) @julia.typeof(ptr addrspace(10) %obj)
+              ret ptr addrspace(10) %t
+            }""") begin
+        run!(JuliaIR.LateLowerGCFramePass(; julia=v"1.12"), mod)
+        @test !occursin("julia.typeof(", string(mod.functions["f"]))
+        @test occursin("and i64 %obj.tag, -16", string(mod.functions["f"]))
+    end
+
+    # lowering an allocation needs runtime facts, which only the running Julia's dialect
+    # has without pass options
+    alloc_ir = """
+        target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+        define ptr addrspace(10) @alloc(ptr %task) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %v = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag)
+          ret ptr addrspace(10) %v
+        }"""
+    other = JuliaIR.dialect_minor(VERSION) == v"1.12" ? v"1.13" : v"1.12"
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
+        err = try
+            run!(JuliaIR.LateLowerGCFramePass(; julia=other), mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException && err.ex isa JuliaIR.RuntimeError
+        @test occursin("(`task_ptls`)", sprint(showerror, err.ex))
+    end
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
+        run!(JuliaIR.LateLowerGCFramePass(; julia=other, task_ptls=100), mod)
+        @test occursin("i32 100", string(mod.functions["alloc"]))
+    end
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
+        run!(JuliaIR.LateLowerGCFramePass(), mod)
+        @test occursin(r"%ptls_field = getelementptr inbounds \w+, ptr %task, i\d+ \d+",
+                       string(mod.functions["alloc"]))
+        @test !occursin("julia.gc_alloc_obj(", string(mod.functions["alloc"]))
+    end
+
     ir = """
         declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
         declare ptr @julia.pointer_from_objref(ptr addrspace(10))

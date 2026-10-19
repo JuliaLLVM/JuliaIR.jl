@@ -65,6 +65,26 @@ end
     @test (d10.fp16_rule, d11.fp16_rule, d12.fp16_rule) ==
           (:target_features, :target_features_bf16, :attributes)
     @test all(d -> d.propagate_addrspaces_target === :common_leaf, (d10, d13, dm))
+
+    # LateLowerGCFrame
+    @test (d13.gc_rooted_loads, dm.gc_rooted_loads) == (:tbaa, :regions)
+    @test !("jtbaa_memoryptr" in d10.gc_immutable_tbaa) && "jtbaa_memoryptr" in d11.gc_immutable_tbaa
+    @test d12.gc_frame_ref_refinement && !d13.gc_frame_ref_refinement
+    @test !d12.gc_frame_elision && d13.gc_frame_elision
+    @test (d13.gc_return_roots, dm.gc_return_roots) == (:sret, :attribute)
+    @test !d11.gc_slot_resets && d12.gc_slot_resets && d12.gc_prologue_store_elision
+    @test d11.gc_root_allocas_first && !d12.gc_root_allocas_first
+    @test !d12.gc_stack_argument && d13.gc_stack_argument
+    @test !d10.gc_names && d11.gc_names && !d10.gc_tag_load_volatile && d11.gc_tag_load_volatile
+    @test !d10.gc_alloc_bytes_tag && d11.gc_alloc_bytes_tag
+    @test !d11.gc_extract_simplify && d12.gc_extract_simplify
+    @test (d11.gc_ptls_gep, d12.gc_ptls_gep) == (:pointer, :byte)
+    @test map(d -> d.gc_barrier_lowering, (d10, d11, d12, d13, dm)) ==
+          (:unnamed, :debug_named, :named, :image, :deferred)
+    @test map(d -> d.gc_transition_lowering, (d11, d12, d13, dm)) ==
+          (:none, :pgcstack, :bundle, :bundle)
+    @test map(d -> d.gc_safepoint_load, (d12, d13, dm)) == (:plain, :monotonic, :monotonic_named)
+    @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
 end
 
 @testset "policies" begin

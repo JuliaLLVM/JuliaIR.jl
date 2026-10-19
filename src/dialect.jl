@@ -123,6 +123,70 @@ struct Dialect
     Julia 1.13 and older used the alloca address space."
     propagate_addrspaces_target::Symbol
 
+    # LateLowerGCFrame
+    "Which loads LateLowerGCFrame refines to the object they load from (rooted by it):
+    `:tbaa` (loads with `!invariant.load` or a TBAA type that derives from one of
+    `gc_immutable_tbaa`; Julia 1.13 and older) or `:regions` (`!invariant.load` or
+    `!alias.scope` regions of the `jnoalias` domain that are never overwritten)."
+    gc_rooted_loads::Symbol
+    "The TBAA types of immutable memory, for `gc_rooted_loads == :tbaa`."
+    gc_immutable_tbaa::Vector{String}
+    "Whether loads of tracked pointers through untracked pointers derived from an
+    argument (a jlcall argument array) count as rooted by the caller (Julia 1.12 and
+    older)."
+    gc_frame_ref_refinement::Bool
+    "Whether no GC frame is created when no safepoint follows the first definition that
+    needs rooting (Julia 1.13 and later)."
+    gc_frame_elision::Bool
+    "How calls report the roots they return in memory: `:sret` (the roots of an `sret`
+    argument that is not all tracked pointers are in an alloca passed as the second
+    argument; Julia 1.13 and older) or `:attribute` (a `julia.return_roots` argument
+    attribute gives the number of roots in that argument)."
+    gc_return_roots::Symbol
+    "Whether GC frame slots whose value dies are reset to null before the next
+    safepoint (Julia 1.12 and later)."
+    gc_slot_resets::Bool
+    "Whether null stores to rooted allocas in the entry block are removed, since frame
+    slots start out null (Julia 1.12 and later)."
+    gc_prologue_store_elision::Bool
+    "Whether allocas of single tracked pointers get their frame slots before the other
+    rooted allocas (Julia 1.11 and older)."
+    gc_root_allocas_first::Bool
+    "Whether an argument with the `gcstack` attribute provides the GC stack (Julia 1.13
+    and later; before, only a `julia.get_pgcstack` call in the entry block)."
+    gc_stack_argument::Bool
+    "Whether the values that GC lowering creates are named (`jlcallframe`,
+    `gc_slot_addr`, `.tag_addr`, ...; Julia 1.11 and later)."
+    gc_names::Bool
+    "Whether loads of type tags are volatile (Julia 1.11 and later)."
+    gc_tag_load_volatile::Bool
+    "Whether `julia.gc_alloc_bytes` takes the type tag as an argument and carries the
+    allocation attributes (Julia 1.11 and later)."
+    gc_alloc_bytes_tag::Bool
+    "Whether the field extractions that GC lowering creates are simplified (with LLVM's
+    `InstSimplifyFolder`; Julia 1.12 and later)."
+    gc_extract_simplify::Bool
+    "How the thread-local state of a task is addressed: `:pointer` (a GEP over pointers;
+    Julia 1.11 and older) or `:byte` (a GEP over bytes)."
+    gc_ptls_gep::Symbol
+    "How LateLowerGCFrame lowers write barriers: `:unnamed` (Julia 1.10), `:debug_named`
+    (values named at debug level 2; 1.11), `:named` (1.12), `:image` (also queueing
+    parents in the system image that are not yet in its remembered set; 1.13), or
+    `:deferred` (only elided when unnecessary, and lowered by FinalLowerGC; master)."
+    gc_barrier_lowering::Symbol
+    "How calls with a `gc-transition` operand bundle are lowered: `:none` (the bundle is
+    dropped; Julia 1.11 and older), `:pgcstack` (the GC state is switched through the
+    task of the GC stack; 1.12), or `:bundle` (through the bundle's thread-local state;
+    1.13 and later)."
+    gc_transition_lowering::Symbol
+    "How the safepoint page is loaded at GC state transitions: `:plain` (Julia 1.12),
+    `:monotonic` (an atomic load; 1.13), `:monotonic_named` (with a named address;
+    master)."
+    gc_safepoint_load::Symbol
+    "Whether every function processed gets a declaration of `ijl_gc_small_alloc`
+    (Julia 1.12 and later)."
+    gc_declare_small_alloc::Bool
+
     # policies
     "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
     fp16::Symbol
@@ -158,6 +222,16 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         ["jtbaa_const", "jtbaa_memoryptr", "jtbaa_memorylen"]
     end
 
+    gc_immutable_tbaa = ["jtbaa_immut", "jtbaa_const", "jtbaa_datatype"]
+    minor >= v"1.11" && append!(gc_immutable_tbaa, ["jtbaa_memoryptr", "jtbaa_memorylen",
+                                                    "jtbaa_memoryown"])
+    gc_barrier_lowering = minor == v"1.10" ? :unnamed :
+                          minor == v"1.11" ? :debug_named :
+                          minor == v"1.12" ? :named :
+                          minor == v"1.13" ? :image : :deferred
+    gc_transition_lowering = minor <= v"1.11" ? :none :
+                             minor == v"1.12" ? :pgcstack : :bundle
+
     fp16_rule = minor == v"1.10" ? :target_features :
                 minor == v"1.11" ? :target_features_bf16 : :attributes
 
@@ -182,6 +256,25 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
                    :common_leaf,
+                   development ? :regions : :tbaa,        # gc_rooted_loads
+                   gc_immutable_tbaa,
+                   minor <= v"1.12",                      # gc_frame_ref_refinement
+                   minor >= v"1.13",                      # gc_frame_elision
+                   development ? :attribute : :sret,      # gc_return_roots
+                   minor >= v"1.12",                      # gc_slot_resets
+                   minor >= v"1.12",                      # gc_prologue_store_elision
+                   minor <= v"1.11",                      # gc_root_allocas_first
+                   minor >= v"1.13",                      # gc_stack_argument
+                   minor >= v"1.11",                      # gc_names
+                   minor >= v"1.11",                      # gc_tag_load_volatile
+                   minor >= v"1.11",                      # gc_alloc_bytes_tag
+                   minor >= v"1.12",                      # gc_extract_simplify
+                   minor <= v"1.11" ? :pointer : :byte,   # gc_ptls_gep
+                   gc_barrier_lowering,
+                   gc_transition_lowering,
+                   development ? :monotonic_named :
+                   minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
+                   minor >= v"1.12",                      # gc_declare_small_alloc
                    fp16, bf16, gc_barrier)
 end
 

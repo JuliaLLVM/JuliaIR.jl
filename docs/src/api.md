@@ -14,6 +14,7 @@ JuliaIR.DemoteFloat16Pass
 JuliaIR.GCInvariantVerifierPass
 JuliaIR.GCInvariantError
 JuliaIR.GCInvariantViolation
+JuliaIR.LateLowerGCFramePass
 JuliaIR.LateGCCleanupPass
 JuliaIR.CombineMulAddPass
 JuliaIR.UnsupportedInputError
@@ -22,6 +23,7 @@ JuliaIR.LowerExcHandlersPass
 JuliaIR.HandlerNestingError
 JuliaIR.LowerSIMDLoopPass
 ```
+
 
 ## Dialects and options
 

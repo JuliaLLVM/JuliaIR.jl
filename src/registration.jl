@@ -135,13 +135,19 @@ What the passes need to know about the LLVM library that `ctx` belongs to, as op
 the Julia dialect of the IR:
 
 - `llvm`: the version of LLVM;
-- `lifetime_size`: whether the lifetime intrinsics take a size argument (before LLVM 22).
+- `lifetime_size`: whether the lifetime intrinsics take a size argument (before LLVM 22);
+- `masked_load_alignment`: whether `llvm.masked.load` and `llvm.masked.gather` take an
+  alignment argument (before LLVM 22);
+- `null_pointer_alignment`: whether LLVM's `Value::getPointerAlignment` takes a null
+  pointer to have the maximum alignment (before LLVM 22; later, only integer constants
+  cast to pointers have a known alignment).
 """
 function library_facts(ctx::Context)
     # LLVM.jl supports one library per session; this is where a per-context library
     # would be queried once it supports several.
     llvm = LLVM.version()
-    return (; llvm, lifetime_size = llvm < v"22")
+    return (; llvm, lifetime_size = llvm < v"22", masked_load_alignment = llvm < v"22",
+             null_pointer_alignment = llvm < v"22")
 end
 
 

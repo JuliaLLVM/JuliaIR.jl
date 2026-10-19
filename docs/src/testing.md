@@ -53,8 +53,8 @@ checkout must be in the manifest, as one of:
   in each test's ledger that every port in its pipelines ran;
 - `skip`: it will run once the ports listed under `missing` exist (the harness fails once
   they do, so that it is enabled);
-- `exclude`: it tests something this package does not port (CPU-only passes, GC frame
-  lowering, Julia's code generator);
+- `exclude`: it tests something this package does not port (CPU-only passes not ported
+  yet, Julia's code generator);
 - `override`: a derived copy runs, with a reviewed patch from `test/upstream/derived`
   applied. The harness fails if the pristine fixture passes too.
 
