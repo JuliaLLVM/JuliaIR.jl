@@ -598,6 +598,27 @@ function run_probe(::Val{:jit_fma})
     return (; jit_fma_f32=f32 != 0, jit_fma_f64=f64 != 0)
 end
 
+# Up to Julia 1.11, the C++ DemoteFloat16 decides whether a function without
+# `target-features` keeps `half` by looking for some features in the JIT's feature string;
+# the code that Julia generates for `Float16` arithmetic shows its answer.
+probe_fp16_mul(a::Float16, b::Float16) = a * b
+
+function run_probe(::Val{:jit_fp16})
+    what = "`*(::Float16, ::Float16)`"
+    with_probe_ir(probe_fp16_mul, Tuple{Float16,Float16}, what) do mod
+        kept = demoted = false
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
+            startswith(LLVM.name(f), "julia_") || continue
+            inst isa LLVM.FMulInst || continue
+            ty = LLVM.value_type(inst)
+            ty isa LLVM.HalfType && (kept = true)
+            ty isa LLVM.FloatType && (demoted = true)
+        end
+        kept == demoted && return nothing
+        return kept
+    end
+end
+
 # The JIT's triple, and from Julia 1.14 on its CPU and feature string, as Julia's JIT
 # creates its target machine with them.
 function run_probe(::Val{:jit_target})
