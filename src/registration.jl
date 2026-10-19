@@ -369,10 +369,11 @@ passes() = unique(def.name for def in PASSES)
                       options=Dict())
 
 Register every pass of this package with the pass builder `pb`, so that they can be used
-by name in its pipeline. The keyword arguments are the defaults of the policy options for
-occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)), and
-`options` maps the names of passes to the defaults of their own options, as a
-`NamedTuple` of the keyword arguments of their constructors (e.g.
+by name in its pipeline, as well as the marker passes of Julia's pipeline (see
+[`JuliaIR.build_pipeline!`](@ref)). The keyword arguments are the defaults of the policy
+options for occurrences of the passes that do not specify them (see
+[`JuliaIR.Dialect`](@ref)), and `options` maps the names of passes to the defaults of their
+own options, as a `NamedTuple` of the keyword arguments of their constructors (e.g.
 `Dict("jl-cpu-features" => (; target_cpu="haswell"))`).
 """
 function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
@@ -384,6 +385,9 @@ function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
     for def in PASSES
         LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier,
                                        get(options, def.name, (;))...))
+    end
+    for marker in marker_passes()
+        LLVM.register!(pb, marker)
     end
     return pb
 end
