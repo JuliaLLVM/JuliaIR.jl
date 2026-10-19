@@ -136,6 +136,14 @@ ir = """
         end
     end
 
+    # output to a file, from the API with the standard output discarded
+    mktemp() do path, io
+        close(io)
+        jlopt(["-passes=jl-remove-ni", "-S", "-o", path];
+              stdin=IOBuffer(ir), stdout=devnull)
+        @test occursin("target datalayout", read(path, String))
+    end
+
     # input that does not verify
     broken = """
         define i32 @f() {

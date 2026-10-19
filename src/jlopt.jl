@@ -268,7 +268,7 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
         # (with a ledger, writing to it needs compiling too)
         isempty(ledger) || (LEDGER[] = Sys.iswindows() ? "NUL" : "/dev/null")
         try
-            run_jlopt(opts, pipeline, data, name, devnull)
+            run_jlopt(opts, pipeline, data, name, stdout; warmup=true)
         catch
         finally
             LEDGER[] = ledger
@@ -280,7 +280,9 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     return
 end
 
-function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, stdout::IO)
+# run the pipeline on the input and write the output, except in a warm-up run
+function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, stdout::IO;
+                   warmup::Bool=false)
     @dispose ctx=Context(; opaque_pointers=true) begin
         mod = parse_input(data, name)
         try
@@ -302,8 +304,8 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
                 tm === nothing || dispose(tm)
             end
             verify(mod)
-            if stdout === devnull
-                # (a warm-up run) like writing the output, without writing to a file
+            if warmup
+                # what writing the output compiles, without writing it
                 opts.text ? string(mod) : convert(Vector{UInt8}, mod)
             else
                 write_output(mod, opts, stdout)
