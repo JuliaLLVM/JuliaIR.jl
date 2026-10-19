@@ -101,7 +101,7 @@ end
 
     # Calls marked julia.safepoint are safepoints whatever memory effects they, or the
     # functions they call, claim, and lose them, so that optimizations after FinalLowerGC
-    # (Julia's C++ pass, a module pass on 1.10) keep the roots stored for them.
+    # (a module pass on 1.10) keep the roots stored for them.
     final = VERSION < v"1.11-" ? "function(jl-late-lower-gc-frame),FinalLowerGC" :
                                  "function(jl-late-lower-gc-frame,FinalLowerGC)"
     for (decl, call) in (("", "readnone"), ("readnone", ""))
@@ -865,6 +865,171 @@ end
         add!(pb, "function(instcombine),jl-remove-addrspaces,function(instcombine,simplifycfg,gvn),jl-remove-addrspaces")
         run!(pb, mod)
         @test verify(mod) === nothing
+    end
+end
+
+@testset "FinalLowerGC" begin
+    @test JuliaIR.FinalLowerGCPass().required
+    @test JuliaIR.FinalLowerGCPass(; kind=:module).type === :module
+    @test JuliaIR.FinalLowerGCPass(; kind=:function).type === :function
+    @test JuliaIR.FinalLowerGCPass().type === (dialect.gc_final_module ? :module : :function)
+    @test_throws ArgumentError JuliaIR.FinalLowerGCPass(; kind=:loop)
+
+    frame_ir = """
+        target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
+        declare ptr @julia.get_pgcstack()
+        declare noalias nonnull ptr @julia.new_gc_frame(i32)
+        declare void @julia.push_gc_frame(ptr, i32)
+        declare void @julia.pop_gc_frame(ptr)
+        declare void @julia.safepoint(ptr)
+        declare void @use(ptr)
+        define void @f(ptr %page) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %gcframe = call ptr @julia.new_gc_frame(i32 1)
+          call void @julia.push_gc_frame(ptr %gcframe, i32 1)
+          call void @use(ptr %gcframe)
+          call void @julia.safepoint(ptr %page)
+          call void @julia.pop_gc_frame(ptr %gcframe)
+          ret void
+        }"""
+    function lowered(run, ir=frame_ir)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            run(mod)
+            return string(mod.functions["f"])
+        end
+    end
+
+    # both kinds lower functions the same way, run directly or in a pipeline (where the
+    # name is registered at both levels)
+    direct = [lowered(mod -> run!(JuliaIR.FinalLowerGCPass(; kind), mod))
+              for kind in (:module, :function)]
+    piped = [lowered() do mod
+                 @dispose pb=PassBuilder() begin
+                     JuliaIR.register!(pb)
+                     add!(pb, pipeline)
+                     run!(pb, mod)
+                 end
+             end for pipeline in ("jl-final-lower-gc", "function(jl-final-lower-gc)")]
+    @test allequal([direct; piped])
+    @test occursin("alloca ptr addrspace(10), i32 3, align 16", direct[1])
+    @test occursin("load volatile i64, ptr %page", direct[1])
+    @test !occursin(r"julia\.(new_gc_frame|push_gc_frame|pop_gc_frame|safepoint)", direct[1])
+
+    # a runtime function that the module declares differently is rejected before anything
+    # is lowered
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, frame_ir * """
+
+            declare void @ijl_gc_queue_root(ptr)""") begin
+        before = string(mod)
+        err = try
+            run!(JuliaIR.FinalLowerGCPass(), mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException && err.ex isa JuliaIR.DeclarationError
+        @test startswith(sprint(showerror, err.ex),
+                         "DeclarationError: the module declares ijl_gc_queue_root as void (ptr)")
+        @test string(mod) == before
+    end
+
+    # also when the mismatching declaration is not the first one the pass declares, or a
+    # call of `julia.queue_gc_root` comes after an intrinsic the pass already lowered
+    queue_ir = replace(frame_ir, "  call void @julia.safepoint(ptr %page)" =>
+        "  call void @julia.queue_gc_root(ptr %page)") * """
+
+        declare void @julia.queue_gc_root(ptr addrspace(10))"""
+    for (ir, name) in ((frame_ir * "\ndeclare void @ijl_gc_alloc_typed(ptr)", "ijl_gc_alloc_typed"),
+                       (queue_ir, "ijl_gc_queue_root")),
+        kind in (:module, :function)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            before = string(mod)
+            err = try
+                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                nothing
+            catch err
+                err
+            end
+            @test err isa PassException && err.ex isa JuliaIR.DeclarationError
+            @test err isa PassException && err.ex.name == name
+            @test string(mod) == before
+        end
+    end
+
+    # from Julia 1.14 on, the write barriers call `julia.queue_gc_root`, unless every child
+    # is null; the intrinsic is only checked when one does
+    if dialect.gc_barrier_lowering === :deferred
+        barrier_ir(child) = """
+            declare ptr @julia.get_pgcstack()
+            declare void @julia.object_write_barrier(ptr addrspace(10), ...)
+            declare void @julia.queue_gc_root(ptr)
+            define void @f(ptr addrspace(10) %p, ptr addrspace(10) %c) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %p, ptr addrspace(10) $child)
+              ret void
+            }"""
+        for kind in (:module, :function)
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("null")) begin
+                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                @test !occursin("write_barrier(", string(mod.functions["f"]))
+            end
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("%c")) begin
+                before = string(mod)
+                err = try
+                    run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                    nothing
+                catch err
+                    err
+                end
+                @test err isa PassException && err.ex isa JuliaIR.DeclarationError
+                @test err isa PassException && err.ex.name == "julia.queue_gc_root"
+                @test string(mod) == before
+            end
+        end
+    end
+
+    @testset "pool classes" begin
+        # the runtime's size classes: every object up to `GC_MAX_SZCLASS` comes from a pool
+        # whose objects fit it and its tag, the pools of larger objects come later
+        W = sizeof(Ptr{Cvoid})
+        max_szclass = 2032 - W
+        sizes = 0:2100
+        classes = [JuliaIR.gc_pool_class(dialect, sz) for sz in sizes]
+        small = [(sz, class) for (sz, class) in zip(sizes, classes) if class !== nothing]
+        @test first.(small) == 0:max_szclass
+        @test all(((sz, (_, osize)),) -> osize >= sz + W, small)
+        @test issorted([offset for (_, (offset, _)) in small])
+        @test issorted([osize for (_, (_, osize)) in small])
+        @test all(sz -> JuliaIR.gc_pool_class(dialect, sz) === nothing,
+                  (max_szclass + 1, typemax(Int32), typemax(UInt64)))
+
+        # only the running Julia's GC can be asked
+        other = JuliaIR.Dialect(dialect.minor == v"1.10" ? v"1.11" : v"1.10")
+        @test_throws JuliaIR.RuntimeError JuliaIR.gc_pool_class(other, 8)
+
+        # the pass allocates the largest pooled size from its pool, one byte more as a big
+        # object (whose size includes the tag)
+        tag_type, tag = dialect.gc_alloc_bytes_tag ? (", i64", ", i64 0") : ("", "")
+        alloc_ir(sz) = """
+            target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
+            declare ptr @julia.get_pgcstack()
+            declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i64$tag_type)
+            define ptr addrspace(10) @f(ptr %ptls) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @julia.gc_alloc_bytes(ptr %ptls, i64 $sz$tag)
+              ret ptr addrspace(10) %v
+            }"""
+        pass = mod -> run!(JuliaIR.FinalLowerGCPass(), mod)
+        offset, osize = JuliaIR.gc_pool_class(dialect, max_szclass)
+        small_alloc = JuliaIR.gc_alloc_function_name(dialect, :gc_small_alloc)
+        big_alloc = JuliaIR.gc_alloc_function_name(dialect, :gc_big_alloc)
+        @test occursin("@$small_alloc(ptr %ptls, i32 $offset, i32 $osize$tag)",
+                       lowered(pass, alloc_ir(max_szclass)))
+        @test occursin("@$big_alloc(ptr %ptls, i64 $(max_szclass + 1 + W)$tag)",
+                       lowered(pass, alloc_ir(max_szclass + 1)))
     end
 end
 

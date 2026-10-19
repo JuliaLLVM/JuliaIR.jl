@@ -86,6 +86,14 @@ end
     @test map(d -> d.bottom_aliases, (d11, d12, d13, dm)) ==
           (:bottom, :typeofbottom_super, :typeofbottom_super, :some_type)
     @test !d13.boxes_kinds && dm.boxes_kinds
+
+    # FinalLowerGC
+    @test d10.gc_final_module && !d11.gc_final_module
+    @test d10.gc_final_debugloc_next && !d11.gc_final_debugloc_next
+    @test !d12.gc_final_skip_unused && d13.gc_final_skip_unused
+    @test map(d -> d.gc_alloc_entry_points, (d10, d11, d12, d13, dm)) ==
+          (:pool, :pool_instrumented, :small, :small, :small)
+    @test !d13.gc_alloc_reset_safe && dm.gc_alloc_reset_safe
 end
 
 @testset "policies" begin

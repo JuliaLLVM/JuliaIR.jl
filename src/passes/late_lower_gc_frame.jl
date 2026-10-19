@@ -13,20 +13,6 @@
 # GC states of a thread (`julia_threads.h`)
 const JL_GC_STATE_SAFE = 2
 
-# GC bits in an object's header word (`julia_internal.h`); GC_IN_IMAGE_REMSET since 1.13
-const GC_MARKED = 1
-const GC_OLD_MARKED = 3
-const GC_IN_IMAGE = 4
-const GC_IN_IMAGE_REMSET = 8
-const GC_IN_IMAGE_NOT_REMSET = GC_IN_IMAGE
-
-# type tags are the header word before an object; types are 16-byte aligned, so the low
-# 4 bits of the tag are GC bits (`JL_SMALL_BYTE_ALIGNMENT`)
-const TAG_ALIGNMENT = 16
-
-# a GC frame starts with two words (`jl_gcframe_t`: nroots, prev)
-const GC_FRAME_HEADER_SLOTS = 2
-
 
 ## types and values
 
@@ -371,13 +357,6 @@ function new_addrspacecast!(builder::IRBuilder, @nospecialize(v::Value), ty::LLV
     return inst
 end
 
-# position the builder before `inst`, with `inst`'s debug location like C++'s
-# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
-function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
-    position!(builder, LLVM.before(inst))
-    builder.debug_location = debug ? inst.debug_location : nothing
-end
-
 
 ## InstSimplifyFolder, for the extractions of Julia 1.12 and later
 
@@ -584,13 +563,12 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                            lookup("julia.cancellation_point") : nothing)
 end
 
-is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
 is_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
     callee isa LLVM.Function && callee in fns.write_barriers
 is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
     callee isa LLVM.Function && callee in fns.field_write_barriers
 
-mutable struct LateLowerGCFrame
+mutable struct LateLowerGCFrame <: GCLowering
     dialect::Dialect
     opts::PassOptions
     mod::LLVM.Module
@@ -617,29 +595,6 @@ end
 function runtime_layout(p::LateLowerGCFrame)
     p.layout === nothing && (p.layout = runtime_layout(p.opts, p.mod))
     return p.layout
-end
-
-pointer_size(p::LateLowerGCFrame) = storage_size(p.dl, LLVM.PointerType(AS_GENERIC))
-pointer_align(p::LateLowerGCFrame) = abi_alignment(p.dl, LLVM.PointerType(AS_GENERIC))
-
-# the GC stack of a function (`JuliaPassContext::getPGCstack`)
-get_pgcstack(p::LateLowerGCFrame, f::LLVM.Function) = get_pgcstack(p.fns, p.dialect, f)
-function get_pgcstack(fns::GCFunctions, dialect::Dialect, f::LLVM.Function)
-    if fns.pgcstack_getter !== nothing || fns.adoptthread !== nothing
-        for inst in first(f.blocks).instructions
-            inst isa LLVM.CallInst || continue
-            callee = inst.called_operand
-            if is_fn(fns.pgcstack_getter, callee) || is_fn(fns.adoptthread, callee)
-                return inst
-            end
-        end
-    end
-    if dialect.gc_stack_argument
-        for (i, arg) in enumerate(f.parameters)
-            has_string_attribute(f.parameter_attributes[i], "gcstack") && return arg
-        end
-    end
-    return nothing
 end
 
 
@@ -2049,80 +2004,6 @@ function color_roots(S::State)
 end
 
 
-## declarations of GC intrinsics (`jl_intrinsics`, `jl_well_known`)
-
-# `memory(argmem: readwrite, inaccessiblemem: readwrite)`, or the attribute it replaced
-# before LLVM 16
-inaccessible_or_arg_mem_only() =
-    LLVM.version() < v"16" ? EnumAttribute("inaccessiblemem_or_argmemonly") :
-        EnumAttribute(MemoryEffects(argmem=:readwrite, inaccessiblemem=:readwrite))
-
-alloc_size_attr(elem_size_arg::Integer) =
-    EnumAttribute("allocsize", (UInt64(elem_size_arg) << 32) | 0xffffffff)
-
-# the attributes of allocation functions (`addGCAllocAttributes`)
-function add_gc_alloc_attributes!(p::LateLowerGCFrame, f::LLVM.Function)
-    if p.dialect.gc_alloc_bytes_tag
-        push!(f.function_attributes,
-              EnumAttribute(MemoryEffects(argmem=:read, inaccessiblemem=:readwrite)))
-        push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc
-        push!(f.function_attributes, EnumAttribute("willreturn"))
-        push!(f.function_attributes, EnumAttribute("nounwind"))
-    end
-    push!(f.return_attributes, EnumAttribute("noalias"))
-    push!(f.return_attributes, EnumAttribute("nonnull"))
-    return f
-end
-
-# a GC intrinsic or runtime function, declared if the module doesn't have it yet
-# (`JuliaPassContext::getOrDeclare`)
-function get_or_declare(p::LateLowerGCFrame, which::Symbol)
-    T_ptr = LLVM.PointerType(AS_GENERIC)
-    T_int32 = LLVM.Int32Type()
-    T_void = LLVM.VoidType()
-    name, ft = if which === :get_gc_frame_slot
-        "julia.get_gc_frame_slot", LLVM.FunctionType(T_ptr, [T_ptr, T_int32])
-    elseif which === :gc_alloc_bytes
-        "julia.gc_alloc_bytes",
-        LLVM.FunctionType(p.T_prjlvalue, p.dialect.gc_alloc_bytes_tag ?
-                          [T_ptr, p.T_size, p.T_size] : [T_ptr, p.T_size])
-    elseif which === :new_gc_frame
-        "julia.new_gc_frame", LLVM.FunctionType(T_ptr, [T_int32])
-    elseif which === :push_gc_frame
-        "julia.push_gc_frame", LLVM.FunctionType(T_void, [T_ptr, T_int32])
-    elseif which === :pop_gc_frame
-        "julia.pop_gc_frame", LLVM.FunctionType(T_void, [T_ptr])
-    elseif which === :queue_gc_root
-        "julia.queue_gc_root", LLVM.FunctionType(T_void, [p.T_prjlvalue])
-    elseif which === :gc_small_alloc
-        "ijl_gc_small_alloc", LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_int32, T_int32, p.T_size])
-    else
-        error("unknown GC intrinsic $which")
-    end
-    existing = get(p.mod.functions, name, nothing)
-    existing === nothing || return existing
-    f = LLVM.Function(p.mod, name, ft)
-    if which === :gc_alloc_bytes
-        push!(f.function_attributes, alloc_size_attr(1))
-        add_gc_alloc_attributes!(p, f)
-    elseif which === :new_gc_frame
-        push!(f.return_attributes, EnumAttribute("noalias"))
-        push!(f.return_attributes, EnumAttribute("nonnull"))
-    elseif which === :queue_gc_root
-        push!(f.function_attributes, inaccessible_or_arg_mem_only())
-    elseif which === :gc_small_alloc
-        push!(f.function_attributes, alloc_size_attr(2))
-        add_gc_alloc_attributes!(p, f)
-    end
-    return f
-end
-
-function call_intrinsic!(p::LateLowerGCFrame, which::Symbol, args::Vector{<:Value},
-                         name::String="")
-    f = get_or_declare(p, which)
-    return call!(p.builder, f.function_type, f, Value[args...], name)
-end
-
 slot_name(p::LateLowerGCFrame, prefix::String, slot::Integer) =
     p.dialect.gc_names ? string(prefix, slot) : ""
 
@@ -2377,56 +2258,6 @@ end
 
 ## cleanup
 
-i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
-
-# Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
-# node (`tbaa_make_child_with_context`)
-function tbaa_make_child(name::String, parent=nothing; constant::Bool=false)
-    jtbaa = MDNode([MDString("jtbaa")])
-    root = MDNode([MDString("jtbaa"), jtbaa, i64_metadata(0)])
-    scalar = MDNode([MDString(name), something(parent, root), i64_metadata(0)])
-    tag = constant ? MDNode([scalar, scalar, i64_metadata(0), i64_metadata(1)]) :
-                     MDNode([scalar, scalar, i64_metadata(0)])
-    return tag, scalar
-end
-
-tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
-tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
-tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
-
-# set a TBAA tag, and mark loads of constant memory invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction)
-    inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == tbaa_const()
-        inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
-    end
-    return inst
-end
-
-value_name(@nospecialize(v::Value)) = LLVM.name(v)
-
-# the address of the type tag of an object: the word before it (`EmitTagPtr`)
-function emit_tag_ptr!(p::LateLowerGCFrame, t::LLVMType, @nospecialize(v::Value))
-    name = p.dialect.gc_names ? value_name(v) * ".tag_addr" : ""
-    return inbounds_gep!(p.builder, t, v, [ConstantInt(p.T_size, -1)], name)
-end
-
-# a load of the type tag of an object (`EmitLoadTag`)
-function emit_load_tag!(p::LateLowerGCFrame, @nospecialize(v::Value))
-    addr = emit_tag_ptr!(p, p.T_size, v)
-    name = p.dialect.gc_names ? value_name(v) * ".tag" : ""
-    load = load!(p.builder, p.T_size, addr, name; align=pointer_align(p),
-                 ordering=LLVM.API.LLVMAtomicOrderingUnordered,
-                 volatile=p.dialect.gc_tag_load_volatile)
-    load.metadata[LLVM.MD_tbaa] = tbaa_tag()
-    # the tag is at least 16 (a type), so it is still not null after masking the GC bits
-    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, TAG_ALIGNMENT),
-                                           i64_metadata_of(p.T_size, 0)])
-    return load
-end
-
-i64_metadata_of(t::LLVMType, x::Integer) = Metadata(ConstantInt(t, x))
-
 # the thread-local state of a task (`get_current_ptls_from_task`)
 function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value), tbaa::MDNode)
     builder = p.builder
@@ -2616,38 +2447,11 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     update_ptr_numbering!(S, call, new_call)
 end
 
-function copy_function_attributes!(call::Instruction, f::LLVM.Function)
-    for attr in collect(f.function_attributes)
-        push!(call.function_attributes, attr)
-    end
-    for attr in collect(f.return_attributes)
-        push!(call.return_attributes, attr)
-    end
-    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
-        push!(call.argument_attributes[i], attr)
-    end
-end
-
 function return_dereferenceable_bytes(call::Instruction)
     for a in collect(call.return_attributes)
         a isa EnumAttribute && attr_kind(a) == "dereferenceable" && return Int(LLVM.value(a))
     end
     return 0
-end
-
-md_kind(@nospecialize(v::Value), name::String) =
-    API.LLVMGetMDKindIDInContext(context(v), name, length(name))
-
-function metadata_by_name(inst::Instruction, name::String)
-    kind = md_kind(inst, name)
-    for (k, md) in inst.metadata
-        k == kind && return md
-    end
-    return nothing
-end
-
-function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
-    API.LLVMSetMetadata(inst, md_kind(inst, name), API.LLVMMetadataAsValue(context(inst), md))
 end
 
 # `Value::getPointerAlignment`, for the values that type tags are
@@ -2939,8 +2743,6 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
     lowering = p.dialect.gc_barrier_lowering
     snapshot = p.dialect.gc_barrier in (:snapshot, :snapshot_field_precise)
     debug_info = lowering === :debug_named ? module_debug_level(p.mod) : 1
-    builder = p.builder
-    T_size = p.T_size
     for ci in write_barriers
         parent = ci.arguments[1]
         # the insertion-barrier optimization, invalid for snapshot barriers (1.14 and later)
@@ -2953,57 +2755,7 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
         # lowered by FinalLowerGC from Julia 1.14 on
         lowering === :deferred && continue
         p.cfg_modified = true
-
-        named = lowering in (:named, :image)
-        set_name!(v, name) = (lowering === :debug_named && debug_info >= 2 &&
-                              !(v isa LLVM.Constant)) && (v.name = name)
-        position_before!(builder, ci; debug=true)
-        par_tag = emit_load_tag!(p, parent)
-        par_bits = and!(builder, par_tag, ConstantInt(T_size, GC_OLD_MARKED),
-                        named ? "parent_bits" : "")
-        set_name!(par_bits, "parent_bits")
-        par_old_marked = icmp!(builder, LLVM.API.LLVMIntEQ, par_bits,
-                               ConstantInt(T_size, GC_OLD_MARKED),
-                               named ? "parent_old_marked" : "")
-        set_name!(par_old_marked, "parent_old_marked")
-        may_trig_term = split_block_and_insert_if_then!(par_old_marked, ci)
-        position_before!(builder, may_trig_term; debug=true)
-        may_trig_block = may_trig_term.parent
-        named && (may_trig_block.name = "may_trigger_wb")
-        set_name!(may_trig_block, "may_trigger_wb")
-        par_is_image = nothing
-        if lowering === :image
-            # at the generational boundaries above the youngest, only whether the parent
-            # is already in the relevant remembered set can be checked
-            par_in_image = and!(builder, par_tag,
-                                ConstantInt(T_size, GC_IN_IMAGE | GC_IN_IMAGE_REMSET),
-                                "parent_in_image")
-            par_is_image = icmp!(builder, LLVM.API.LLVMIntEQ, par_in_image,
-                                 ConstantInt(T_size, GC_IN_IMAGE_NOT_REMSET), "parent_is_image")
-        end
-        any_child_not_marked = nothing
-        for child in collect(ci.arguments)[2:end]
-            child_bit = and!(builder, emit_load_tag!(p, child), ConstantInt(T_size, GC_MARKED),
-                             named ? "child_bit" : "")
-            set_name!(child_bit, "child_bit")
-            child_not_marked = icmp!(builder, LLVM.API.LLVMIntEQ, child_bit,
-                                     ConstantInt(T_size, 0),
-                                     lowering === :unnamed ? "" : "child_not_marked")
-            set_name!(child_not_marked, "child_not_marked")
-            any_child_not_marked = any_child_not_marked === nothing ? child_not_marked :
-                or!(builder, any_child_not_marked, child_not_marked)
-        end
-        should_trigger = par_is_image === nothing ? any_child_not_marked :
-            or!(builder, par_is_image, any_child_not_marked, "should_trigger_wb")
-        trig_term = split_block_and_insert_if_then!(should_trigger, may_trig_term)
-        may_trig_block.terminator.metadata[LLVM.MD_prof] =
-            MDNode([MDString("branch_weights"), Metadata(ConstantInt(LLVM.Int32Type(), 1)),
-                    Metadata(ConstantInt(LLVM.Int32Type(), 9))])
-        trig_block = trig_term.parent
-        named && (trig_block.name = "trigger_wb")
-        set_name!(trig_block, "trigger_wb")
-        position_before!(builder, trig_term; debug=true)
-        call_intrinsic!(p, :queue_gc_root, Value[parent])
+        emit_write_barrier!(p, ci, parent, collect(ci.arguments)[2:end], lowering, debug_info)
         erase!(ci)
     end
 end
@@ -3087,7 +2839,7 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
                              LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
                              nothing, nothing, nothing, false)
         declare_small_alloc && get_or_declare(p, :gc_small_alloc)
-        p.pgcstack = get_pgcstack(p, f)
+        p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing
             drop_safepoint_memory_effects!(f)
             S = local_scan(p, f)

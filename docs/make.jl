@@ -15,6 +15,7 @@ function main()
             "LateLowerGCFrame" => "late_lower_gc_frame.md",
             "CancellationLowering" => "cancellation_lowering.md",
             "RemoveJuliaAddrspaces" => "remove_addrspaces.md",
+            "FinalLowerGC" => "final_lower_gc.md",
             "Runtime facts" => "runtime.md",
             "Type lowering" => "type_lowering.md",
             "Testing" => "testing.md",

@@ -80,6 +80,11 @@ kind = "port"
 ports = ["AllocOpt"]
 status = "run"
 
+[fixtures."alloc-opt-gcframe.ll"]
+kind = "port"
+ports = ["AllocOpt", "LateLowerGCFrame", "FinalLowerGC"]
+status = "run"
+
 [fixtures."alloc-opt-gcframe-addrspaces.ll"]
 kind = "port"
 ports = ["AllocOpt"]
@@ -187,15 +192,9 @@ reason = "its RUN lines use typed pointers, but the file already has the checks 
 
 ## ported passes together with CPU-only ones
 
-[fixtures."alloc-opt-gcframe.ll"]
-kind = "mixed"
-ports = ["AllocOpt", "LateLowerGCFrame"]
-status = "run"
-reason = "AllocOpt and LateLowerGCFrame, followed by Julia's FinalLowerGC (only on Julia's LLVM)"
-
 [fixtures."parsing.ll"]
 kind = "mixed"
-ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
 ledger_empty = ["jl-lower-simdloop"]  # the module has no loops
@@ -206,26 +205,33 @@ patch = "derived/1.10/parsing.ll.patch"
 reason = "its only RUN line uses typed pointers; the derived copy parses into an opaque context instead, which does not change what is tested"
 
 
-## GC frame lowering (LateLowerGCFrame), with Julia's C++ passes behind it where the RUN
-## lines name them (FinalLowerGC, JuliaMultiVersioning)
+## GC frame lowering (LateLowerGCFrame, FinalLowerGC), with Julia's C++ passes where the
+## RUN lines name them (JuliaMultiVersioning)
+
+[fixtures."final-lower-gc.ll"]
+kind = "port"
+ports = ["FinalLowerGC"]
+status = "run"
+
+[fixtures."final-lower-gc-addrspaces.ll"]
+kind = "port"
+ports = ["FinalLowerGC"]
+status = "run"
 
 [fixtures."gc-writebarrier-volatile.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "LateLowerGCFrame followed by Julia's FinalLowerGC"
 
 [fixtures."gcroots.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."late-lower-gc.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."late-lower-gc-addrspaces.ll"]
 kind = "port"
@@ -259,22 +265,20 @@ status = "run"
 reason = "Julia's JuliaMultiVersioning followed by LateLowerGCFrame (only on Julia's LLVM)"
 
 [fixtures."refinements.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "LateLowerGCFrame, and FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."returnstwicegc.ll"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "LateLowerGCFrame followed by Julia's FinalLowerGC (only on Julia's LLVM)"
 
 [fixtures."safepoint_stress.jl"]
-kind = "mixed"
-ports = ["LateLowerGCFrame"]
+kind = "port"
+ports = ["LateLowerGCFrame", "FinalLowerGC"]
 status = "run"
-reason = "IR emitted by Julia's code generator through LateLowerGCFrame and Julia's FinalLowerGC (only on Julia's LLVM)"
+reason = "IR emitted by Julia's code generator through LateLowerGCFrame and FinalLowerGC"
 
 [fixtures."safepoint_stress.jl".pins."1.10"]
 status = "override"
@@ -304,16 +308,6 @@ reason = "CPUFeatures is CPU-only"
 kind = "cpu"
 status = "exclude"
 reason = "CPUFeatures is CPU-only"
-
-[fixtures."final-lower-gc.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "FinalLowerGC is CPU-only"
-
-[fixtures."final-lower-gc-addrspaces.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "FinalLowerGC is CPU-only"
 
 [fixtures."lower-handlers.ll"]
 kind = "port"
