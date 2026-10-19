@@ -14,8 +14,9 @@ that does not contain Julia's own passes.
 
 Work in progress. Ported so far: RemoveNI (`jl-remove-ni`), AllocOpt (`jl-alloc-opt`),
 PropagateJuliaAddrspaces (`jl-propagate-addrspaces`), DemoteFloat16 (`jl-demote-float16`),
-GCInvariantVerifier (`jl-gc-invariant-verifier`), and the cleanup part of LateLowerGCFrame
-for functions without a GC frame, as on GPUs (`jl-late-gc-cleanup`).
+GCInvariantVerifier (`jl-gc-invariant-verifier`), LowerExcHandlers
+(`jl-lower-exc-handlers`), and the cleanup part of LateLowerGCFrame for functions without
+a GC frame, as on GPUs (`jl-late-gc-cleanup`).
 
 ## Supported dialects and libraries
 

@@ -77,6 +77,17 @@ function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
                 (value === nothing || negated) &&
                     throw(ArgumentError("option $key requires a value"))
                 extra_values[name] = Symbol(replace(value, '-' => '_'))
+            elseif default isa Int
+                (value === nothing || negated) &&
+                    throw(ArgumentError("option $key requires a value"))
+                n = tryparse(Int, value)
+                (n === nothing || n < 0) &&
+                    throw(ArgumentError("option $key requires a non-negative integer"))
+                extra_values[name] = n
+            elseif default isa String
+                (value === nothing || negated) &&
+                    throw(ArgumentError("option $key requires a value"))
+                extra_values[name] = value
             else
                 error("unsupported type of option $key: $(typeof(default))")
             end
@@ -95,7 +106,8 @@ function options_string(opts::PassOptions)
     parts = [options_string(opts.dialect)]
     for (k, v) in pairs(opts.extra)
         push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
-                     "$(option_key(k))=$(replace(string(v), '_' => '-'))")
+                     v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
+                     "$(option_key(k))=$v")
     end
     return join(parts, ";")
 end
@@ -220,16 +232,19 @@ passes() = [def.name for def in PASSES]
 
 """
     JuliaIR.register!(pb::PassBuilder; julia=VERSION, fp16=:auto, bf16=:auto,
-                      gc_barrier=:stock)
+                      gc_barrier=:stock, runtime=:auto)
 
 Register every pass of this package with the pass builder `pb`, so that they can be used
 by name in its pipeline. The keyword arguments are the defaults of the options for
-occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)).
+occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)), and
+`runtime` the default of the passes that need facts about the Julia runtime (see
+[`JuliaIR.resolve_runtime`](@ref)).
 """
 function register!(pb::PassBuilder; julia=VERSION, fp16::Symbol=:auto,
-                   bf16::Symbol=:auto, gc_barrier::Symbol=:stock)
+                   bf16::Symbol=:auto, gc_barrier::Symbol=:stock, runtime::Symbol=:auto)
     for def in PASSES
-        LLVM.register!(pb, custom_pass(def; julia, fp16, bf16, gc_barrier))
+        kwargs = haskey(def.extra, :runtime) ? (; runtime) : (;)
+        LLVM.register!(pb, custom_pass(def; julia, fp16, bf16, gc_barrier, kwargs...))
     end
     return pb
 end

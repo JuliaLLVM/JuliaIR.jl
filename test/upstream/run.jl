@@ -320,7 +320,8 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
         pristine
 
     function classify(text)
-        runs = Tuple{RunLine,Symbol,String,Vector{String}}[]
+        # local: the closure would otherwise assign the fixture's `runs` below
+        local runs = Tuple{RunLine,Symbol,String,Vector{String}}[]
         for run in run_lines(text)
             st, why, pipelines = try
                 classify_run(run; map_passes=!cpp)
