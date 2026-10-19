@@ -607,6 +607,50 @@ function canonical_frame_slots(lines)
 end
 CANONICALIZATIONS["frame slots"] = canonical_frame_slots
 
+# Metadata nodes are numbered in the order LLVM meets them, so a node that one side adds
+# or drops renumbers the others: number them by their first reference instead (in the IR,
+# then in the nodes in that order), and list them in that order. References are only
+# looked for outside quoted strings (which escape their quotes as `\22`).
+function canonical_metadata_numbers(lines)
+    outside_strings(f, text) = join([isodd(i) ? f(part) : part
+                                     for (i, part) in enumerate(split(text, '"'))], '"')
+    nodes = Dict{String,String}()
+    listed = String[]
+    body = String[]
+    for line in lines
+        m = match(r"^!(\d+) = (.*)$", line)
+        if m === nothing
+            push!(body, line)
+        else
+            nodes[m[1]] = m[2]
+            push!(listed, m[1])
+        end
+    end
+    order = String[]
+    number = Dict{String,Int}()
+    visit(text) = outside_strings(text) do part
+        for m in eachmatch(r"!(\d+)\b", part)
+            haskey(number, m[1]) && continue
+            push!(order, m[1])
+            number[m[1]] = length(order) - 1
+        end
+        part
+    end
+    foreach(visit, body)
+    k = 1
+    while k <= length(order)
+        visit(get(nodes, order[k], ""))
+        k += 1
+    end
+    foreach(id -> visit("!$id"), listed)    # nodes that nothing refers to
+    renumber(text) = outside_strings(text) do part
+        replace(part, r"!(\d+)\b" => ref -> "!$(number[ref[2:end]])")
+    end
+    defined = sort([id for id in listed]; by=id -> number[id])
+    return [renumber.(body); ["!$(number[id]) = $(renumber(nodes[id]))" for id in defined]]
+end
+CANONICALIZATIONS["metadata numbers"] = canonical_metadata_numbers
+
 # Whether the recorded deviations explain the difference of two outputs (`:excepted`),
 # accept it without a comparison (`:accepted`) or not (`:different`), which exceptions
 # took, and the diff that remains.
@@ -624,8 +668,9 @@ function explain(cpp, port, exceptions)
     for (i, e) in enumerate(exceptions)
         e.action === :accept || continue
         other = sides[e.side == "cpp" ? "port" : "cpp"]
+        # (`! ok` stands for a module that verified, when this side failed)
         if any(l -> occursin(e.lines, l), split(sides[e.side], '\n')) &&
-           !startswith(other, "! ") && !occursin("\n! invalid IR", other)
+           (!startswith(other, "! ") || other == "! ok") && !occursin("\n! invalid IR", other)
             return :accepted, [i], ""
         end
     end

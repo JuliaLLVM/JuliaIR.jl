@@ -469,7 +469,9 @@ level and option, and the rebuilt pipeline's output with Julia's on two function
 `attributes`, as FinalLowerGC's declarations now follow the last function). The
 differential has a `PassSpec` per level (`julia<level=N>`, `aborts`, `inherits` the
 exceptions of the ports it runs) and its own exceptions for the S-D30 and write-barrier
-deviations as they look after the whole pipeline. Deviations from Julia's pipeline are
+deviations as they look after the whole pipeline. Triple-less inputs get the host's
+triple there, and before 1.14 levels 2 and 3 compare against the rebuilt C++ pipeline
+with FinalLowerGC's port (its non-volatile frame memset changes what DSE does). Deviations from Julia's pipeline are
 listed in `docs/src/pipeline.md`; not visible in printing and not checked: text
 `loop-mssa` with SimpleLoopUnswitch may let LLVM use BFI, and the TLI comes from the
 module's triple rather than the target machine's.

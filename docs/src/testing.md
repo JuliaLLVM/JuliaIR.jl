@@ -361,6 +361,10 @@ pipeline elements of both sides with the options, like `GCInvariantVerifier<stro
 
 Julia's whole pipeline is compared the same way, at each level: `julia<level=N>` with
 Julia's C++ passes against the pipeline that JuliaIR rebuilds from the ports. The
-deviations recorded for the ports it runs apply
-to it as well (`inherits`); its own entries in `exceptions.toml` cover those whose
-rewrite differs once the whole pipeline ran.
+deviations recorded for the ports it runs apply to it as well (`inherits`); its own
+entries in `exceptions.toml` cover those whose rewrite differs once the whole pipeline
+ran. Two deviations that would hide everything they touch are aligned instead: modules
+without a triple get the host's (LowerPTLS's port reads the host's thread pointer where
+the C++ reaches `llvm_unreachable`), and before Julia 1.14, levels 2 and 3 compare with
+the rebuilt pipeline of Julia's C++ passes but FinalLowerGC's port (whose non-volatile
+frame `memset` lets later passes remove stores to the frame).
