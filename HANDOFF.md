@@ -266,13 +266,14 @@ and the upstream and differential jobs; `all.sh` defaults to it too (juliaup cha
 The docs and comments that said "Julia master" for the newest dialect's behaviour say
 "Julia 1.14 (and later)" now.
 
-From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
-on also on its inlining API (#671, stacked on #670):
-`[sources]` (root and `test/`) and the default `ref` of `.github/actions/llvm-dev`
-point at the branch `tb/inline-api`, which is based on LLVM.jl `main` (so it has
-`promote_mem_to_reg!`, #669); move both to the top of whatever LLVM.jl branches JuliaIR
-needs. The action removes the LLVM entry of `[sources]` before developing its
-checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
+JuliaIR.jl depends on unmerged LLVM.jl work (custom loop passes, the inlining API, value
+mapping and cloning, MemorySSA, the target triple wrapper, ...), split into the pull
+requests JuliaLLVM/LLVM.jl#679 to #686. `[sources]` (root, `test/` and
+`test/differential/`) and the default `ref` of `.github/actions/llvm-dev` point at
+`tb/juliair-deps`, a branch of LLVM.jl `main` that merges all of them; move them back to
+`main` once they are merged. The action removes the LLVM entry of `[sources]` before
+developing its checkout, as Pkg 1.11 and later refuse to replace a `url` source by a
+`path`.
 
 ## Layout
 
