@@ -253,6 +253,11 @@ end
 checks_stderr(run::RunLine) =
     occursin("2>&1", run.command) && !isempty(opt_invocations(run.command))
 
+# Whether the upgrade oracle re-prints any of what a fixture checks: if every RUN line that
+# runs checks stderr, the fixture sees the pin's printing only, and passes with or without
+# a mode-B patch, which the oracle therefore can't call stale.
+reprints(runs) = any(((run, status, _, _),) -> status == :run && !checks_stderr(run), runs)
+
 ported_names(pipeline) = unique(m.match for m in eachmatch(r"\bjl-[a-z0-9-]+", pipeline))
 
 # keep line numbers, which some checks depend on: disable a RUN line by renaming it
@@ -796,6 +801,10 @@ function main(args)
             status == :run && checks_stderr(run) &&
                 println("  not re-printed: $(f.name), RUN line $(run.index): checks stderr")
         end
+        for f in selected
+            any(l -> first(l) == :B, f.stale) && !reprints(f.runs) &&
+                println("  mode-B patch not validated: $(f.name): every RUN line checks stderr")
+        end
     end
     isempty(selected) && return 0
 
@@ -849,7 +858,8 @@ function main(args)
 
     # every patch layer must be needed: the fixture without it has to fail
     for (layer_name, dir) in ((:A, "stale-A"), (:B, "stale-B"))
-        stale = [(f, text) for f in selected for (l, text) in f.stale if l == layer_name]
+        stale = [(f, text) for f in selected for (l, text) in f.stale
+                 if l == layer_name && !(l == :B && reprint !== nothing && !reprints(f.runs))]
         isempty(stale) && continue
         _, _, stale_results, _ = run_suite(joinpath(workdir, dir),
                                            [(f.name, text) for (f, text) in stale])

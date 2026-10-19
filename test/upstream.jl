@@ -596,6 +596,16 @@ mktempdir() do dir
     @test !f.included
     @test f.reason == "every RUN line skipped: no port of Julia's julia"
 
+    # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
+    # whose RUN lines all check stderr sees the pin's printing only
+    for (run, reprinted) in (("opt -passes=jl-remove-ni -S %s | FileCheck %s", true),
+                             ("opt -passes='print<memoryssa>' -S -o /dev/null %s 2>&1 | FileCheck %s", false))
+        write(joinpath(cpponly, "good.ll"), "; RUN: $run\n")
+        f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+                                         cpp=true, manifest_dir=dir)
+        @test UpstreamHarness.reprints(f.runs) == reprinted
+    end
+
     # The upgrade oracle: Julia's passes, their output re-printed by another LLVM's opt
     # (here, the same LLVM's), checked against the fixtures with that LLVM's layer
     if !Sys.iswindows() && julia_llvm_in_use()

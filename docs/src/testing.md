@@ -240,7 +240,9 @@ with the `FileCheck` next to it. The fixtures get their plain mode-B patches, no
 mode-A ones, which are about the ports. Bitcode output is passed on as it is (a newer LLVM
 upgrades it when reading it), and so is what `opt` prints on stderr: the harness lists
 the RUN lines whose checks read stderr (`print<memoryssa>`, diagnostics), which therefore
-see the pin's printing. A patch that isn't needed fails here too.
+see the pin's printing. A patch that isn't needed fails here too, except for a fixture
+whose RUN lines all check stderr (those of the `memoryssa-alias` rule): it passes with or
+without its patch, which the harness lists as not validated, and only mode B checks it.
 
 The oracle passes at every pin with the patches of `derived-B/llvm23`, and Julia 1.14
 and master, which already use LLVM 23, need none. Mode B validates the
