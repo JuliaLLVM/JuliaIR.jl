@@ -29,6 +29,7 @@ need (see below) are taken from the running Julia; IR for GPUs doesn't need them
 | `jl-combine-muladd` | `CombineMulAdd` (Julia 1.10 and 1.11) | no |
 | `jl-late-gc-cleanup` | `LateLowerGCFrame` (the cleanup, for functions without a GC frame) | yes |
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
+| `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
 
 ## Passes that exist in some Julia versions only
 
@@ -87,6 +88,12 @@ Differences with Julia's C++ passes:
   handlers than were entered, or a non-constant number of them, is rejected with a
   `JuliaIR.HandlerNestingError` (undefined behaviour in the C++ pass). On LLVM 22 and
   later, the lifetime markers take only the pointer.
+- LowerSIMDLoop makes the loop ID it creates distinct, for the IR of every Julia version
+  (Julia master): older versions create a uniqued node and then make it refer to itself,
+  which also changes every other use of an identical node, e.g. `!{null}`, the type
+  array of a subroutine type, when the loop ID has no other operands. The remark about
+  a loop's flags is attached to the header's terminator (with the location of the start
+  of the loop) instead of the header block.
 - LateGCCleanup only ports the part of `LateLowerGCFrame` that applies to functions
   without a GC frame, and rejects the others; see [LateLowerGC cleanup](@ref) for its
   input contract and its other differences. Unlike the other ports, `jlopt` does not map

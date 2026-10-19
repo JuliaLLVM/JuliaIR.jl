@@ -6,12 +6,6 @@
 # does nothing. The pass reads no target information: whether to fuse is left to the
 # back-end.
 
-# whether `v` has exactly one use (C++'s `hasOneUse`: `fadd %m, %m` uses `%m` twice)
-function has_one_use(@nospecialize(v::Value))
-    use = API.LLVMGetFirstUse(v)
-    return use != C_NULL && API.LLVMGetNextUse(use) == C_NULL
-end
-
 # Mark `op` as `contract` if it is an `fmul` that only feeds the addition; return whether
 # it changed.
 function check_combine!(am, @nospecialize(op::Value))

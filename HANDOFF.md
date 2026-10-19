@@ -18,6 +18,7 @@ read it first, including its Log). This file says where things are and how to co
 | S18 CombineMulAdd (`jl-combine-muladd`) | done, `tb/s18-combine-muladd` (sibling of S6b/S17 on PR #5) | 1ee4acf |
 | S17 LowerExcHandlers (`jl-lower-exc-handlers`), runtime profiles | done, branch `tb/s17-lower-exc-handlers` (on S18's PR #6) | 138ff79, e4b7864, 8e55cc4 |
 | S24c runtime facts from the running Julia, AllocOpt pointer size from the data layout | done, replaces S24b's tables in PR #9 (on S17) | 2ad92d5, 3772cd7 |
+| S8 LowerSIMDLoop (`jl-lower-simdloop`), loop passes, LLVM.jl branch | done, branch `tb/s8-lower-simdloop` (on S24c, PR #9) | 72da87e, bc882e2, 43b272e |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -83,6 +84,27 @@ docs/src/runtime.md has the table. GC pool classification is not a fact: S15 sho
 `ccall(:jl_gc_classify_pools, ...)` like the C++. AllocOpt takes the reference-slot size
 and alignment from the data layout (`test/lit/alloc-opt-32bit.ll`).
 
+S8 details: `src/passes/lower_simdloop.jl`, the first loop pass (`define_pass(...,
+:loop, ...)` creates an LLVM.jl `LoopPass`; the implementation gets the `Loop` and the
+loop pass manager's `LoopAnalysisResults`). Faithful to every version's C++ pass;
+`Dialect.simdloop_check_combine` (1.12+) adds `contract` to the `fmul` feeding a
+reduction. Deviations: the new loop ID is distinct on every dialect (master's fix; the
+C++ of 1.10–1.13 corrupts other uses of an identical uniqued node such as `!{null}`),
+and the "Loop SIMD Flags" remark is emitted on the header's terminator (temporarily
+given the loop's start location), as LLVM.jl's `remark!` only takes an instruction.
+`Instruction::mayReadOrWriteMemory` is LLVM.jl's `may_read_from_memory(inst) ||
+may_write_to_memory(inst)` (wrappers of the C++). No pinned Julia version
+has a module-level variant or `julia.loopinfo_marker`; the C++ pass is an optional loop
+pass at every pin. Upstream `julia-simdloop.ll`, `julia-simdloop-memoryssa.ll` and
+`loopinfo.jl` run with the port at every pin.
+
+From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670):
+`[sources]` (root and `test/`) and the default `ref` of `.github/actions/llvm-dev`
+point at its branch `tb/loop-passes`, which is based on LLVM.jl `main` (so it has
+`promote_mem_to_reg!`, #669); move both to the top of whatever LLVM.jl branches JuliaIR
+needs. The action removes the LLVM entry of `[sources]` before developing its
+checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
+
 ## Layout
 
 - `src/dialect.jl`: `Dialect` (what each Julia version's IR looks like; passes branch on
@@ -130,6 +152,13 @@ and alignment from the data layout (`test/lit/alloc-opt-32bit.ll`).
   a time.
 - Iteration: `jld --test eval 'using Test, JuliaIR'` then `jld --test run test/<file>.jl`
   (Julia 1.13 daemon, test workspace). `jld --test restart` after adding files/includes.
+- Against the LLVM.jl stack (S8 on): as above, but `rev = "tb/loop-passes"` and the
+  `libLLVMExtra` builds of that branch's `deps/LLVMExtra` (built from a `git archive` of
+  it with `deps/build_local.jl` under each Julia version; directory
+  `llvm<ver>-<tree hash of deps/LLVMExtra>`). Julia 1.10 needs
+  `Pkg.develop(path=<checkout>)` (or `Pkg.add(url=..., rev=...)`) into
+  `Manifest-v1.10.toml`; don't leave a `test/Manifest-v1.10.toml` behind (Pkg.test then
+  fails with "can not merge projects").
 - Lit suite alone: `include("test/litsetup.jl")`, then `run_lit("test/lit"; python=find_python(),
   params=lit_params(; exec_root=mktempdir(), bindir=jlopt_bindir(mktempdir())))`.
 - Upstream fixtures: sparse clone of JuliaLang/julia at the pin (see docs/src/testing.md;
@@ -151,7 +180,7 @@ and alignment from the data layout (`test/lit/alloc-opt-32bit.ll`).
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
 2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
-   (plan item S6b). Independent: S24 (S17, S18 done); then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
+   (plan item S6b). Independent: S24 (S17, S18, S8 done); then E2 → S7, L5b → S9, E3 → S10, the CPU
    passes S15–S21.
    For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
    `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
@@ -247,6 +276,18 @@ and alignment from the data layout (`test/lit/alloc-opt-32bit.ll`).
   basic block" and an internal-error dump for a `return` inside nested
   `try`/`finally` in a `@dispose` block (harmless, the method falls back to
   unoptimized code); `with_probe_ir` avoids that shape.
+
+- Loop passes run after `loop-simplify`/`lcssa`, which LLVM's loop pass manager adds:
+  multiple latches are merged into one and exits get LCSSA phis and preheaders, so lit
+  tests must expect the canonical form (and can't test loop IDs on several latches).
+- LLVM 15 doesn't parse `memory(...)`: lit tests that run on Julia 1.10 use the old
+  attributes (`readnone`, `argmemonly readonly`) and accept both spellings in CHECK lines.
+- With LLVM.jl's multi-library stack (#662 on), enum values print as
+  `LLVM.Opcode.FAdd` instead of `LLVMFAdd`; `opcode_name` handles both. `get(inst.metadata, kind, default)` doesn't
+  exist (use `haskey`), and `terminator`, `uses`, `user` aren't exported.
+- Julia's C++ LowerSIMDLoop only reports remarks with
+  `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
+  "-pass-remarks-analysis=lower_simd_loop")`.
 
 ## Decisions (Tim, 2026-10-17)
 

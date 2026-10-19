@@ -98,3 +98,19 @@ function mutable_tbaa_tag(tag::MDNode)
     return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
                         MDNode([base, access, i64(ops[3])])
 end
+
+# whether `v` has exactly one use (C++'s `hasOneUse`: `fadd %m, %m` uses `%m` twice)
+function has_one_use(@nospecialize(v::Value))
+    use = API.LLVMGetFirstUse(v)
+    return use != C_NULL && API.LLVMGetNextUse(use) == C_NULL
+end
+
+# The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
+# C++ passes render instructions that way.
+function opcode_name(inst::Instruction)
+    opcode = API.LLVMGetInstructionOpcode(inst)
+    opcode == API.LLVMAtomicCmpXchg && return "cmpxchg"
+    opcode == API.LLVMVAArg && return "va_arg"
+    # `LLVM.Opcode.FAdd`, or `LLVMFAdd` with older LLVM.jl
+    return lowercase(chopprefix(last(split(string(opcode), '.')), "LLVM"))
+end

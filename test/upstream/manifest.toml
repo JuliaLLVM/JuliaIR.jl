@@ -130,20 +130,17 @@ missing = ["JuliaLICM"]
 [fixtures."julia-simdloop.ll"]
 kind = "port"
 ports = ["LowerSIMDLoop"]
-status = "skip"
-missing = ["LowerSIMDLoop"]
+status = "run"
 
 [fixtures."julia-simdloop-memoryssa.ll"]
 kind = "port"
 ports = ["LowerSIMDLoop"]
-status = "skip"
-missing = ["LowerSIMDLoop"]
+status = "run"
 
 [fixtures."loopinfo.jl"]
 kind = "port"
 ports = ["LowerSIMDLoop"]
-status = "skip"
-missing = ["LowerSIMDLoop"]
+status = "run"
 
 [fixtures."muladd.ll"]
 kind = "port"
@@ -180,6 +177,7 @@ kind = "mixed"
 ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
+ledger_empty = ["jl-lower-simdloop"]  # the module has no loops
 
 [fixtures."parsing.ll".pins."1.10"]
 status = "override"
