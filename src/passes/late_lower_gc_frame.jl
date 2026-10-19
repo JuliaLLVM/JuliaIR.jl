@@ -87,33 +87,13 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     end
 end
 
-# the memory effects of the attributes of a function or call site: the `memory`
-# attribute, or the legacy ones before LLVM 16; unrestricted without them
-function attribute_memory_effects(attrs)
-    if LLVM.version() >= v"16"
-        memory = get(attrs, :memory, nothing)
-        return memory === nothing ? MemoryEffects(:readwrite) : MemoryEffects(memory)
-    end
-    effects = MemoryEffects(:readwrite)
-    haskey(attrs, :readnone) && (effects &= MemoryEffects(:none))
-    haskey(attrs, :readonly) && (effects &= MemoryEffects(:read))
-    haskey(attrs, :writeonly) && (effects &= MemoryEffects(:write))
-    haskey(attrs, :argmemonly) && (effects &= MemoryEffects(argmem=:readwrite))
-    haskey(attrs, :inaccessiblememonly) &&
-        (effects &= MemoryEffects(inaccessiblemem=:readwrite))
-    haskey(attrs, :inaccessiblemem_or_argmemonly) &&
-        (effects &= MemoryEffects(argmem=:readwrite, inaccessiblemem=:readwrite))
-    return effects
-end
-
-function_memory_effects(f::LLVM.Function) =
-    attribute_memory_effects(f.function_attributes)
+function_memory_effects(f::LLVM.Function) = MemoryEffects(f.function_attributes)
 
 # `CallBase::getMemoryEffects`: the call's and the callee's effects, where operand
 # bundles (other than the ones that LLVM knows not to access memory) make the callee's
 # read and write anything
 function call_memory_effects(call::Instruction)
-    effects = attribute_memory_effects(call.function_attributes)
+    effects = MemoryEffects(call.function_attributes)
     callee = call.called_operand
     if callee isa LLVM.Function
         fn_effects = function_memory_effects(callee)
