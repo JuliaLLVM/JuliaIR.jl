@@ -500,8 +500,18 @@ own GEPs and untagged loads), which `test/gc.jl` checks for every dialect. Gener
 helpers (attribute and intrinsic predicates, `get_or_insert_function!`, metadata) are in
 `src/irutils.jl`; metadata by name goes through LLVM.jl's `inst.metadata[name]`, which
 needs LLVM.jl 10.3 (`LLVMGetMetadata2`). The port
-outputs on the differential corpus are byte-identical to S23's at 1.12 and nightly.
-Validated: VALIDATION.
+outputs on the differential corpus are byte-identical to the base's.
+Validated on S9 (LLVM.jl `tb/juliair-deps` 07200ee, LLVMExtra 9a88a5345ba0):
+`Pkg.test()` 1.10 1850, 1.11 1964, 1.12 1956, nightly 1987; mode A 31/32/33/35/40/40 and
+`--cpp` 28/32/33/35/40/40 (1.10 to 1.15, 2 unsupported on 1.14 and 1.15), unchanged;
+differential 1.12 and nightly 0 different, counts unchanged; docs build. Review: sol,
+`s33-review`, no P1/P2 left. Rebased onto S23, where `GCCodegen` also took over S29a's
+TBAA tags: `Pkg.test()` 1.10 2079, 1.12 2290, nightly 2318; mode A 1.12 38/38 and nightly
+45/47 (as on S23), `--cpp` 34/34 and 41/43 (2 unsupported on this host); the port outputs
+on the frozen differential corpus at 1.12 are byte-identical to S23's. Review of the
+conflict resolutions: sol, `s33-rebase-review`, no P1/P2 left. Not done (follow-up):
+unifying `GCFunctions` and `JuliaFunctions` (plan Q5); GC safe-enter/leave emitters stay
+out of scope.
 
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
