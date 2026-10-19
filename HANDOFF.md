@@ -35,6 +35,7 @@ read it first, including its Log). This file says where things are and how to co
 | S21 JuliaMultiVersioning (`jl-multiversioning`) | done, branch `tb/s21-multiversioning` (on S20) | see `git log` |
 | S9 JuliaLICM (`jl-licm`) | done, branch `tb/s9-julia-licm` (on S21) | see `git log` |
 | S36 ledger appends with O_APPEND (concurrent processes garbled lines) | done, branch `tb/s36-ledger-append` (on S9) | see `git log` |
+| S11 steps 2–3: tests on a standalone LLVM 23 (`julia_llvm_in_use()`, lit tools of the library, LowerExcHandlers lifetime fix) | done, branch `tb/s11-standalone` (on S36) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -442,6 +443,17 @@ MemorySSA, the target triple wrapper, standalone libraries, ...; JuliaLLVM/LLVM.
 LLVM, nightly's LLVM 23 included, so no environment needs `[sources]` or a local
 `libLLVMExtra`.
 
+S11 steps 2–3 details: LLVM.jl loads a standalone library through its `libLLVM`
+preference; its `deps/build_standalone.jl 23` builds one. Locally: `[LLVM] libLLVM =
+"<.so>"` in the `LocalPreferences.toml` of `.`, `test/`, `test/differential/`, `docs/`, and
+`JULIAIR_LLVM_TOOLS=<LLVM_full_jll 23 artifact>/tools` (on pegasus
+`~/.julia/artifacts/504b55167f4bdff1834c0aff72735d59b907eadf/tools`); no CI job uses a
+standalone library yet (S11 step 7). Tests that need Julia's
+C++ passes or type lowering are gated on `julia_llvm_in_use()` (test/litsetup.jl, now
+included once by runtests.jl) or the lit feature `julia-llvm`. On LLVM 23: Pkg.test 1.12
+858, nightly 852 (vs 1297/1320 on Julia's LLVM); `run.jl --mode B` 1.12 15/15, nightly
+20/20. Mode B at 1.10, 1.11 and 1.13 not run yet.
+
 ## Layout
 
 - `src/dialect.jl`: `Dialect` (what each Julia version's IR looks like; passes branch on
@@ -661,6 +673,15 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   another order: `%reset_ctx_prev3` instead of `%reset_ctx_prev`); check names that
   matter by hand (`cancellation-lowering-targets.ll`), and compare text in the
   differential.
+- Under LLVM.jl's `libLLVM` preference, `ccall(:jl_type_to_llvm, ..., context())` (any
+  of Julia's codegen functions given a context of the other library) segfaults instead
+  of failing; Julia's passes give `unknown pass name`. Gate such tests on
+  `julia_llvm_in_use()`.
+- LLVM_utils_unified_jll's tools are of Julia's LLVM: its llvm-dis can't read bitcode a
+  newer library writes (`Unknown attribute kind (102)`), hence `JULIAIR_LLVM_TOOLS`.
+- LLVM 22's verifier only accepts lifetime markers on allocas; ports that mark a cast of
+  an alloca (as Julia's C++ passes do for non-zero alloca address spaces) must mark the
+  alloca there (`library_facts(ctx).lifetime_on_alloca`).
 - The upgrade oracle's `opt` wrapper must run LLVM_full_jll's tools without lit's
   `LD_LIBRARY_PATH` (Julia's libLLVM), and must hide bash's own "Aborted" report when jlopt
   crashes (it would land in `2>&1 | FileCheck` input). LLVM_full_jll 23's `opt` is
