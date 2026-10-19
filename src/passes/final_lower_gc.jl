@@ -214,8 +214,7 @@ function lower_get_gc_frame_slot!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-has_reset_region(inst::Instruction) =
-    metadata_by_name(inst, "julia.reset_region") !== nothing
+has_reset_region(inst::Instruction) = haskey(inst.metadata, "julia.reset_region")
 
 # `julia.queue_gc_root(v)`: the runtime's function, called in place
 function lower_queue_gc_root!(p::FinalLowerGC, target::Instruction)
@@ -309,9 +308,8 @@ function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     p.cfg_modified = true
     queue_root = emit_write_barrier!(p.gc, target, parent, children, :image, 1)
     # the slow path runs in the barrier's cancellation reset region, if any
-    reset_region = metadata_by_name(target, "julia.reset_region")
-    reset_region === nothing ||
-        set_metadata_by_name!(queue_root, "julia.reset_region", reset_region)
+    reset_region = get(target.metadata, "julia.reset_region", nothing)
+    reset_region === nothing || (queue_root.metadata["julia.reset_region"] = reset_region)
 end
 
 

@@ -199,21 +199,6 @@ i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 # the integer in a `ConstantAsMetadata` operand
 metadata_int(md::Metadata) = convert(Int, Value(md))
 
-md_kind(@nospecialize(v::Value), name::String) =
-    API.LLVMGetMDKindIDInContext(context(v), name, length(name))
-
-function metadata_by_name(inst::Instruction, name::String)
-    kind = md_kind(inst, name)
-    for (k, md) in inst.metadata
-        k == kind && return md
-    end
-    return nothing
-end
-
-function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
-    API.LLVMSetMetadata(inst, md_kind(inst, name), API.LLVMMetadataAsValue(context(inst), md))
-end
-
 
 ## uses and opcodes
 

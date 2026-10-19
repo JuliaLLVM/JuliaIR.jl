@@ -184,6 +184,49 @@ end
     @test_throws JuliaIR.RuntimeError llgcf(transition(X86_64), foreign, "")
 end
 
+# Julia 1.14's lowerings keep a call's cancellation reset region on the calls that replace
+# it, whatever the region's metadata node holds
+@testset "reset regions" begin
+    # the node of the reset region of the call of `callee` in `out`
+    function reset_region(out, callee)
+        line = only(filter(l -> occursin("@$callee(", l) && occursin("call", l), body(out)))
+        id = match(r"!julia.reset_region (![0-9]+)", line)[1]
+        return match(Regex("\n\\$id = (.*)\n"), out)[1]
+    end
+    for node in ["!{}", "!{i64 1}", "!{!\"region\", i64 2}"]
+        barrier = """
+            $X86_64
+            declare ptr @julia.get_pgcstack()
+            declare void @julia.object_write_barrier(ptr addrspace(10), ...)
+            define void @f(ptr addrspace(10) %p, ptr addrspace(10) %c) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %p, ptr addrspace(10) %c), !julia.reset_region !0
+              ret void
+            }
+            !0 = $node"""
+        out = lower(JuliaIR.final_lower_gc!, JuliaIR.FINAL_LOWER_GC_FUNCTION, barrier,
+                    v"1.14", "")
+        @test reset_region(out, "ijl_gc_queue_root_reset_safe") == node
+
+        alloc = """
+            $X86_64
+            @tag = external addrspace(10) global {}, align 16
+            declare ptr @julia.get_pgcstack()
+            declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+            define ptr addrspace(10) @f(ptr %task) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag), !julia.reset_region !0
+              ret ptr addrspace(10) %v
+            }
+            !0 = $node"""
+        out = lower(JuliaIR.late_lower_gc_frame!, JuliaIR.LATE_LOWER_GC_FRAME, alloc,
+                    v"1.14", "task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128")
+        @test reset_region(out, "julia.gc_alloc_bytes") == node
+    end
+end
+
 @testset "CancellationLowering" begin
     point = """
         $X86_64

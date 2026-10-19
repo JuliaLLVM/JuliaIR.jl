@@ -2219,8 +2219,8 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         copy_function_attributes!(new_call, alloc_bytes)
         deref = return_dereferenceable_bytes(call)
         deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
-        reset_region = metadata_by_name(call, "julia.reset_region")
-        reset_region === nothing || set_metadata_by_name!(new_call, "julia.reset_region", reset_region)
+        reset_region = get(call.metadata, "julia.reset_region", nothing)
+        reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
         take_name!(new_call, call)
     end
 
