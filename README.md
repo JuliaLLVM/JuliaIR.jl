@@ -10,19 +10,23 @@ that does not contain Julia's own passes.
 
 "IR" in the package name refers to that dialect, not to Julia's own SSA IR.
 
+Julia's own passes are compiled into Julia's libLLVM and exist nowhere else. The ports
+let code that processes Julia's IR with another LLVM, mainly GPUCompiler on a standalone,
+newer libLLVM, run the same passes, with the behaviour of the Julia version that produced
+the IR.
+
 ## Status
 
-Work in progress. Ported so far: RemoveNI (`jl-remove-ni`), AllocOpt (`jl-alloc-opt`),
-PropagateJuliaAddrspaces (`jl-propagate-addrspaces`), DemoteFloat16 (`jl-demote-float16`),
-GCInvariantVerifier (`jl-gc-invariant-verifier`), LowerExcHandlers
-(`jl-lower-exc-handlers`), and the cleanup part of LateLowerGCFrame for functions without
-a GC frame, as on GPUs (`jl-late-gc-cleanup`).
+Every pass of Julia's optimization pipelines, Julia 1.10 to 1.15, is ported (see the
+table on the documentation's home page), and the pipeline itself is rebuilt from the
+ports for each Julia version. The package is not registered yet, and needs an unreleased
+version of LLVM.jl, which `Project.toml` takes from a branch.
 
 ## What is supported
 
 - **The IR of the running Julia.** JuliaIR.jl processes the IR that the Julia version it
   runs on generates: Julia 1.12 processes Julia 1.12's IR, not that of an older or newer
-  Julia. Every Julia version from 1.10 up to the current development version is
+  Julia. Every Julia version from 1.10 up to the current development version (1.15) is
   supported this way.
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions, e.g. a separately built library like
@@ -56,6 +60,13 @@ end
 or construct a single pass: `run!(JuliaIR.RemoveNIPass(), mod)`. The pass
 names start with `jl-`, so they never clash with Julia's own C++ passes, which are also
 available when running on Julia's LLVM.
+
+Julia's whole optimization pipeline is available as `JuliaIR.optimize!(mod; level=2)`,
+or `JuliaIR.build_pipeline!(pb; level=2)` to add it to a pass builder.
+
+GPUCompiler runs the ports instead of Julia's C++ passes with `julia_passes = :ports` in
+its `CompilerConfig` (or its `julia_passes` preference set to `"ports"`) and JuliaIR.jl
+loaded (JuliaGPU/GPUCompiler.jl#1026, not merged yet).
 
 ## Testing
 
