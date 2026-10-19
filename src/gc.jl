@@ -348,7 +348,8 @@ function gc_declaration_type(g::GCCodegen, which::Symbol)
     end
 end
 
-# the name and type of a GC intrinsic or runtime function
+# the name and type of a GC intrinsic or runtime function; this always builds the type,
+# so code that may find the function already declared should use `get_or_declare`
 gc_declaration(g::GCCodegen, which::Symbol) =
     gc_declaration_name(g.dialect, which), gc_declaration_type(g, which)
 
