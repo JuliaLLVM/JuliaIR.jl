@@ -289,6 +289,17 @@ end
             @test info.refstore && !info.refload
             @test info.fields[1].hasobjref && !info.fields[1].hasunboxed
 
+            # aggregates of references
+            T_prjlvalue = LLVM.PointerType(10)
+            for ty in (LLVM.ArrayType(T_prjlvalue, 2), LLVM.VectorType(T_prjlvalue, 2),
+                       LLVM.StructType([i64, LLVM.ArrayType(T_prjlvalue, 1)]))
+                empty!(info)
+                JuliaIR.add_memop!(info, d, 1, UInt32(0), ty, false, true, dl)
+                @test info.fields[1].hasobjref && info.fields[1].hasaggr
+            end
+            @test !JuliaIR.has_objref(LLVM.ArrayType(i64, 2))
+            @test !JuliaIR.has_objref(LLVM.VectorType(LLVM.PointerType(0), 2))
+
             # the end of an access must fit in 32 bits
             @test !JuliaIR.add_memop!(info, a, 1, typemax(UInt32) - UInt32(4), i64, true, false, dl)
         end

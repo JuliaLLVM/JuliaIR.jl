@@ -68,7 +68,14 @@ Differences with Julia's C++ passes:
 - Fixes from later Julia versions are applied to the IR of every version: for AllocOpt,
   the handling of write barriers that have the allocation as one of several children
   (Julia master), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots
-  (Julia 1.13). The layout and initialization of stack memory follow the Julia version.
+  (Julia 1.13), and Julia 1.13's escape analysis: fields that don't overlap are not
+  merged (JuliaLang/julia#62166), allocations with references can be split or moved to
+  the stack (#61131), a field accessed by a `cmpxchg` or `atomicrmw` counts as read
+  (#62752; without it, the C++ pass can crash), and storing the allocation's address
+  with one is an escape (#61131). Like 1.13's, the port also makes the `cmpxchg` and
+  `atomicrmw` it moves to the slots of a split allocation non-atomic. So for 1.10 to
+  1.12 IR the port removes or splits allocations that the C++ pass of those versions
+  keeps. The layout and initialization of stack memory follow the Julia version.
   For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
   instead of the alloca address space (Julia master), and not walking the uses of
   constant data (Julia master).

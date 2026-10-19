@@ -23,6 +23,7 @@ read it first, including its Log). This file says where things are and how to co
 | S10 ExpandAtomicModify (`jl-expand-atomic-modify`) | done, branch `tb/s10-expand-atomic-modify` (on S6b, PR #11) | see `git log` |
 | S26 `julia` option removed, S27 master fixtures at the nightly's commit, S28 `required` flags | done, branch `tb/s26-drop-julia-option` (on S10) | see `git log` |
 | S19 CancellationLowering (`jl-cancellation-lowering`) | done, branch `tb/s19-cancellation-lowering` (on S26) | see `git log` |
+| S30 AllocOpt on arrays/vectors of references, stale LLVM.jl API audit, Base corpus run | done, branch `tb/s30-allocopt-eltype` (on S19) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -154,6 +155,29 @@ for a point without an entry-block GC stack and for an `invoke`d point, DataLayo
 pointer alignment. Upstream `cancellation-lowering.ll` runs with the port at the nightly's
 commit. Lit: `cancellation-lowering.ll` (update_test_checks, facts as options),
 `-targets.ll` (Windows arity, i686, name order, errors), `-noop.ll` (1.13 and older).
+
+S30 details: AllocOpt's `has_objref` called `eltype` on array and vector types, which
+LLVM.jl no longer defines, so Base's fallback (`Any`) made AllocOpt throw on any load or
+store of an aggregate of references; it uses `.element_type` now
+(`test/lit/alloc-opt-aggregates.ll`, the `fields` testset). An audit of `src/` and
+`test/` found no other stale LLVM.jl API: every `LLVM.x`/`API.x` exists on
+`tb/inline-api`, and of the Base functions LLVM.jl 9.x extended for types and constants
+and no longer does (`eltype`, `length`, `size`, `collect`, `getindex`, `isempty` on types),
+only `eltype` has a fallback that returns instead of throwing, and that was its only use.
+Every port runs, at its positions in Julia's pipeline (input made by the C++ prefix),
+without exception or invalid output over 360 modules per version (300 Base methods, 60
+synthetic) on 1.12, 1.13 and nightly, identical to the C++ pass at its main position
+(LateLowerGCFrame modulo slot order, LateGCCleanup modulo `ijl_gc_small_alloc`); the
+driver is S30's `corpus.jl` in the coordinator's scratchpad. Nightly's JIT stalls
+(in `linkOutput`) compiling `push!` on a `Set{Any}` of signatures in `gen_corpus.jl`; an
+`IdSet` avoids it. S12's differential found AllocOpt removing or splitting, on 1.10 to
+1.12, allocations that those versions' C++ keeps: the port has 1.13's escape analysis for
+every version (#62166's `getField` fix, #61131's `multiloc` guard and atomic lowering on
+stack slots, #62752's RMW slot, whose absence crashes 1.12's C++). Kept on every version
+(Tim, S-D30), documented in `docs/src/index.md`, tested by `alloc-opt-fields.ll` and
+`alloc-opt-atomics.ll`; Julia 1.10-1.12's own LateLowerGCFrame/FinalLowerGC accept the
+result. A version-gated variant (`Dialect.alloc_exact_fields`, `alloc_lower_atomics`) is
+on the local branch `tb/s30-review-gated` should that be needed.
 
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
@@ -331,7 +355,8 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
 - `IRBuilder` can't create an alloca in a block that isn't in a function (it needs the
   module's data layout; segfault).
-- LLVM.jl has no `eltype(::VectorType)` (use `.element_type`) and can't wrap scalable
+- LLVM.jl has no `eltype` for array or vector types (use `.element_type`; Base's `eltype`
+  silently returns `Any`, S30) and can't wrap scalable
   vector types (`value_type` of a `<vscale x ...>` value throws): inspect types that may
   be vectors through `API.LLVMTypeOf` refs (`src/irutils.jl`).
 - IRBuilder (C API) constant-folds: a placeholder operand must not be a constant, or a
