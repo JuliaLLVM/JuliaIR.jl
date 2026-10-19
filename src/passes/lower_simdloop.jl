@@ -49,7 +49,7 @@ function set_loop_id!(loop::Loop, id::MDNode)
 end
 
 # A loop ID with the given operands besides the self reference. It is distinct, as in
-# Julia master: Julia 1.13 and older create a uniqued node and then make it refer to
+# Julia 1.14: Julia 1.13 and older create a uniqued node and then make it refer to
 # itself, which changes any other user of an identical node (e.g. `!{null}`, the type
 # array of a subroutine type without arguments, when every other operand was removed).
 function new_loop_id(ops::Vector{Metadata})

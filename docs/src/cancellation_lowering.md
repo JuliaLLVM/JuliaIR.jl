@@ -1,7 +1,8 @@
 # CancellationLowering
 
-Julia master can cancel a running task at a *cancellation point*: `Base.@cancel_check`,
-which the code generator emits as a call `julia.cancellation_point()`. Julia's
+From version 1.14 on, Julia can cancel a running task at a *cancellation point*:
+`Base.@cancel_check`, which the code generator emits as a call
+`julia.cancellation_point()`. Julia's
 `CancellationLowering` pass turns these calls into *reset regions*. At a point, the
 function fills a buffer on its stack, a `jl_reset_ctx_t`, and publishes it in its task's
 `reset_ctx` field; while it is published, the runtime may deliver a cancellation (or a

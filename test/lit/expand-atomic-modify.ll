@@ -920,7 +920,7 @@ define i64 @simplified_xchg(ptr %p) {
   ret i64 %s
 }
 
-; the exchanged value is computed before the exchange (Julia master; Julia 1.13's C++
+; the exchanged value is computed before the exchange (Julia 1.14; Julia 1.13's C++
 ; pass emits the atomicrmw before it)
 ; CHECK-LABEL: @xchg_computed(
 ; CHECK-NEXT: [[NEW:%.*]] = shl i64 %v, 1

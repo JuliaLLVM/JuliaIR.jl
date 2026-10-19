@@ -26,7 +26,8 @@
 ; RUN: %if julia-ge-1.11 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3.ll -o /dev/null %}
 ; RUN: %if julia-ge-1.11 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3-invalid.ll 2>&1 | FileCheck %s --check-prefix=JLCALL %}
 
-; field barriers (Julia master) must be whole-object barriers in field-precise builds
+; field barriers (Julia 1.14 and later) must be whole-object barriers in field-precise
+; builds
 ; RUN: %if julia-1.14 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/object-barrier.ll -o /dev/null %}
 ; RUN: %if julia-1.14 %{ not --crash opt -passes='function(jl-gc-invariant-verifier<gc-barrier=field-precise>)' -S %t/object-barrier.ll 2>&1 | FileCheck %s --check-prefix=PRECISE %}
 

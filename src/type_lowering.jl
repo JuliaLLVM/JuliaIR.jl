@@ -48,7 +48,7 @@ function datatype_layout(T::DataType)
 end
 datatype_size(T::DataType) = Int(datatype_layout(T).size)
 
-# `jl_datatype_nbits` of a primitive type: Julia master stores primitives of any number of
+# `jl_datatype_nbits` of a primitive type: Julia 1.14 stores primitives of any number of
 # bits (`primitive type P7 7`) and reports the bits that are not used.
 primitive_bits(T::DataType) =
     @static isdefined(Core, :bitsizeof) ? Int(Core.bitsizeof(T)) : 8 * sizeof(T)
@@ -104,7 +104,7 @@ is_array_type(T::DataType) = T.name === Base.typename(Array)
 is_genericmemory_type(T::DataType) = HAS_MEMORY && T.name === Base.typename(Core.GenericMemory)
 is_genericmemoryref_type(T::DataType) = HAS_MEMORY && T.name === Base.typename(Core.GenericMemoryRef)
 
-# `jl_special_vector_alignment`, as of Julia master (whose odd-bit primitives can't be
+# `jl_special_vector_alignment`, as of Julia 1.14 (whose odd-bit primitives can't be
 # vector elements; older versions have no odd-bit primitives): the alignment of an
 # `NTuple{n,T}` that is lowered to an LLVM vector, or 0 if it isn't one.
 function special_vector_alignment(n::Int, @nospecialize(T))
@@ -439,7 +439,7 @@ function check_value!(out, path, @nospecialize(T), @nospecialize(lty::LLVMType),
     jsize = datatype_size(T)
     jalign = Base.datatype_alignment(T)
     # Julia's size can include padding that LLVM doesn't store (`<3 x float>`) or
-    # allocate (odd-size primitives before Julia master), but must cover what LLVM
+    # allocate (odd-size primitives before Julia 1.14), but must cover what LLVM
     # stores and fit in what it allocates
     store, alloc = storage_size(dl, lty), abi_size(dl, lty)
     jsize < store && compare!(out, path, :size, jsize, store)

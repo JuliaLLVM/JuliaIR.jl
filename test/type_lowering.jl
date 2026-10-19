@@ -65,14 +65,14 @@ module LoweringCorpus
     end
     isdefined(Core, :BFloat16) && push!(TYPES, Core.BFloat16)
     if isdefined(Core, :bitsizeof)
-        # odd-bit primitives (Julia master)
+        # odd-bit primitives (Julia 1.14 and later)
         @eval primitive type P7 7 end
         @eval primitive type P17 17 end
         @eval struct P7Pair; a::P7; b::Int8; end
         append!(TYPES, [P7, P17, P7Pair, NTuple{4,VecElement{P7}}])
     end
     if isdefined(Core, :TypeEq)
-        # the kinds of `Type{T}` objects (Julia master)
+        # the kinds of `Type{T}` objects (Julia 1.14 and later)
         append!(TYPES, [Core.TypeEq, Core.TypeEgal, Core.TypeEgal{Int}])
     end
 end
@@ -284,7 +284,7 @@ end
             end
         end
 
-        # a constant type is boxed, but Julia omits the argument before master (which
+        # a constant type is boxed, but Julia omits the argument before 1.14 (which
         # passes it as a `Core.TypeEq` object)
         @test JuliaIR.deserves_argbox(Type{Int})
         params = sink_parameters(Type{Int})

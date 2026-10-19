@@ -74,14 +74,14 @@ data layout, so its results describe values of the running Julia. In order:
 
 The dialect of the running Julia ([`JuliaIR.Dialect`](@ref)) describes what changed:
 
-| | 1.10, 1.11 | 1.12, 1.13 | master (1.14) |
+| | 1.10, 1.11 | 1.12, 1.13 | 1.14 and later |
 |---|---|---|---|
 | `Ptr{T}` (`cpointer_type`) | integer (`i64`) | `ptr` | `ptr` |
 | aliases of `Union{}` (`bottom_aliases`) | none | `typeof(Union{})`, `Type{Union{}}` | `typeof(Union{})`, `Type{Union{}}` (a `Core.TypeEq`) |
 | kinds (`boxes_kinds`): `DataType`, `Union`, `UnionAll`, `Core.TypeEq`, ... | lowered by their fields (`Union` is `[2 x ptr addrspace(10)]`) | same | boxed |
 
 Other differences follow from what the running Julia has, not from the dialect:
-`BFloat16`, `Memory` and `MemoryRef` exist from Julia 1.11 on, Julia master has
+`BFloat16`, `Memory` and `MemoryRef` exist from Julia 1.11 on, Julia 1.14 has
 primitive types of any number of bits (`primitive type P7 7 end` is `i7`), and from 1.11
 on, Julia reports the layout of `Memory{T}` through its type constructor's, which makes
 `no_boxing` box `Memory{Nothing}` rather than lower it to `void`.
@@ -103,7 +103,7 @@ Where Julia's C++ aborts the process or dereferences a null pointer, the port th
 `ArgumentError`:
 
 - lowering a type with an `@atomic` field by its fields (`no_boxing=true`, or
-  `julia_struct_type`); before Julia master this includes `DataType`, and from Julia
+  `julia_struct_type`); before Julia 1.14 this includes `DataType`, and from Julia
   1.12 on `Task`;
 - `no_boxing=true` for a type without a layout (an abstract type, a `Union`, a
   `UnionAll`);

@@ -132,8 +132,8 @@ define void @bundles(ptr addrspace(10) %a, ptr addrspace(10) %b) {
   ret void
 }
 
-; the zeroinit_indirect bundle (Julia master) asks for the memory that the data pointer
-; of the allocated object points to to be zeroed
+; the zeroinit_indirect bundle (Julia 1.14 and later) asks for the memory that the data
+; pointer of the allocated object points to to be zeroed
 ; CHECK-LABEL: @zeroinit_indirect(
 ; CHECK-NEXT: %mem = call ptr addrspace(10) @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %n, ptr addrspace(10) %tag), !dbg [[LOC:![0-9]+]]
 ; CHECK-NEXT: [[DERIVED:%.*]] = addrspacecast ptr addrspace(10) %mem to ptr addrspace(11), !dbg [[LOC]]
@@ -154,7 +154,7 @@ define ptr addrspace(10) @zeroinit_indirect(ptr %ptls, i64 %n, ptr addrspace(10)
   ret ptr addrspace(10) %mem
 }
 
-; Julia master doesn't lower thunks
+; Julia 1.14 doesn't lower thunks
 ; CHECK-LABEL: @thunk(
 ; CHECK-NEXT: %v = load i64, ptr addrspace(10) %a, align 8, !invariant.load
 define i64 @thunk(ptr addrspace(10) %a) "thunk" {

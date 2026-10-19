@@ -42,7 +42,7 @@ end
                                 :riscv64 => "mv \$0, tp")[Sys.ARCH]
     end
 
-    # the cancellation points of Julia master
+    # the cancellation points of Julia 1.14 and later
     has_cancel = isdefined(Base, Symbol("@cancel_check"))
     for name in (:task_reset_ctx, :reset_ctx_size, :reset_ctx_align, :reset_ctx_gcstack,
                  :reset_ctx_eh, :reset_ctx_mctx)

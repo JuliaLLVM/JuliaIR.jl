@@ -3,7 +3,7 @@
 # recovered by looking through address space casts, GEPs, phis and selects. This is
 # legal by Julia's definition of those address spaces but not by LLVM's semantics, and
 # removes casts that inhibit LLVM's optimizations. Port of Julia's
-# `src/llvm-propagate-addrspaces.cpp` (master) for every dialect: chains are lifted into
+# `src/llvm-propagate-addrspaces.cpp` (1.14) for every dialect: chains are lifted into
 # the common address space of their leaves (JuliaLang/julia#62807; Julia 1.13 and older
 # use the alloca address space, which is wrong for leaves elsewhere, e.g. constant
 # globals on GPUs), and constant data's use lists are not walked.

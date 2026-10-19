@@ -1,7 +1,7 @@
 # GCInvariantVerifier: check the invariants of Julia's GC address spaces that GC root
 # placement relies on (Julia's devdocs, "GC root placement"): which casts between the
 # address spaces are allowed, that decayed pointers aren't stored, loaded or returned,
-# that jlcall arguments are tracked, and (on Julia master) the operands of field write
+# that jlcall arguments are tracked, and (from Julia 1.14 on) the operands of field write
 # barriers. Port of Julia's `src/llvm-gc-invariant-verifier.cpp`. Where the C++ pass
 # aborts after printing the violations, the port throws a `GCInvariantError` listing
 # them, which `jlopt` turns into an abort.
