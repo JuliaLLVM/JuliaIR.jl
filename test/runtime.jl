@@ -56,22 +56,46 @@ end
         @test (rt.reset_ctx_gcstack, rt.reset_ctx_eh) == (W, 2W)
     end
 
+    # small type tags: the header of an object of a builtin type is its type's tag, which
+    # is below `max_small_tag`; other types have none
+    function header_tag(x)
+        box = Any[x]
+        GC.@preserve box Int(unsafe_load(unsafe_load(Ptr{Ptr{UInt}}(pointer(box))) - W) >> 4)
+    end
+    for x in (1.0, Int32(1), true, 'c', "a string", :symbol, (1, 2), Any[])
+        T = typeof(x)
+        tag = Int(T.flags) >> rt.smalltag_shift
+        if tag == 0
+            @test header_tag(x) >= rt.max_small_tag   # the address of its type
+        else
+            @test header_tag(x) == tag
+            @test tag < rt.max_small_tag
+        end
+    end
+    @test Int(Int64.flags) >> rt.smalltag_shift > 0
+    @test Int(Some{Int}.flags) >> rt.smalltag_shift == 0
+
     # the values measured on x86-64 Linux with glibc; 1.14's were measured on a nightly
     # build, so prereleases (and newer versions, which have the newest dialect) only
     # report differences
     if Sys.ARCH === :x86_64 && Sys.islinux() && libc == "glibc"
         measured = Dict(
             v"1.10" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
-                        tls_gc_state=25, handler_size=256),
+                        tls_gc_state=25, handler_size=256, smalltag_shift=10,
+                        max_small_tag=64),
             v"1.11" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
-                        tls_gc_state=25, handler_size=256),
+                        tls_gc_state=25, handler_size=256, smalltag_shift=10,
+                        max_small_tag=64),
             v"1.12" => (; task_gcstack=152, task_ptls=168, task_eh=184, tls_safepoint=16,
-                        tls_gc_state=25, handler_size=264),
+                        tls_gc_state=25, handler_size=264, smalltag_shift=10,
+                        max_small_tag=64),
             v"1.13" => (; task_gcstack=152, task_ptls=168, task_eh=184, tls_safepoint=16,
-                        tls_gc_state=25, handler_size=264),
+                        tls_gc_state=25, handler_size=264, smalltag_shift=10,
+                        max_small_tag=64),
             v"1.14" => (; task_gcstack=192, task_ptls=208, task_eh=224, tls_safepoint=16,
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
-                        reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24))
+                        reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,
+                        smalltag_shift=10, max_small_tag=64))
         minor = JuliaIR.dialect_minor(VERSION)
         exact = isempty(VERSION.prerelease) &&
                 VersionNumber(VERSION.major, VERSION.minor) == minor
