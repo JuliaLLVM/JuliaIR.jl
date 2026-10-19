@@ -188,6 +188,11 @@ end
 PassDefinition(name, kind, required, impl, extra=(;)) =
     PassDefinition(name, kind, required, impl, extra, "")
 
+# the same pass with another implementation (e.g. one that captures a pass argument that
+# can't be a pipeline option)
+with_impl(def::PassDefinition, impl) =
+    PassDefinition(def.name, def.kind, def.required, impl, def.extra, def.cpp_name)
+
 # all passes, in the order they were defined
 const PASSES = PassDefinition[]
 

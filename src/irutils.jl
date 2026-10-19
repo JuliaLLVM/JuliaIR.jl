@@ -11,7 +11,7 @@ end
 
 is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 
-# Pointer types, by their reference: LLVM.jl doesn't wrap scalable vector types.
+# Pointer types, by their reference, without wrapping the type of every value.
 function scalar_typeref(ty::API.LLVMTypeRef)
     kind = API.LLVMGetTypeKind(ty)
     vector = kind == API.LLVMVectorTypeKind || kind == API.LLVMScalableVectorTypeKind
@@ -24,9 +24,11 @@ is_pointer(@nospecialize(v::Value)) =
 is_pointer_like(@nospecialize(v::Value)) =
     API.LLVMGetTypeKind(scalar_typeref(API.LLVMTypeOf(v))) == API.LLVMPointerTypeKind
 
-# the address space of a pointer or vector of pointers
+# the address space of a pointer or vector of pointers, or of their type
 pointer_addrspace(@nospecialize(v::Value)) =
     Int(API.LLVMGetPointerAddressSpace(scalar_typeref(API.LLVMTypeOf(v))))
+pointer_addrspace(@nospecialize(ty::LLVMType)) =
+    Int(API.LLVMGetPointerAddressSpace(scalar_typeref(Base.unsafe_convert(API.LLVMTypeRef, ty))))
 
 # the address space of allocas, from the data layout string (`A<n>`)
 function alloca_addrspace(layout::String)

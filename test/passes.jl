@@ -761,4 +761,111 @@ end
     end
 end
 
+@testset "RemoveAddrspaces" begin
+    @test JuliaIR.RemoveJuliaAddrspacesPass().required
+    @test JuliaIR.RemoveAddrspacesPass().required
+    @test JuliaIR.RemoveAddrspacesPass(identity).required
+    mapping = JuliaIR.cpp_mapping()
+    @test mapping["RemoveJuliaAddrspaces"] == "jl-remove-addrspaces"
+    @test mapping["RemoveAddrspaces"] == "jl-remove-all-addrspaces"
+
+    ir = """
+        %T = type { ptr addrspace(10), ptr addrspace(3) }
+        @g = addrspace(10) global i64 0
+        @s = addrspace(3) global i64 0
+        define ptr addrspace(3) @f(ptr addrspace(10) %p, ptr addrspace(3) %q, ptr addrspace(1) %r) {
+          %a = alloca %T
+          ret ptr addrspace(3) %q
+        }"""
+    function remove(pass)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            run!(pass, mod)
+            @test verify(mod) === nothing
+            return string(mod)
+        end
+    end
+
+    # Julia's address spaces only
+    str = remove(JuliaIR.RemoveJuliaAddrspacesPass())
+    @test occursin("@g = global i64 0", str)
+    @test occursin("@s = addrspace(3) global i64 0", str)
+    @test occursin("define ptr addrspace(3) @f(ptr %p, ptr addrspace(3) %q, ptr addrspace(1) %r)", str)
+    @test occursin("%T = type { ptr, ptr addrspace(3) }", str)
+
+    # all of them
+    str = remove(JuliaIR.RemoveAddrspacesPass())
+    @test occursin("@s = global i64 0", str)
+    @test occursin("define ptr @f(ptr %p, ptr %q, ptr %r)", str)
+
+    # a mapping of our own
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 3 ? 0 : as))
+    @test occursin("@g = addrspace(10) global i64 0", str)
+    @test occursin("@s = global i64 0", str)
+    @test occursin("define ptr @f(ptr addrspace(10) %p, ptr %q, ptr addrspace(1) %r)", str)
+    @test occursin("%T = type { ptr addrspace(10), ptr }", str)
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 1 ? 7 : as))
+    @test occursin("ptr addrspace(7) %r", str)
+    # the mapping is applied once, also when it maps to an address space it changes
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as))
+    @test occursin("define ptr addrspace(5) @f(ptr addrspace(10) %p, ptr addrspace(5) %q, ptr addrspace(3) %r)", str)
+
+    # errors of the mapping are rethrown
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        err = try
+            run!(JuliaIR.RemoveAddrspacesPass(as -> error("no mapping for $as")), mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException
+        @test occursin("no mapping for", sprint(showerror, err))
+    end
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        err = try
+            run!(JuliaIR.RemoveAddrspacesPass(as -> -1), mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException
+        @test occursin("expected an address space", sprint(showerror, err))
+    end
+    for bad in (2^24, 1.0, :zero)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            err = try
+                run!(JuliaIR.RemoveAddrspacesPass(as -> bad), mod)
+                nothing
+            catch err
+                err
+            end
+            @test err isa PassException
+            @test occursin("expected an address space", sprint(showerror, err))
+        end
+    end
+
+    # The pass recreates the global values, keeping their names: references taken before
+    # are invalid. Identified structs are recreated too, and the old ones renamed, which
+    # other modules of the context see (like Julia's pass).
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+        other = LLVM.Module("other")
+        GlobalVariable(other, ctx.types["T"], "h")
+        f = mod.functions["f"]
+        run!(JuliaIR.RemoveJuliaAddrspacesPass(), mod)
+        @test mod.functions["f"] != f
+        @test occursin("%T.bad = type { ptr addrspace(10), ptr addrspace(3) }", string(other))
+        @test occursin("@h = external global %T.bad", string(other))
+        @test ctx.types["T"] == first(mod.functions["f"].entry.instructions).allocated_type
+        dispose(other)
+    end
+
+    # the analyses of deleted functions are removed, so that later passes don't see stale
+    # results for a function that reuses the address
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) pb=PassBuilder() begin
+        JuliaIR.register!(pb)
+        add!(pb, "function(instcombine),jl-remove-addrspaces,function(instcombine,simplifycfg,gvn),jl-remove-addrspaces")
+        run!(pb, mod)
+        @test verify(mod) === nothing
+    end
+end
+
 end

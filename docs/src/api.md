@@ -26,6 +26,8 @@ JuliaIR.ExpandAtomicModifyPass
 JuliaIR.AtomicModifyError
 JuliaIR.CancellationLoweringPass
 JuliaIR.CancellationLoweringError
+JuliaIR.RemoveJuliaAddrspacesPass
+JuliaIR.RemoveAddrspacesPass
 ```
 
 
