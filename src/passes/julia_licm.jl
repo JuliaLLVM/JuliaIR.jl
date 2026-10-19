@@ -1,5 +1,5 @@
 # JuliaLICM: move what LLVM's LICM can't out of loops. Port of Julia's
-# `src/llvm-julia-licm.cpp`, a loop pass in every supported version (master's, for the IR
+# `src/llvm-julia-licm.cpp`, a loop pass in every supported version (1.14's, for the IR
 # of every version; the differences are below and in docs/src/julia_licm.md).
 #
 # - `llvm.julia.gc_preserve_begin` is hoisted to the preheader when its operands are
@@ -8,8 +8,8 @@
 #   none). Extending a preserve region is always legal.
 # - Write barriers are hoisted to the preheader once their parent and children are (made)
 #   loop invariant: a store in the loop keeps the stored object alive across safepoints,
-#   so one barrier before the loop suffices. On Julia master, a field barrier whose slots
-#   vary becomes an object barrier.
+#   so one barrier before the loop suffices. From Julia 1.14 on, a field barrier whose
+#   slots vary becomes an object barrier.
 # - `julia.gc_alloc_obj` calls whose object doesn't escape the loop (by the escape analysis
 #   that AllocOpt uses, ignoring uses after the loop) are hoisted to the preheader, where
 #   the object is zeroed, so that every iteration reuses it.
@@ -328,10 +328,10 @@ Move what LLVM's LICM can't out of loops (`jl-licm` in a pipeline; a loop pass, 
 `llvm.julia.gc_preserve_begin` calls whose operands are defined before the loop (with
 their `llvm.julia.gc_preserve_end` calls sunk to the exits of the loop), write barriers
 whose operands are or can be made loop invariant, and the GC allocations that don't escape
-the loop, which are then cleared before it. For the IR of Julia master, a field write
-barrier whose slots vary in the loop is hoisted as an object barrier. The `gc_barrier`
-option is the GC's barrier configuration on Julia master: no barrier is hoisted with
-snapshot barriers, and no field barrier demoted with field-precise ones. Like Julia's C++
-pass, it is skipped on `optnone` functions.
+the loop, which are then cleared before it. For the IR of Julia 1.14 and later, a field
+write barrier whose slots vary in the loop is hoisted as an object barrier. The
+`gc_barrier` option is the GC's barrier configuration from Julia 1.14 on: no barrier is
+hoisted with snapshot barriers, and no field barrier demoted with field-precise ones. Like
+Julia's C++ pass, it is skipped on `optnone` functions.
 """
 JuliaLICMPass(; kwargs...) = custom_pass(JULIA_LICM; kwargs...)

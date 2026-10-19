@@ -1,8 +1,8 @@
-; JuliaLICM on the object and field write barriers of Julia master: a barrier is hoisted
-; once its parent, children and (for a field barrier) slots are, or can be made, loop
-; invariant; a field barrier whose slots vary in the loop is demoted to an object barrier
-; of the same parent and children. The GC's barrier configuration (`gc-barrier`) can
-; forbid both: snapshot barriers aren't hoisted, field-precise ones aren't demoted.
+; JuliaLICM on the object and field write barriers of Julia 1.14 and later: a barrier is
+; hoisted once its parent, children and (for a field barrier) slots are, or can be made,
+; loop invariant; a field barrier whose slots vary in the loop is demoted to an object
+; barrier of the same parent and children. The GC's barrier configuration (`gc-barrier`)
+; can forbid both: snapshot barriers aren't hoisted, field-precise ones aren't demoted.
 ; REQUIRES: julia-1.14
 
 ; RUN: split-file %s %t

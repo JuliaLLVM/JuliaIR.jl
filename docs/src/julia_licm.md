@@ -26,7 +26,7 @@ For a loop with a preheader, in reverse postorder of its blocks:
   they are safe to speculate and don't read memory, losing metadata other than debug
   locations and keeping their flags. A barrier only marks the parent as possibly
   pointing to young objects, so one barrier before the loop suffices. On Julia 1.10
-  to 1.13 this is `julia.write_barrier`. On Julia master, a `julia.object_write_barrier`
+  to 1.13 this is `julia.write_barrier`. From Julia 1.14 on, a `julia.object_write_barrier`
   is hoisted the same way. A `julia.field_write_barrier.p*` is hoisted as is when its
   slots are invariant too. Otherwise it is replaced in the preheader by an object
   barrier with the same parent and children, keeping its `!julia.reset_region`. That
@@ -40,7 +40,7 @@ For a loop with a preheader, in reverse postorder of its blocks:
   shared by all iterations, so it is cleared with a `memset` in the preheader, aligned
   to the size of a pointer in address space 0 of the data layout.
 
-The GC's barrier configuration on Julia master (the pass's `gc_barrier` option,
+The GC's barrier configuration from Julia 1.14 on (the pass's `gc_barrier` option,
 `gc-barrier=` in a pipeline) restricts the barriers. With `snapshot` and
 `snapshot-field-precise`, a barrier must see each store, so none are hoisted. With
 `field-precise`, field barriers with varying slots stay in the loop rather than being
@@ -70,16 +70,16 @@ llvm.julia.gc_preserve_begin` from LLVM 21 on, and `call` before.
 
 ## Deviations from the C++
 
-The port follows Julia master on every version where the C++ differs or fails:
+The port follows Julia 1.14 on every version where the C++ differs or fails:
 
 | | C++ | port |
 |-|-----|------|
-| D1 | before Julia 1.13, an allocation whose address is the value operand of a `cmpxchg` or `atomicrmw` is hoisted (the escape analysis took it for a store into the object) | master's escape analysis on every version: it stays in the loop |
-| D2 | before Julia 1.12.8, an end is sunk to every exit of the loop being processed, also out of the loop that defines its token, which is then used outside that loop (invalid IR once the loop is cloned) | master's rule (JuliaLang/julia#63036) on every version |
-| D3 | an end whose token isn't an instruction (`token none`) is cast to one, which crashes the pass on Julia master | the end stays where it is |
+| D1 | before Julia 1.13, an allocation whose address is the value operand of a `cmpxchg` or `atomicrmw` is hoisted (the escape analysis took it for a store into the object) | 1.14's escape analysis on every version: it stays in the loop |
+| D2 | before Julia 1.12.8, an end is sunk to every exit of the loop being processed, also out of the loop that defines its token, which is then used outside that loop (invalid IR once the loop is cloned) | 1.14's rule (JuliaLang/julia#63036) on every version |
+| D3 | an end whose token isn't an instruction (`token none`) is cast to one, which crashes the pass of Julia 1.14 | the end stays where it is |
 | D4 | a field barrier is demoted to a call of a `julia.object_write_barrier` that the module declares with another type, which is invalid IR | an `ArgumentError` when the barrier is demoted: the barrier stays as it was, what was hoisted before it (its operands, earlier calls of the loop) stays hoisted |
 | D5 | an exit block without an insertion point (a `catchswitch`) crashes the pass | that exit is skipped; Julia doesn't emit funclets |
 | D6 | the uses of an `AllocUseInfo` beyond 16 are printed in pointer order | in the order they were found |
 
-Remarks use master's names and formats on every version, including the `AllocUseInfo`
+Remarks use 1.14's names and formats on every version, including the `AllocUseInfo`
 dump, which the C++ of Julia 1.10 and 1.11 prints in older formats.

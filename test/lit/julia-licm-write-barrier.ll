@@ -1,6 +1,6 @@
 ; JuliaLICM hoists `julia.write_barrier` (the barrier of Julia 1.10 through 1.13) once its
 ; operands are, or can be made, loop invariant. The GC's barrier configuration only
-; exists on Julia master, so a non-stock `gc-barrier` changes nothing here.
+; exists from Julia 1.14 on, so a non-stock `gc-barrier` changes nothing here.
 ; UNSUPPORTED: julia-ge-1.14
 
 ; RUN: opt -passes=JuliaLICM -S %s | FileCheck %s
