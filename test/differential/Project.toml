@@ -5,4 +5,4 @@ LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [sources]
-LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "tb/inline-api"}
+LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "tb/juliair-deps"}
