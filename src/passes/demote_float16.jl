@@ -52,7 +52,7 @@ function jit_keeps_fp16(tt::LLVM.Triple, dialect::Dialect)
     (LLVM.isaarch64(tt) || tt.arch === :x86_64) || return false
     try
         jit = LLVM.Triple(native_probe(:jit_target).triple)
-        same_arch = LLVM.isaarch64(tt) ? LLVM.isaarch64(jit) : jit.arch === :x86_64
+        same_arch = LLVM.isaarch64(tt) ? LLVM.isaarch64(jit) : LLVM.isx86(jit)
         return same_arch && native_probe(:jit_fp16)
     catch err
         err isa RuntimeError || rethrow()
