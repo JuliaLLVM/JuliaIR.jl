@@ -64,9 +64,13 @@ writes an `opt` wrapper for the running Julia and project into `dir`, which LLVM
 unchanged, with `jlopt` standing in for `opt`. Which fixtures are relevant to this package,
 and how they run, is recorded in `test/upstream/manifest.toml`, together with the commit
 whose fixtures are used for each Julia minor version: the release tag for released
-versions. For the development version, the fixtures are those of the commit that the
+versions. For a version without a release (the development version, Julia master, and a
+release branch before its first tag), the fixtures are those of the commit that the
 running nightly build was built from (`Base.GIT_VERSION_INFO.commit`), so that the binary
-and its tests always match. Every file in the checkout must be in the manifest, as one of:
+and its tests always match. A prerelease newer than every pin, like master right after
+its version number is bumped, uses the newest pin if that one has no commit either, as
+it has the newest dialect too.
+Every file in the checkout must be in the manifest, as one of:
 
 - `run`: the fixture runs, with Julia's pass names mapped to the ports. The harness checks
   in each test's ledger that every port in its pipelines ran;
@@ -89,7 +93,8 @@ julia +1.12 --project=test test/upstream/run.jl julia-src --cpp      # Julia's p
 julia +1.12 --project=test test/upstream/run.jl julia-src --report   # coverage table
 ```
 
-For the nightly build, check out the commit it reports instead:
+For a nightly build (`nightly` for master, `1.14-nightly` for the release branch),
+check out the commit it reports instead:
 
 ```
 git -C julia-src checkout $(julia +nightly -e 'print(Base.GIT_VERSION_INFO.commit)')
@@ -106,11 +111,17 @@ instead of the ports. It checks `jlopt` and the harness against upstream's expec
 independently of the ports.
 
 When a new patch release is tagged, update the pin's `commit`, `julia` and `llvm` in the manifest
-and the matching `julia_ref` in CI, and account for new or changed fixtures. The
-development version's entries apply to whatever master is current: when the nightly
-build moves on and a fixture appears or changes in a way the manifest doesn't account for
-(an override that no longer applies, a fixture of a port that now passes), the harness
-fails, and the manifest needs updating.
+and the matching `julia_ref` in CI, and account for new or changed fixtures; the first
+release of a minor version gives its pin these keys, and CI's job a `julia_ref`. The
+entries of a pin without a commit apply to whatever its branch is current: when the
+nightly build moves on and a fixture appears or changes in a way the manifest doesn't
+account for (an override that no longer applies, a fixture of a port that now passes),
+the harness fails, and the manifest needs updating. When master's version is bumped
+(after a release branch is created), master keeps running with the newest pin (which
+has no commit yet) until it gets one of its own, and the release branch's pin then
+follows that branch's nightly build (`1.X-nightly` in CI) until its first tag. The new
+version's dialect only becomes a known version (`JuliaIR.KNOWN_MINORS`) once its IR
+differs from its predecessor's.
 
 ## Julia's pass tests on a newer LLVM (mode B)
 
@@ -196,8 +207,8 @@ upgrades it when reading it), and so is what `opt` prints on stderr: the harness
 the RUN lines whose checks read stderr (`print<memoryssa>`, diagnostics), which therefore
 see the pin's printing. A patch that isn't needed fails here too.
 
-The oracle passes at every pin with the patches of `derived-B/llvm23`, and the
-development version, whose Julia already uses LLVM 23, needs none. Mode B validates the
+The oracle passes at every pin with the patches of `derived-B/llvm23`, and Julia 1.14
+and master, which already use LLVM 23, need none. Mode B validates the
 composed patches against the ports.
 
 ## Differential test against Julia's C++ passes
@@ -225,8 +236,9 @@ Each comparison is one of:
 - *identical*;
 - *excepted*: the outputs differ only in ways recorded in
   `test/differential/exceptions.toml`. An entry there names the pass, optionally the
-  inputs (a glob), Julia versions and prefix it applies to, the reason and the plan
-  decision behind it, and a rewrite of one side's output: a regex over its lines (the
+  inputs (a glob), dialects (Julia minor versions; a newer Julia has the newest known
+  one's, so `julia = ["1.14"]` also applies to 1.15) and prefix it applies to, the
+  reason and the plan decision behind it, and a rewrite of one side's output: a regex over its lines (the
   status lines for errors and invalid IR included) and what the matched text becomes,
   or nothing to delete those lines. A difference is excepted only if the outputs are
   identical after the rewrites of the entries that apply, so an entry allows exactly the
@@ -289,13 +301,13 @@ into the environment first (`Pkg.develop(path=".")`, and LLVM.jl from the packag
 `[sources]`).
 
 `test/differential/all.sh WORKDIR` does all of this for every Julia version (juliaup
-channels 1.10 to nightly, or those given): it checks out the fixtures, sets up the
-environments, generates the corpora and runs the comparison, one version at a time, and
-summarizes the counts in `WORKDIR/summary.txt`. While JuliaIR needs an unreleased
+channels 1.10 to 1.13, 1.14-nightly and nightly, or those given): it checks out the
+fixtures, sets up the environments, generates the corpora and runs the comparison, one
+version at a time, and summarizes the counts in `WORKDIR/summary.txt`. While JuliaIR needs an unreleased
 LLVM.jl, `LLVMEXTRA_BUILDS` names a directory of `libLLVMExtra` builds per LLVM version,
 which it sets as the preference for each run.
 
-CI runs the comparison on Julia 1.12 and on nightly, in the `upstream` job: on the
+CI runs the comparison on Julia 1.12, 1.14-nightly and nightly, in the `upstream` job: on the
 fixtures that job checks out, a fresh `code_llvm` corpus and `test/differential/inputs`,
 without the GPUCompiler modules. Any unexplained difference fails the job.
 

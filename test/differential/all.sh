@@ -4,9 +4,10 @@
 #
 #   test/differential/all.sh WORKDIR [CHANNEL...]
 #
-# CHANNELs are juliaup channels (default: 1.10 1.11 1.12 1.13 nightly). Per version,
-# WORKDIR/<minor>/ gets the fixtures (julia/), the corpora (corpus/, gpucompiler/), the
-# results (out/) and the report (report.txt); WORKDIR/summary.txt has the counts of all.
+# CHANNELs are juliaup channels (default: 1.10 1.11 1.12 1.13 1.14-nightly nightly). Per
+# version, WORKDIR/<minor>/ gets the fixtures (julia/), the corpora (corpus/,
+# gpucompiler/), the results (out/) and the report (report.txt); WORKDIR/summary.txt has
+# the counts of all.
 #
 # Environment:
 #   JULIA_SRC         a local clone of JuliaLang/julia to take the fixtures from (cloned
@@ -28,10 +29,10 @@ ulimit -c 0
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DIFF=$ROOT/test/differential
-[ $# -ge 1 ] || { sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,23p' "${BASH_SOURCE[0]}"; exit 2; }
 WORK=$(mkdir -p "$1" && cd "$1" && pwd); shift
 CHANNELS=("$@")
-[ ${#CHANNELS[@]} -gt 0 ] || CHANNELS=(1.10 1.11 1.12 1.13 nightly)
+[ ${#CHANNELS[@]} -gt 0 ] || CHANNELS=(1.10 1.11 1.12 1.13 1.14-nightly nightly)
 
 # preferences are per environment; restore the user's after the runs
 PREFS=("$ROOT/LocalPreferences.toml" "$DIFF/LocalPreferences.toml")

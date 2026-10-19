@@ -243,17 +243,37 @@ end
 @testset "manifest" begin
     # the real manifest is well-formed, and covers every pinned minor version
     manifest = UpstreamHarness.load_manifest()
-    @test issetequal(keys(manifest["pins"]), ["1.10", "1.11", "1.12", "1.13", "1.14"])
-    # released versions are pinned, the development version follows the nightly build
+    @test issetequal(keys(manifest["pins"]), ["1.10", "1.11", "1.12", "1.13", "1.14", "1.15"])
+    # released versions are pinned, unreleased ones follow the nightly build of their
+    # branch
     @test all(pin -> length(pin["commit"]) == 40,
-              (pin for (minor, pin) in manifest["pins"] if minor != "1.14"))
+              (pin for (minor, pin) in manifest["pins"] if !(minor in ("1.14", "1.15"))))
     @test !haskey(manifest["pins"]["1.14"], "commit")
-    # CI checks out the pinned commits
+    @test manifest["pins"]["1.14"]["tag"] == "release-1.14"
+    @test !haskey(manifest["pins"]["1.15"], "commit")
+    @test manifest["pins"]["1.15"]["tag"] == "master"
+    # CI checks out the pinned commits, and the nightly builds' own
     ci = read(joinpath(dirname(@__DIR__), ".github", "workflows", "CI.yml"), String)
     refs = [m[1] for m in eachmatch(r"julia_ref: '([0-9a-f]{40})'", ci)]
     @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])
                             if haskey(pin, "commit")])
-    @test occursin("{version: 'nightly', julia_ref: ''}", ci)
+    for (minor, pin) in manifest["pins"]
+        haskey(pin, "commit") && continue
+        version = pin["tag"] == "master" ? "nightly" : "$minor-nightly"
+        @test occursin("{version: '$version', julia_ref: ''}", ci)
+    end
+
+    # the pin of a Julia version: its minor's, or for a newer prerelease, the newest
+    # one if it follows the nightly build
+    @test UpstreamHarness.pin_minor(manifest, v"1.13.2") == "1.13"
+    @test UpstreamHarness.pin_minor(manifest, v"1.14.0-DEV.3787") == "1.14"
+    @test UpstreamHarness.pin_minor(manifest, v"1.15.0-DEV.14") == "1.15"
+    @test UpstreamHarness.pin_minor(manifest, v"1.16.0-DEV.1") == "1.15"
+    @test_throws "no pin for Julia 1.16" UpstreamHarness.pin_minor(manifest, v"1.16.0")
+    @test_throws "no pin for Julia 1.9" UpstreamHarness.pin_minor(manifest, v"1.9.4")
+    released = deepcopy(manifest)
+    released["pins"]["1.15"]["commit"] = "0"^40
+    @test_throws "no pin for Julia 1.16" UpstreamHarness.pin_minor(released, v"1.16.0-DEV.1")
     for (name, entry) in manifest["fixtures"]
         get(entry, "status", "") in ("override", "derived") &&
             @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
@@ -466,8 +486,8 @@ mktempdir() do dir
     @test_throws "differ from commit" harness(write_manifest(good * override * excluded_cpp))
     rm(joinpath(passes, "new.ll"))
 
-    # a pin without a commit (the development version's) takes the commit the running
-    # Julia was built from
+    # a pin without a commit (a prerelease's) takes the commit the running Julia was
+    # built from
     dev = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
     delete!(dev["pins"][minor], "commit")
     check_pin(running_commit) = UpstreamHarness.check_pin(dev, src, minor; running_commit)

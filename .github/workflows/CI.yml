@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.10', '1.11', '1.12', '1.13', 'nightly']
+        version: ['1.10', '1.11', '1.12', '1.13', '1.14-nightly', 'nightly']
         os: ['ubuntu-latest', 'macOS-latest', 'windows-latest']
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +47,8 @@ jobs:
 
   # Julia's own pass tests, at the commits pinned in test/upstream/manifest.toml (the
   # job checks that the refs here match), with the Julia build they belong to; for the
-  # nightly build, at the commit it was built from
+  # nightly builds (master, and release branches before their first tag), at the commit
+  # they were built from
   upstream:
     name: Julia ${{ matrix.version }} - upstream llvmpasses
     runs-on: ubuntu-latest
@@ -60,6 +61,7 @@ jobs:
           - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
           - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
           - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
+          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
           - {version: 'nightly', julia_ref: ''}  # master
     steps:
       - uses: actions/checkout@v7
@@ -94,16 +96,16 @@ jobs:
       - name: Run the fixtures with Julia's passes
         run: julia --project=test test/upstream/run.jl julia-src --cpp
       # the ports against Julia's C++ passes (test/differential) on the fixtures and a
-      # code_llvm corpus, on 1.12 and master (test/differential/all.sh covers every
+      # code_llvm corpus, on 1.12, 1.14 and master (test/differential/all.sh covers every
       # version, and GPUCompiler's IR, locally)
       - name: Compare the ports with Julia's passes
-        if: startsWith(matrix.version, '1.12') || matrix.version == 'nightly'
+        if: startsWith(matrix.version, '1.12') || endsWith(matrix.version, 'nightly')
         run: |
           julia --project=test/differential test/differential/corpus.jl corpus
           julia --project=test/differential test/differential/run.jl --quiet --out differential julia-src/test/llvmpasses corpus test/differential/inputs
       # the diffs and the worker log of a failing comparison
       - uses: actions/upload-artifact@v4
-        if: failure() && (startsWith(matrix.version, '1.12') || matrix.version == 'nightly')
+        if: failure() && (startsWith(matrix.version, '1.12') || endsWith(matrix.version, 'nightly'))
         with:
           name: differential-${{ matrix.version }}
           path: differential
