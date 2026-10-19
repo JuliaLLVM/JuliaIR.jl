@@ -31,13 +31,16 @@ need (see below) are taken from the running Julia; IR for GPUs doesn't need them
 | `jl-late-gc-cleanup` | (`LateLowerGCFrame` on functions without a GC frame, for GPUs) | yes |
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
+| `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
 
 ## Passes that exist in some Julia versions only
 
 A pass that Julia doesn't have in some versions does nothing on the IR of those
 versions: LowerExcHandlers only exists in Julia 1.10 to 1.12 (later versions emit
 exception handlers directly), so `jl-lower-exc-handlers` leaves the IR of Julia 1.13 and
-later alone, and CombineMulAdd only in Julia 1.10 and 1.11.
+later alone, and CombineMulAdd only in Julia 1.10 and 1.11. ExpandAtomicModify only
+exists from Julia 1.13 on, whose code generator emits the `julia.atomicmodify` calls it
+lowers; for the IR of earlier versions, `jl-expand-atomic-modify` does nothing.
 
 ## Facts about the Julia runtime
 
@@ -97,6 +100,21 @@ Differences with Julia's C++ passes:
   array of a subroutine type, when the loop ID has no other operands. The remark about
   a loop's flags is attached to the header's terminator (with the location of the start
   of the loop) instead of the header block.
+- ExpandAtomicModify places the `atomicrmw xchg` that replaces an operation that ignores
+  the old value after the inlined code that computes the new one, for the IR of every
+  Julia version (Julia master): Julia 1.13 places it before that code, which is invalid
+  IR. Where the C++ pass crashes or emits invalid IR, the port throws a
+  `JuliaIR.AtomicModifyError` instead: for values other than integers, floating-point
+  numbers and pointers, a non-constant ordering, a compare-exchange loop for a pointer
+  without alignment, an operation that returns the old value unchanged for a
+  non-integer value (the C++ pass emits `atomicrmw or` on it), and an operation that
+  inlining turned into something `atomicrmw` doesn't support (e.g., `fadd` inlined into
+  a `strictfp` function becomes a constrained intrinsic). It positions new instructions
+  relative to the `julia.atomicmodify` call, also after inlining a modify function with
+  several blocks (the C++ pass keeps inserting into the block that the call was in
+  before inlining split it, which corrupts the function; it doesn't terminate on such
+  input). Like the C++ pass, it is not required, so it is skipped on
+  `optnone` functions, whose `julia.atomicmodify` calls then remain.
 - LateLowerGCFrame keeps operand bundles that are not Julia's, accesses the GC state
   byte with a valid alignment, and orders the frame slots of allocas deterministically;
   see [LateLowerGCFrame](@ref) for these and the fixes of later Julia versions it applies.

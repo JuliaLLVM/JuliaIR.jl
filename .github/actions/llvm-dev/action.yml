@@ -7,11 +7,11 @@ description: >
 inputs:
   ref:
     description: The LLVM.jl branch, tag or commit.
-    # the unmerged LLVM.jl branch with the custom loop passes the passes need
-    # (JuliaLLVM/LLVM.jl#670); the same branch as `[sources]` in Project.toml and
-    # test/Project.toml. Move both to the top of whatever LLVM.jl stack JuliaIR needs, back
-    # to `main` once it is merged.
-    default: tb/loop-passes
+    # the unmerged LLVM.jl branch with the custom loop passes and the inlining API the
+    # passes need (JuliaLLVM/LLVM.jl#670, #671); the same branch as `[sources]` in
+    # Project.toml and test/Project.toml. Move both to the top of whatever LLVM.jl stack
+    # JuliaIR needs, back to `main` once it is merged.
+    default: tb/inline-api
   projects:
     description: >
       The environments to develop LLVM.jl into, besides the package's (e.g. `test` for a

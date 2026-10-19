@@ -20,6 +20,7 @@ read it first, including its Log). This file says where things are and how to co
 | S24c runtime facts from the running Julia, AllocOpt pointer size from the data layout | done, replaces S24b's tables in PR #9 (on S17) | 2ad92d5, 3772cd7 |
 | S8 LowerSIMDLoop (`jl-lower-simdloop`), loop passes, LLVM.jl branch | done, branch `tb/s8-lower-simdloop` (on S24c, PR #9) | 72da87e, bc882e2, 43b272e |
 | S6b LateLowerGCFrame (`jl-late-lower-gc-frame`) | port done, every dialect; branch `tb/s6b-late-lower-gc-frame` (on S8, PR #10) | see `git log` |
+| S10 ExpandAtomicModify (`jl-expand-atomic-modify`) | done, branch `tb/s10-expand-atomic-modify` (on S6b, PR #11) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -109,9 +110,21 @@ has a module-level variant or `julia.loopinfo_marker`; the C++ pass is an option
 pass at every pin. Upstream `julia-simdloop.ll`, `julia-simdloop-memoryssa.ll` and
 `loopinfo.jl` run with the port at every pin.
 
-From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670):
+S10 details: `src/passes/expand_atomic_modify.jl`, faithful to the C++ of 1.13 and
+master (they differ only in the `atomicrmw xchg` placement, master's fix adopted for both,
+and how `!pcsections` is copied, with the same result). `Dialect.has_atomicmodify`: no-op
+before 1.13. Not required, like the C++ at both pins (S-D7 said required). Wraps LLVM.jl
+#671 (`inline!`, `split_block!`, `simplify_instruction` for the InstSimplifyFolder,
+`move!(...; debug_records=true)`, `rmw.binop =`, `isinterposable`, `iscommutative`,
+`supports_mmra`). Inputs where the C++ crashes, hangs or emits invalid IR throw
+`JuliaIR.AtomicModifyError` or are handled (docs/src/index.md). Upstream
+`atomic-modify.ll` runs at the 1.13 and master pins; `test/lit/expand-atomic-modify.ll`
+(`REQUIRES: llvm-ge-20`) covers the cases.
+
+From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
+on also on its inlining API (#671, stacked on #670):
 `[sources]` (root and `test/`) and the default `ref` of `.github/actions/llvm-dev`
-point at its branch `tb/loop-passes`, which is based on LLVM.jl `main` (so it has
+point at the branch `tb/inline-api`, which is based on LLVM.jl `main` (so it has
 `promote_mem_to_reg!`, #669); move both to the top of whatever LLVM.jl branches JuliaIR
 needs. The action removes the LLVM entry of `[sources]` before developing its
 checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
@@ -310,6 +323,12 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
 - With LLVM.jl's multi-library stack (#662 on), enum values print as
   `LLVM.Opcode.FAdd` instead of `LLVMFAdd`; `opcode_name` handles both. `get(inst.metadata, kind, default)` doesn't
   exist (use `haskey`), and `terminator`, `uses`, `user` aren't exported.
+- lit features `llvm-ge-<N>` (from `test/litsetup.jl`'s `llvm_major`) gate tests on the
+  LLVM version, e.g. dialect-1.13 tests that need LLVM 20.
+- Julia 1.13/nightly's `code_llvm` of `modifyfield!` with a callable struct prints an op
+  helper referring to the caller's alloca (unparsable); ExpandAtomicModify's inlining
+  hides it. Julia's C++ ExpandAtomicModify aborts (bad_variant_access) on an `fadd` op
+  inlined into a `strictfp` caller and hangs on multi-block ops that reach the loop.
 - Julia's C++ LowerSIMDLoop only reports remarks with
   `LLVM.clopts("-pass-remarks=lower_simd_loop", "-pass-remarks-missed=lower_simd_loop",
   "-pass-remarks-analysis=lower_simd_loop")`.

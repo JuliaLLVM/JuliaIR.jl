@@ -548,4 +548,129 @@ end
     end
 end
 
+
+@testset "ExpandAtomicModify" begin
+    @test !JuliaIR.ExpandAtomicModifyPass().required
+    decls = """
+        declare {i64, i64} @julia.atomicmodify.i64(ptr, ptr, i8, i8, ...)
+        declare {double, double} @julia.atomicmodify.f64(ptr, ptr, i8, i8, ...)
+        declare {{i32, i32}, {i32, i32}} @julia.atomicmodify.s(ptr, ptr, i8, i8, ...)
+        define i64 @add(i64 %x, i64 %y) {
+          %z = add i64 %x, %y
+          ret i64 %z
+        }
+        define i64 @mul(i64 %x, i64 %y) {
+          %z = mul i64 %x, %y
+          ret i64 %z
+        }
+        define double @fadd(double %x, double %y) {
+          %z = fadd double %x, %y
+          ret double %z
+        }
+        define {i32, i32} @second({i32, i32} %x, {i32, i32} %y) {
+          ret {i32, i32} %y
+        }"""
+    # the error, if any, and the module after running the pass
+    function expand(body; julia=v"1.13")
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, decls * body) begin
+            err = try
+                run!(JuliaIR.ExpandAtomicModifyPass(; julia), mod)
+                nothing
+            catch err
+                err
+            end
+            return err, string(mod)
+        end
+    end
+
+    # the IR of Julia 1.12 and earlier has no `julia.atomicmodify` calls
+    ok = """
+        define i64 @f(ptr %p, i64 %v) {
+          %r = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+          %old = extractvalue {i64, i64} %r, 0
+          ret i64 %old
+        }"""
+    err, str = expand(ok; julia=v"1.12")
+    @test err === nothing && occursin("@julia.atomicmodify.i64(ptr align 8 %p", str)
+    if LLVM.version() >= v"20"
+        err, str = expand(ok)
+        @test err === nothing && occursin("atomicrmw add ptr %p, i64 %v seq_cst, align 8", str)
+    end
+
+    # calls that can't be lowered are rejected before changing anything, also when an
+    # earlier call of the function could be lowered
+    function rejected(body, message)
+        err, str = expand(body)
+        err isa PassException && err.ex isa JuliaIR.AtomicModifyError || return false
+        occursin(message, sprint(showerror, err.ex)) || return false
+        return occursin("@julia.atomicmodify.i64(ptr align 8 %p, ptr @add", str)
+    end
+    @test rejected("""
+        define void @f(ptr %p, i64 %v, ptr %op) {
+          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr %op, i8 7, i8 1, i64 %v)
+          ret void
+        }""", "the operation is not a function of the old value in function f")
+    @test rejected("""
+        define void @f(ptr %p, i64 %v, i8 %order) {
+          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 %order, i8 1, i64 %v)
+          ret void
+        }""", "are not constants")
+    @test rejected("""
+        define void @f(ptr %p, i64 %v) {
+          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+          %r2 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 -1, i8 1, i64 %v)
+          ret void
+        }""", "invalid atomic ordering 255")
+    @test rejected("""
+        define void @f(ptr %p, i64 %v, {i32, i32} %s) {
+          %r1 = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 1, i64 %v)
+          %r2 = call {{i32, i32}, {i32, i32}} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.s(ptr align(8) %p, ptr @second, i8 7, i8 1, {i32, i32} %s)
+          ret void
+        }""", "don't support values of type { i32, i32 }")
+
+    if LLVM.version() >= v"20"
+        # the scope operand is an unsigned i8: scope ID 128 is `i8 -128`
+        @dispose ctx=Context(; opaque_pointers=true) begin
+            for i in 2:128
+                SyncScope("scope$i"; context=ctx)
+            end
+            @test SyncScope("scope128"; context=ctx).id == 128
+            @dispose mod=parse(LLVM.Module, decls * """
+                define i64 @f(ptr %p, i64 %v) {
+                  %r = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr align(8) %p, ptr @add, i8 7, i8 -128, i64 %v)
+                  %old = extractvalue {i64, i64} %r, 0
+                  ret i64 %old
+                }""") begin
+                run!(JuliaIR.ExpandAtomicModifyPass(; julia=v"1.13"), mod)
+                @test occursin("""atomicrmw add ptr %p, i64 %v syncscope("scope128") seq_cst""",
+                               string(mod))
+            end
+        end
+
+        # a compare-exchange loop needs the alignment of the pointer (the C++ pass
+        # dereferences an empty `MaybeAlign`)
+        err, _ = expand("""
+            define i64 @f(ptr %p, i64 %v) {
+              %r = call {i64, i64} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.i64(ptr %p, ptr @mul, i8 7, i8 1, i64 %v)
+              %old = extractvalue {i64, i64} %r, 0
+              ret i64 %old
+            }""")
+        @test err isa PassException && err.ex isa JuliaIR.AtomicModifyError
+        @test occursin("has no alignment", sprint(showerror, err.ex))
+
+        # inlined into a strictfp function, `fadd` becomes a constrained intrinsic, which
+        # atomicrmw doesn't support (the C++ pass aborts)
+        err, _ = expand("""
+            define double @f(ptr %p, double %v) strictfp {
+              %r = call {double, double} (ptr, ptr, i8, i8, ...) @julia.atomicmodify.f64(ptr align(8) %p, ptr @fadd, i8 7, i8 1, double %v) strictfp
+              %old = extractvalue {double, double} %r, 0
+              ret double %old
+            }""")
+        @test err isa PassException && err.ex isa JuliaIR.AtomicModifyError
+        @test occursin("no longer matches an atomicrmw operation", sprint(showerror, err.ex))
+    end
+end
+
 end
