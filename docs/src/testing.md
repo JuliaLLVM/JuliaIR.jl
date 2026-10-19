@@ -118,10 +118,14 @@ Every file in the checkout must be in the manifest, as one of:
   in each test's ledger that every port in its pipelines ran;
 - `skip`: it will run once the ports listed under `missing` exist (the harness fails once
   they do, so that it is enabled);
-- `exclude`: it tests something this package does not port (CPU-only passes not ported
-  yet, Julia's code generator);
+- `exclude`: it tests something this package does not port (Julia's code generator,
+  or Julia's pipeline as a whole on code that Julia compiles itself);
 - `override`: a derived copy runs, with a reviewed patch from `test/upstream/derived`
-  applied. The harness fails if the pristine fixture passes too.
+  applied. The harness fails if the pristine fixture passes too;
+- `derived`: a copy runs that tests a port instead of what the fixture tests, with a
+  patch from `test/upstream/derived` applied, e.g. `pipeline-o*.jl`, which run Julia's
+  pipeline, rebuilt from the ports, in `jlopt` instead of in Julia's JIT. The copy must
+  run a port.
 
 RUN lines that use typed pointers (`--opaque-pointers=0`) are always skipped; legacy pass
 manager lines with opaque pointers (Julia 1.10) are translated.
@@ -199,8 +203,8 @@ the testsets, the lit feature `julia-llvm` in RUN lines).
 Two things differ from mode A, the default run of the previous section:
 
 - A standalone LLVM doesn't have Julia's C++ passes. RUN lines whose pipeline names one
-  of them that isn't ported (`FinalLowerGC`, `JuliaMultiVersioning`, `julia`, ...) are
-  skipped, and the harness lists them. Mode B skips them on Julia's own LLVM too, so
+  of them that isn't ported would be skipped, and the harness lists them; every pass of
+  Julia's pipelines is ported now, so this only applies to one that a newer Julia adds. Mode B skips them on Julia's own LLVM too, so
   that a run there (a dry run of mode B) tests the same lines. A pass name that no LLVM
   knows is not skipped: the line fails. Julia's pipeline (`julia<...>`) is rebuilt from
   the ports, but it also runs LLVM's own passes, which optimize differently on another
