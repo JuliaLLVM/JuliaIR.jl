@@ -120,7 +120,9 @@ has(out, re::Regex) = any(l -> occursin(re, l), body(out))
     @test_throws "task_gcstack" ptls(or_new(X86_64), foreign, "")
 end
 
-@testset "LateLowerGCFrame" begin
+# the dialects from Julia 1.11 on declare the allocation functions with the memory
+# attribute of LLVM 16
+LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     transition(prefix; decl="declare void @julia.safepoint(ptr)") = """
         $prefix
         declare ptr @julia.get_pgcstack()
@@ -189,8 +191,8 @@ end
 end
 
 # Julia 1.14's lowerings keep a call's cancellation reset region on the calls that replace
-# it, whatever the region's metadata node holds
-@testset "reset regions" begin
+# it, whatever the region's metadata node holds (also with LLVM 16's memory attribute)
+LLVM.version() >= v"16" && @testset "reset regions" begin
     # the node of the reset region of the call of `callee` in `out`
     function reset_region(out, callee)
         line = only(filter(l -> occursin("@$callee(", l) && occursin("call", l), body(out)))
