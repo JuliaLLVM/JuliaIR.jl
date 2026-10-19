@@ -1,0 +1,10 @@
+--- a/pipeline-o2-allocs.jl
++++ b/pipeline-o2-allocs.jl
+@@ -3,2 +3,2 @@
+-# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
++# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=2>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=3>' -S | FileCheck %s
+@@ -61 +61 @@
+-# CHECK: attributes
++# CHECK: {{^[}]$}}

@@ -1,0 +1,20 @@
+--- a/pipeline-o0.jl
++++ b/pipeline-o0.jl
+@@ -5,4 +5,4 @@
+-# RUN: julia --startup-file=no -O0 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O1 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
++# RUN: julia --startup-file=no -O0 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=0>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O1 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=1>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=2>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=3>' -S | FileCheck %s
+@@ -12,4 +12,4 @@
+-# RUN: julia --startup-file=no -O0 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O1 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
+-# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t -O && llvm-link -S %t/* | FileCheck %s
++# RUN: julia --startup-file=no -O0 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=0>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O1 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=1>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O2 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=2>' -S | FileCheck %s
++# RUN: julia --startup-file=no -O3 --check-bounds=yes %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=3>' -S | FileCheck %s
