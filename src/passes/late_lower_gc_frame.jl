@@ -2293,11 +2293,13 @@ function get_or_add_pgcstack!(p::LateLowerGCFrame)
                 return inst
         end
     end
-    getter = something(fns.pgcstack_getter, get(p.mod.functions, "julia.get_pgcstack", nothing),
-                       Some(nothing))
+    getter = fns.pgcstack_getter
     if getter === nothing
         getter = LLVM.Function(p.mod, "julia.get_pgcstack",
                                LLVM.FunctionType(LLVM.PointerType(AS_GENERIC)))
+        # like the C++'s assignment to `pgcstack_getter`: the next transition in this
+        # function finds the call inserted below instead of adding another
+        p.fns = GCFunctions(p.mod, p.dialect)
     end
     position_before!(p.builder, first(entry.instructions); debug=true)
     return call!(p.builder, getter.function_type, getter, Value[])

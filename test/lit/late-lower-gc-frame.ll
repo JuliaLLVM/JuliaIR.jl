@@ -11,6 +11,10 @@
 ; RUN: %if julia-1.13 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V113 %}
 ; RUN: %if julia-1.14 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V114 %}
 
+; Julia 1.12 declares the GC stack getter for a transition in a module without one, and
+; the next transitions of the function use the same getter call
+; RUN: %if julia-1.12 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/no-getter.ll | FileCheck %t/no-getter.ll %}
+
 ; the facts serve any target: the running Julia's (like the C++ pass, which compiles in
 ; its own) and explicit ones (in bytes from Julia 1.12 on)
 ; RUN: opt -passes='function(LateLowerGCFrame)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=NATIVE
@@ -220,3 +224,42 @@ top:
   %v = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i16 8, ptr addrspace(10) @tag)
   ret ptr addrspace(10) %v
 }
+
+;--- no-getter.ll
+target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
+target triple = "x86_64-unknown-linux-gnu"
+
+declare void @ext(ptr)
+
+; CHECK-LABEL: @two_transitions(
+; CHECK-NEXT: top:
+; CHECK-NEXT: [[PGCSTACK:%[0-9]+]] = call ptr @julia.get_pgcstack()
+; CHECK-NEXT: %current_task = getelementptr inbounds i8, ptr [[PGCSTACK]], i32 -152
+; CHECK-NOT: @julia.get_pgcstack()
+; CHECK: call void @ext(ptr null)
+; CHECK-NOT: @julia.get_pgcstack()
+; CHECK: %current_task2 = getelementptr inbounds i8, ptr [[PGCSTACK]], i32 -152
+; CHECK-NOT: @julia.get_pgcstack()
+; CHECK: call void @ext(ptr null)
+; CHECK-NOT: @julia.get_pgcstack()
+; CHECK: ret void
+define void @two_transitions(ptr %ptls) {
+top:
+  call void @ext(ptr null) [ "gc-transition"(ptr %ptls) ]
+  call void @ext(ptr null) [ "gc-transition"(ptr %ptls) ]
+  ret void
+}
+
+; the next function finds the declaration
+; CHECK-LABEL: @next_function(
+; CHECK-NEXT: top:
+; CHECK-NEXT: [[PGCSTACK:%[0-9]+]] = call ptr @julia.get_pgcstack()
+; CHECK-NEXT: %current_task = getelementptr inbounds i8, ptr [[PGCSTACK]], i32 -152
+define void @next_function(ptr %ptls) {
+top:
+  call void @ext(ptr null) [ "gc-transition"(ptr %ptls) ]
+  ret void
+}
+
+; CHECK: declare ptr @julia.get_pgcstack()
+; CHECK-NOT: @julia.get_pgcstack.
