@@ -84,7 +84,10 @@ range, a `Ptr` for an address, any `AbstractString` for a `String`, and any vect
 element type for a `Vector`.
 
 `valid(value)` says whether a value other than `nothing` is valid, and `requirement`
-what it requires, for error messages (e.g. `"a non-negative integer"`).
+what it requires, for error messages (e.g. `"a non-negative integer"`). The requirement
+describes only the values other than `nothing`, because `nothing` can't be written in a
+pipeline: errors about keyword arguments add "or `nothing`" themselves. It defaults to a
+description of the type.
 """
 function option(@nospecialize(T::Type), @nospecialize(default); text::Bool=true,
                 valid=nothing, requirement::String="")
@@ -123,21 +126,33 @@ function text_form(@nospecialize(T::Type))
     return nothing
 end
 
+# what a value of type `T`, other than `nothing`, is
 function describe(@nospecialize(T::Type))
     S = nonnothing(T)
-    what = S === Int ? "an integer" :
-           S === UInt ? "an address" :
-           S === String ? "a string" :
-           S <: AbstractVector ? "a vector of $(eltype(S))" :
-           "a $S"
-    return nullable(T) ? "$what or `nothing`" : what
+    S === Bool && return "true or false"
+    S === Int && return "an integer"
+    S === UInt && return "an address"
+    S === String && return "a string"
+    S <: AbstractVector && return "a vector of $(eltype(S))"
+    name = string(S)
+    return occursin(r"^([AEIOU]|LLVM)"i, name) ? "an $name" : "a $name"
+end
+
+# what an option given as a keyword argument requires, with `requirement` describing the
+# values other than `nothing`
+function keyword_requirement(@nospecialize(T::Type), requirement)
+    nullable(T) || return requirement
+    # "x or y" becomes "x, y or `nothing`"
+    return "$(replace(requirement, " or " => ", ")) or `nothing`"
 end
 
 # throw if `value` isn't a value of the option (`what` names it in the error)
 function check_value(spec::OptionSpec, @nospecialize(value), what)
     value === nothing && nullable(spec.type) && return
-    (value isa spec.type && (spec.valid === nothing || spec.valid(value))) ||
-        throw(ArgumentError("$what must be $(spec.requirement)"))
+    value isa spec.type ||
+        throw(ArgumentError("$what must be $(keyword_requirement(spec.type, describe(spec.type)))"))
+    spec.valid === nothing || spec.valid(value) ||
+        throw(ArgumentError("$what must be $(keyword_requirement(spec.type, spec.requirement))"))
     return
 end
 
@@ -162,9 +177,10 @@ function convert_option(spec::OptionSpec, @nospecialize(v), what)
 end
 
 # the value of an option written in a pipeline
-function parse_value(spec::OptionSpec, key, value::Union{Nothing,String}, negated::Bool)
+function parse_value(spec::OptionSpec, name::Symbol, key, value::Union{Nothing,String},
+                     negated::Bool)
     spec.text ||
-        throw(ArgumentError("option $key can't be given in a pipeline, only as a keyword argument of the pass's constructor"))
+        throw(ArgumentError("option $key can't be given in a pipeline, only as the `$name` keyword argument of the pass's constructor"))
     form = text_form(spec.type)
     if form === :flag
         value === nothing ||
@@ -250,7 +266,7 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
             value === nothing && throw(ArgumentError("option gc-barrier requires a value"))
             gc_barrier = Symbol(replace(value, '-' => '_'))
         elseif haskey(specs, name)
-            given[name] = parse_value(specs[name], key, value, negated)
+            given[name] = parse_value(specs[name], name, key, value, negated)
         else
             known = [POLICY_KEYS..., (option_key(k) for k in keys(specs))...]
             throw(ArgumentError("unknown option $key; expected one of $(join(known, ", "))"))

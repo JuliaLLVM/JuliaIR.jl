@@ -173,10 +173,10 @@ end
     # a fact given as 0 is used, not taken for one that isn't given
     @test facts(; task_ptls=0).task_ptls == 0
     @test facts(; task_ptls=nothing).task_ptls == facts().task_ptls
-    @test_throws "the runtime fact tls_elf_support must be a Bool or `nothing`" facts(; tls_elf_support=:no)
-    @test_throws "the runtime fact task_ptls must be a non-negative integer" facts(; task_ptls=-8)
-    @test_throws "the runtime fact setjmp must be a non-empty string" facts(; setjmp="")
-    @test_throws "the runtime fact cfunction_cache must be arguments or cfuncdata" facts(; cfunction_cache=:auto)
+    @test_throws ArgumentError("the runtime fact tls_elf_support must be true, false or `nothing`") facts(; tls_elf_support=:no)
+    @test_throws ArgumentError("the runtime fact task_ptls must be a non-negative integer or `nothing`") facts(; task_ptls=-8)
+    @test_throws ArgumentError("the runtime fact setjmp must be a non-empty string or `nothing`") facts(; setjmp="")
+    @test_throws ArgumentError("the runtime fact cfunction_cache must be arguments, cfuncdata or `nothing`") facts(; cfunction_cache=:auto)
     @test_throws "unknown runtime fact" facts(; task_foo=1)
     @test propertynames(facts()) == keys(JuliaIR.RUNTIME_FACTS)
 
@@ -189,14 +189,14 @@ end
                                       :cfunction_cache)
     opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;tls-offset=-4;pgcstack-key=0x10;cfunction-cache=arguments";
                                  options)
-    @test_throws "requires a non-negative integer" JuliaIR.parse_options("task-ptls=-8"; options)
-    @test_throws "requires yes or no" JuliaIR.parse_options("tls-elf-support=auto"; options)
-    @test_throws "option cfunction-cache requires arguments or cfuncdata" JuliaIR.parse_options("cfunction-cache=auto"; options)
+    @test_throws ArgumentError("option task-ptls requires a non-negative integer") JuliaIR.parse_options("task-ptls=-8"; options)
+    @test_throws ArgumentError("option tls-elf-support requires yes or no") JuliaIR.parse_options("tls-elf-support=auto"; options)
+    @test_throws ArgumentError("option cfunction-cache requires arguments or cfuncdata") JuliaIR.parse_options("cfunction-cache=auto"; options)
     @test JuliaIR.parse_options("task-ptls=0"; options).extra.task_ptls === 0
     @test JuliaIR.options_string(JuliaIR.parse_options("tls-elf-support=no;task-ptls=16;pgcstack-key=0x4011c0;tls-offset=-8"; options), options) ==
           "task-ptls=16;tls-elf-support=no;tls-offset=-8;pgcstack-key=0x4011c0"
     let options = JuliaIR.runtime_options(:setjmp)
-        @test_throws "option setjmp requires a non-empty string" JuliaIR.parse_options("setjmp="; options)
+        @test_throws ArgumentError("option setjmp requires a non-empty string") JuliaIR.parse_options("setjmp="; options)
         @test JuliaIR.parse_options("setjmp=__sigsetjmp"; options).extra.setjmp == "__sigsetjmp"
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin

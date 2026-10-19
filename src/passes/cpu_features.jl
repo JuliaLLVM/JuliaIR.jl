@@ -301,8 +301,7 @@ end
 const CPU_TARGET_OPTIONS = (
     target_cpu = option(Union{Nothing,String}, nothing; text=false),
     target_features = option(Union{Nothing,String}, nothing; text=false),
-    target_machine = option(Union{Nothing,LLVM.TargetMachine}, nothing; text=false,
-                            requirement="an LLVM.TargetMachine or `nothing`"))
+    target_machine = option(Union{Nothing,LLVM.TargetMachine}, nothing; text=false))
 
 const CPU_FEATURES = define_pass("jl-cpu-features", :module, cpu_features!; required=true,
                                  options=CPU_TARGET_OPTIONS,

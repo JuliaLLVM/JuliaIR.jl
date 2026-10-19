@@ -100,7 +100,7 @@ end
 
 @testset "GCInvariantVerifier" begin
     @test JuliaIR.GCInvariantVerifierPass().required
-    @test_throws "must be a Bool" JuliaIR.GCInvariantVerifierPass(; strong=1)
+    @test_throws ArgumentError("option strong of pass jl-gc-invariant-verifier must be true or false") JuliaIR.GCInvariantVerifierPass(; strong=1)
     ir = """
         define ptr addrspace(11) @f(ptr addrspace(10) %obj, ptr %p) {
           %derived = addrspacecast ptr addrspace(10) %obj to ptr addrspace(11)
@@ -835,9 +835,9 @@ end
             opts = JuliaIR.parse_options("setjmp-savemask=no";
                                          options=JuliaIR.LOWER_EXC_HANDLERS.options)
             @test opts.extra.setjmp_savemask === false
-            @test_throws "option setjmp-savemask requires yes or no" JuliaIR.parse_options(
+            @test_throws ArgumentError("option setjmp-savemask requires yes or no") JuliaIR.parse_options(
                 "setjmp-savemask=auto"; options=JuliaIR.LOWER_EXC_HANDLERS.options)
-            @test_throws "must be a Bool or `nothing`" lower(""; handler_size=264,
+            @test_throws "must be true, false or `nothing`" lower(""; handler_size=264,
                 handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:auto)
         end
 
@@ -910,7 +910,7 @@ end
         # unspecified facts are read from the running Julia, when needed
         opts = JuliaIR.parse_options(""; options=JuliaIR.LOWER_PTLS.options)
         @test opts.extra.tls_offset === nothing
-        @test_throws "requires an address" JuliaIR.parse_options("pgcstack-getter=-1";
+        @test_throws ArgumentError("option pgcstack-getter requires an address (a non-negative integer)") JuliaIR.parse_options("pgcstack-getter=-1";
                                                                  options=JuliaIR.LOWER_PTLS.options)
         @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
                                     pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
@@ -1534,8 +1534,8 @@ end
     @test JuliaIR.CPUFeaturesPass().required
 
     # the target can only be given as keyword arguments
-    @test_throws "option target_cpu of pass jl-cpu-features must be a string or `nothing`" JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
-    @test_throws "must be an LLVM.TargetMachine or `nothing`" JuliaIR.CPUFeaturesPass(; target_machine="x86")
+    @test_throws ArgumentError("option target_cpu of pass jl-cpu-features must be a string or `nothing`") JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
+    @test_throws ArgumentError("option target_machine of pass jl-cpu-features must be an LLVM.TargetMachine or `nothing`") JuliaIR.CPUFeaturesPass(; target_machine="x86")
     @dispose pb=PassBuilder() begin
         @test_throws "target_cpu of pass jl-cpu-features must be a string" JuliaIR.register!(pb;
             options=Dict("jl-cpu-features" => (; target_cpu=42)))
