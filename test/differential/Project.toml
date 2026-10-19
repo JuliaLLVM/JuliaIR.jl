@@ -1,0 +1,8 @@
+[deps]
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+JuliaIR = "3913dba9-7ba9-44aa-bf76-1cfa3b3073b1"
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[sources]
+LLVM = {url = "https://github.com/JuliaLLVM/LLVM.jl", rev = "tb/inline-api"}
