@@ -188,7 +188,7 @@ function dump_use_info(io::IO, info::AllocUseInfo)
     end
 end
 
-function add_use!(info::AllocUseInfo, inst::Instruction)
+function add_use!(info::AllocUseInfo, @nospecialize(inst::Instruction))
     inst in info.uses && return
     push!(info.uses, inst)
     push!(info.use_order, inst)
@@ -293,7 +293,7 @@ is_lifetime(f::LLVM.Function) =
 is_lifetime_or_debug(f::LLVM.Function) = is_lifetime(f) || startswith(f.name, "llvm.dbg.")
 
 # the `allockind` of a call, from its attributes or those of the called function
-function alloc_kind(call::Instruction)
+function alloc_kind(@nospecialize(call::Instruction))::UInt64
     attrs = call.function_attributes
     if haskey(attrs, :allockind)
         return UInt64(attrs[:allockind].value)
@@ -313,18 +313,14 @@ const ESCAPE_REMARKS = "escape-analysis"
 # are ignored. Missed-optimization remarks are emitted through `remarks` (the analysis
 # manager of a function pass or the analysis results of a loop pass), if given.
 function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunctions,
-                          dl::DataLayout; valid_blocks=nothing, remarks=nothing)
+                          dl::DataLayout; valid_blocks=nothing,
+                          remarks::R=nothing) where {R}
     empty!(info)
     info.allockind = alloc_kind(alloc)
-    # a stack of (instruction, offset, its uses, the index of the next use)
-    stack = Tuple{Instruction,UInt32,Vector{Use},Int}[]
-    uses = collect(alloc.uses)
-    isempty(uses) && return info
-    cur = (alloc, UInt32(0), uses, 1)
-    function push_inst!(inst, offset)
-        cur[4] <= length(cur[3]) && push!(stack, cur)
-        cur = (inst, offset, collect(inst.uses), 1)
-    end
+    # the instructions whose uses are analyzed: (instruction, offset, its uses, the index
+    # of the next use), depth first, so the last one is the current one
+    stack = Tuple{Instruction,UInt32,Vector{Use},Int}[(alloc, UInt32(0), collect(alloc.uses), 1)]
+    push_inst!(@nospecialize(inst), offset) = push!(stack, (inst, offset, collect(inst.uses), 1))
     function escape!(name, inst, message, key)
         if remarks !== nothing
             remark!(remarks, :missed, ESCAPE_REMARKS, name, inst) do
@@ -336,8 +332,8 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
     end
 
     # analyze a use; returns false if the allocation escapes
-    function check(inst::Instruction, use::Use)
-        offset = cur[2]
+    function check(@nospecialize(inst::Instruction), use::Use)
+        offset = stack[end][2]
         if inst isa LoadInst
             info.hasload = true
             if offset == UNKNOWN_OFFSET
@@ -445,8 +441,14 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
     end
 
     while true
-        use = cur[3][cur[4]]
-        cur = (cur[1], cur[2], cur[3], cur[4] + 1)
+        # drop the instructions whose uses have all been analyzed
+        while stack[end][4] > length(stack[end][3])
+            pop!(stack)
+            isempty(stack) && return info
+        end
+        inst, offset, uses, i = stack[end]
+        stack[end] = (inst, offset, uses, i + 1)
+        use = uses[i]
         user = use.user
         if !(user isa Instruction)
             info.escaped = true
@@ -455,10 +457,6 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
         if valid_blocks === nothing || user.parent in valid_blocks
             check(user, use) || return info
             add_use!(info, user)
-        end
-        while cur[4] > length(cur[3])
-            isempty(stack) && return info
-            cur = pop!(stack)
         end
     end
 end

@@ -103,7 +103,7 @@ end
 ## allocations
 
 # the size of an allocation, or -1 if `inst` is not one of a known size
-function gc_alloc_size(opt::AllocOpt, inst::Instruction)
+function gc_alloc_size(opt::AllocOpt, @nospecialize(inst::Instruction))
     inst isa CallInst || return -1
     inst.called_operand == opt.fns.alloc_obj || return -1
     sz = inst.arguments[2]
@@ -114,7 +114,7 @@ function gc_alloc_size(opt::AllocOpt, inst::Instruction)
     return Int(n)
 end
 
-function push_instruction!(opt::AllocOpt, inst::Instruction)
+function push_instruction!(opt::AllocOpt, @nospecialize(inst::Instruction))
     sz = gc_alloc_size(opt, inst)
     if sz != -1 && !(inst in opt.inworklist)
         push!(opt.worklist, (inst, sz))
