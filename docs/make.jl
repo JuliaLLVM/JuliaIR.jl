@@ -12,6 +12,7 @@ function main()
         modules = [JuliaIR],
         pages = [
             "Home" => "index.md",
+            "LateLowerGC cleanup" => "late_gc_cleanup.md",
             "Testing" => "testing.md",
             "API reference" => "api.md",
         ],

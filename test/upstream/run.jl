@@ -25,7 +25,7 @@ include(joinpath(@__DIR__, "..", "litsetup.jl"))
 const MANIFEST_PATH = joinpath(@__DIR__, "manifest.toml")
 
 const KINDS = ("port", "mixed", "frame", "cpu", "emitter", "infra")
-const STATUSES = ("run", "skip", "exclude", "override")
+const STATUSES = ("run", "skip", "exclude", "override", "derived")
 const FIXTURE_KEYS = ("kind", "ports", "status", "missing", "reason", "ref", "patch",
                       "ledger_empty", "cpp", "pins")
 
@@ -66,14 +66,14 @@ function fixture_entry(manifest, name, minor)
     merge!(entry, overrides)
     status = entry["status"]
     status in STATUSES || throw(HarnessError("$name: invalid status $status"))
-    if status in ("exclude", "override")
+    if status in ("exclude", "override", "derived")
         haskey(entry, "reason") || throw(HarnessError("$name: status $status needs a reason"))
     elseif status == "skip"
         haskey(entry, "missing") || haskey(entry, "reason") ||
             throw(HarnessError("$name: status skip needs `missing` or a reason"))
     end
-    status == "override" && !haskey(entry, "patch") &&
-        throw(HarnessError("$name: status override needs a patch"))
+    status in ("override", "derived") && !haskey(entry, "patch") &&
+        throw(HarnessError("$name: status $status needs a patch"))
     return entry
 end
 
@@ -310,12 +310,12 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
     included = if cpp
         !haskey(entry, "cpp") && !(kind in ("emitter", "infra"))
     else
-        status in ("run", "override")
+        status in ("run", "override", "derived")
     end
 
     pristine = read(path, String)
     # with Julia's own passes, upstream's expectations hold as they are
-    text = status == "override" && !cpp ?
+    text = status in ("override", "derived") && !cpp ?
         apply_patch(pristine, read(joinpath(manifest_dir, entry["patch"]), String); name) :
         pristine
 
@@ -342,6 +342,11 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
                     "port missing: $(join(entry["missing"], ", "))" * (haskey(entry, "reason") ? "; $(entry["reason"])" : "") :
                  entry["reason"]
         return Fixture(name, entry, false, reason, runs, "", nothing)
+    end
+
+    if status == "derived" && !cpp &&
+       !any(r -> any(p -> !isempty(ported_names(p)), r[4]), runs)
+        throw(HarnessError("$name: the derived copy runs no port"))
     end
 
     skipped = [r[1] for r in runs if r[2] == :skip]

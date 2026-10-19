@@ -13,7 +13,8 @@ read it first, including its Log). This file says where things are and how to co
 | S3 upstream harness, manifest (mode A) | done | b97b57a, e39a309, 3614dd5, 33ad510 |
 | S4 AllocOpt | port done; open: S12, S13 | f728275, 5df7c8c, PR #2 |
 | E1 PromoteMemToReg (LLVM.jl) | merged in LLVM.jl #669, unreleased | LLVM.jl f6369703 |
-| S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, CI green); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
+| S5 PropagateJuliaAddrspaces, DemoteFloat16, GCInvariantVerifier | done (PR #4, merged); S12 part open | 48e29df, 6f09543, 1d0b5c9 |
+| S6 LateLowerGC cleanup (`jl-late-gc-cleanup`) | done as a subset, PR #5; generalized by S6b | e672c86, d11ee73 |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -22,18 +23,29 @@ pin. `finish_split!` promotes the reference slots of split allocations with LLVM
 behaviours are kept per Julia version, which fixes are applied to every version) are in
 the plan's Log entry for S4 and in `docs/src/index.md`.
 
-On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. `main` (7c99736) is green on every OS
-and version. Open, stacked (gh stack #3): PR #1 `tb/llvm-dev-ci` (CI tests against LLVM.jl
-`main`, see `.github/actions/llvm-dev`), PR #2 `tb/promote-mem-to-reg` on top (the E1 use
-in AllocOpt). Work that needs unreleased LLVM.jl goes on top of this stack. S5 is PR #4
-`tb/s5-small-passes` on top of PR #2 (it needs nothing unreleased; stacked to keep the
-hand-off linear), green on every CI job.
+On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. PRs #1 (CI against LLVM.jl `main`,
+`.github/actions/llvm-dev`), #2 (E1 use in AllocOpt) and #4 (S5) are merged; `main` is
+4255ff2. S6 is PR #5 (`tb/s6-late-lower-gc`), the bottom of the JuliaIR.jl stack.
+
+Scope and workflow changed on 2026-10-18 (plan decisions S-D12–S-D14, "Operating mode"): all of Julia's
+passes get faithful, general ports (CPU paths included), for dialects D ≤ the running Julia and on every
+LLVM from the dialect's own on. A coordinator session (kick-off prompt
+`~/Julia/plans/llvm-middleend/PROMPT.coordinator.md`) delegates items to subagents, stacks PRs with
+`gh stack`, and may push `tb/*` branches and open PRs on JuliaIR.jl and LLVM.jl.
 
 S5 details: one file per pass in `src/passes/`, shared pointer and metadata helpers in
 `src/irutils.jl`. Every upstream fixture of the three passes passes in mode A at every
 pin, without overrides. Deviations from the C++ (master semantics for every dialect, two
 C++ bugs in PropagateJuliaAddrspaces' memset handling, DemoteFloat16 policies and name
 keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md`.
+
+S6 details: `src/passes/late_gc_cleanup.jl`, TBAA helpers (`mutable_tbaa_tag`,
+`tbaa_derives_from`) and `clone_call!` in `src/irutils.jl`. The input contract (what must
+be lowered before, what is rewritten, what is rejected with `UnsupportedInputError`) is
+`docs/src/late_gc_cleanup.md`. `cpp_name` is empty: `jlopt` keeps running Julia's
+`LateLowerGCFrame` for that name (frame fixtures and `alloc-opt-gcframe.ll` need it). The
+upstream harness has a new `derived` status (a patched fixture that tests a port, no
+stale check); master's `late-lower-gc-alloc-zeroing.ll` uses it.
 
 ## Layout
 
@@ -100,9 +112,13 @@ keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md
 1. When LLVM.jl is released with `promote_mem_to_reg!` and the LLVMExtra_jll of Yggdrasil
    #15179: in PR #1, replace the action's uses by a raised LLVM compat bound (or drop PR #1
    and add the compat bound to PR #2), merge, and mark E1 done in the plan.
-2. S6 (LateLowerGC cleanup). Its TBAA helper (`createMutableTBAAAccessTag`) is a
-   pure-Julia metadata rewrite with LLVM.jl 10.2's `MDNode` API (see the plan's Log);
-   no LLVM.jl addition needed. Start with the GPU input contract (docs page).
+2. S6b: generalize `jl-late-gc-cleanup` into the full LateLowerGCFrame port, stacked on PR #5
+   (plan item S6b). Independent: S17, S18, S24; then E2 → S7, L5a → S8, L5b → S9, E3 → S10, the CPU
+   passes S15–S21.
+   For G4 (GPUCompiler adopting the ports): where the C++ LateLowerGCFrame silently lowered
+   `julia.typeof`, or built a GC frame for a live GC stack and left GPUCompiler's validator
+   to report it with a backtrace, `jl-late-gc-cleanup` throws `UnsupportedInputError`;
+   GPUCompiler should turn that into its IR errors.
 3. A differential check like the one used for S4 and S5 (C++ pass vs port, in-process, on
    every pinned fixture plus `code_llvm(...; optimize=false)` output) is cheap and found
    the only real differences, including two C++ bugs; S12 should formalize it with
@@ -143,6 +159,10 @@ keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md
 - C++'s "prolog builder" keeps inserting before the *original* first instruction of the
   entry block; re-reading `first(entry.instructions)` reverses the order of allocas.
 - LLVM's `NextPowerOf2(x)` is strictly greater than `x`.
+- The differential for LateGCCleanup forces the C++ pass onto its cleanup-only path by
+  renaming `julia.get_pgcstack` and dropping `"gcstack"` attributes in both copies; parse
+  the two copies in separate contexts (struct types get `.0` suffixes otherwise) and
+  compare metadata by content (numbering shifts when the port rejects functions).
 - A pass with `required=false` is skipped on `optnone` functions, so its callback (and the
   ledger) doesn't see them.
 - Overrides adapt fixtures to the ports; `run.jl --cpp` runs pristine fixtures.
@@ -172,7 +192,7 @@ keeping, the verifier's error type) are in the plan's Log and `docs/src/index.md
 ## Peer conversations (pegasus)
 
 - `llvm-middleend-passes-astra`: the design discussion behind the plan.
-- `llvm-middleend-passes-sol`: reviews of S0–S5; `peer log` to read. Verdicts: S0 one
+- `llvm-middleend-passes-sol`: reviews of S0–S6; `peer log` to read. Verdicts: S0 one
   minor, S1 three, S2 two, S3 three, S4 one finding, S5 one (DemoteFloat16's `ppu`
-  triple), all fixed.
+  triple), S6 three (allocation bundles, bundles on jlcalls, `invoke`), all fixed.
 - `llvm-middleend-passes-astra` turn 3: the S5 design (bf16 policy, verifier errors).

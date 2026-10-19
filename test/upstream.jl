@@ -91,9 +91,10 @@ end
     refs = [m[1] for m in eachmatch(r"julia_ref: '([0-9a-f]{40})'", ci)]
     @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])])
     for (name, entry) in manifest["fixtures"]
-        get(entry, "status", "") == "override" && @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
+        get(entry, "status", "") in ("override", "derived") &&
+            @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
         for (_, overrides) in get(entry, "pins", Dict())
-            get(overrides, "status", "") == "override" &&
+            get(overrides, "status", "") in ("override", "derived") &&
                 @test isfile(joinpath(@__DIR__, "upstream", overrides["patch"]))
         end
     end
@@ -160,6 +161,14 @@ mktempdir() do dir
         @@ -3,1 +3,1 @@
         -target datalayout = "e-i64:64-ni:10:11:12:13"
         +target datalayout = "e-i64:64-ni:10:11:12:13"
+        """)
+    noport_patch = joinpath(dir, "noport.ll.patch")
+    write(noport_patch, """
+        --- a/good.ll
+        +++ b/good.ll
+        @@ -1,1 +1,1 @@
+        -; RUN: opt --load-pass-plugin=libjulia-codegen%shlibext -passes=RemoveNI -S %s | FileCheck %s
+        +; RUN: opt -passes=verify -S %s | FileCheck %s
         """)
 
     minor = "$(VERSION.major).$(VERSION.minor)"
@@ -264,6 +273,14 @@ mktempdir() do dir
     code, out = harness(write_manifest(stale * replace(override, "status = \"override\"" => "status = \"exclude\"") * excluded_cpp))
     @test code == 1
     @test occursin("good.ll: the override is stale", out)
+
+    # a derived copy tests a port, so the pristine fixture may pass too; it must run a port
+    derived = replace(stale, "status = \"override\"" => "status = \"derived\"")
+    code, out = harness(write_manifest(derived * replace(override, "status = \"override\"" => "status = \"exclude\"") * excluded_cpp))
+    @test code == 0
+    @test occursin("1 of 1 fixtures passed", out)
+    noport = replace(derived, "stale.ll.patch" => "noport.ll.patch")
+    @test_throws "good.ll: the derived copy runs no port" harness(write_manifest(noport * replace(override, "status = \"override\"" => "status = \"exclude\"") * excluded_cpp))
 
     # every fixture must be in the manifest
     @test_throws "override.ll is not in the manifest" harness(write_manifest(good * excluded_cpp))
