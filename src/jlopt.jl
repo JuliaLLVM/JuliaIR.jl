@@ -101,6 +101,9 @@ end
 # process-wide, so they also affect later runs of `jlopt` in the same process.
 const LLVM_OPTIONS = r"^--?(verify-memoryssa|print-before-all|print-after-all|print-(before|after)=[\w-]+|force-vector-width=\d+|print-module-scope)$"
 
+# whether a `jlopt` call in this process has set LLVM options, which stay set
+const LLVM_OPTIONS_SET = Ref(false)
+
 Base.@kwdef mutable struct JloptOptions
     pipeline::Union{Nothing,String} = nothing
     legacy::Vector{String} = String[]
@@ -263,20 +266,26 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     # LLVM's options also apply to the pipelines of Julia's JIT, which compiles the Julia
     # code of the passes when they first run: with `-print-before` etc., those would print
     # the IR of that code too. Running the pipeline once before setting the options
-    # compiles what the actual run needs.
-    if any(startswith(r"--?print-"), opts.llvm_options)
+    # compiles what the actual run needs. The options can't be unset, so only a process
+    # that hasn't set any yet can warm up without printing.
+    if !LLVM_OPTIONS_SET[] && any(startswith(r"--?print-"), opts.llvm_options)
         ledger = LEDGER[]
         # (with a ledger, writing to it needs compiling too)
         isempty(ledger) || (LEDGER[] = Sys.iswindows() ? "NUL" : "/dev/null")
         try
             run_jlopt(opts, pipeline, data, name, stdout; warmup=true)
-        catch
+        catch err
+            # the actual run reports the same failure
+            err isa InterruptException && rethrow()
         finally
             LEDGER[] = ledger
         end
     end
     ledger_write("jlopt", pipeline)
-    isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
+    if !isempty(opts.llvm_options)
+        LLVM.clopts(opts.llvm_options...)
+        LLVM_OPTIONS_SET[] = true
+    end
     run_jlopt(opts, pipeline, data, name, stdout)
     return
 end
