@@ -212,4 +212,29 @@ end
     @test proc.exitcode == 1 && proc.termsignal == 0
 end
 
+
+@testset "app entry point" begin
+    # the `jlopt` app of Project.toml runs `JuliaIR.main` (`@main`, Julia 1.11 and later)
+    @test isdefined(JuliaIR, :main) == isdefined(Base, Symbol("@main"))
+    if isdefined(JuliaIR, :main)
+        mktempdir() do dir
+            input = joinpath(dir, "input.ll")
+            output = joinpath(dir, "output.ll")
+            write(input, ir)
+            @test JuliaIR.main(["-passes=jl-remove-ni", "-S", input, "-o", output]) == 0
+            @test occursin("target datalayout", read(output, String))
+            @test redirect_stderr(() -> JuliaIR.main(["-frobnicate"]), devnull) == 1
+        end
+    end
+
+    # Pkg's shim for the app runs `julia -m JuliaIR` (Julia 1.12 and later)
+    if VERSION >= v"1.12"
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project())
+               -m JuliaIR -passes=jl-remove-ni -S`
+        out = read(pipeline(cmd; stdin=IOBuffer(ir)), String)
+        @test occursin("; ModuleID = '<stdin>'", out)
+        @test !success(pipeline(`$cmd -frobnicate`; stdin=devnull, stderr=devnull))
+    end
+end
+
 end
