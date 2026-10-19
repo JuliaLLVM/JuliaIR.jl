@@ -85,8 +85,13 @@ The rebuilt pipeline prints like Julia's (as `print_pipeline` shows them), excep
 - Julia adds pass managers that are empty (a CGSCC pass manager below level 2 up to
   1.13), which pipeline text can't express; the rebuilt pipeline leaves them out. Julia
   1.13 also builds a function pass manager that it never adds.
-- Julia 1.14's IRCE with cleanup is a pass of its own, `jl-irce-with-cleanup`. It reports
-  the analyses that the cleanup preserved, where Julia's reports IRCE's.
+- Julia 1.14's IRCE with cleanup is a pass of its own, `jl-irce-with-cleanup`, where
+  Julia's has no name.
+- Julia's loop pass managers don't use BlockFrequencyInfo. Written as pipeline text
+  (`loop-mssa(...)`), a loop pass manager that runs SimpleLoopUnswitch does on the LLVM
+  versions whose pipeline parser enables it for that pass; this only makes a difference
+  for code with profile data. And the target library info comes from the module's triple
+  rather than the target machine's.
 - `vector-combine<early>` (Julia's `VectorCombinePass(/*TryEarlyFoldsOnly=*/true)`)
   prints like the other `vector-combine`.
 - Julia's pipeline invokes the callbacks of LLVM's extension points; JuliaIR's doesn't,
@@ -94,8 +99,8 @@ The rebuilt pipeline prints like Julia's (as `print_pipeline` shows them), excep
 
 ## Testing
 
-`test/pipeline.jl` compares the printed pipeline with Julia's `julia<...>` element for
-every level and every option, both with Julia's C++ passes and with the ports, and checks
+`test/pipeline.jl` compares the printed pipeline with Julia's `julia<...>` element at
+every level, alone and with each option toggled, both with Julia's C++ passes and with the ports, and checks
 on a few functions that the rebuilt pipeline with Julia's C++ passes optimizes exactly
 like Julia's. The upstream fixture `pipeline-prints.ll` runs in `jlopt`, as do derived
 copies of `pipeline-o*.jl`, which run the pipeline on the unoptimized IR of Julia's code
