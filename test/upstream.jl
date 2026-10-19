@@ -85,11 +85,16 @@ end
     # the real manifest is well-formed, and covers every pinned minor version
     manifest = UpstreamHarness.load_manifest()
     @test issetequal(keys(manifest["pins"]), ["1.10", "1.11", "1.12", "1.13", "1.14"])
-    @test all(pin -> length(pin["commit"]) == 40, values(manifest["pins"]))
+    # released versions are pinned, the development version follows the nightly build
+    @test all(pin -> length(pin["commit"]) == 40,
+              (pin for (minor, pin) in manifest["pins"] if minor != "1.14"))
+    @test !haskey(manifest["pins"]["1.14"], "commit")
     # CI checks out the pinned commits
     ci = read(joinpath(dirname(@__DIR__), ".github", "workflows", "CI.yml"), String)
     refs = [m[1] for m in eachmatch(r"julia_ref: '([0-9a-f]{40})'", ci)]
-    @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])])
+    @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])
+                            if haskey(pin, "commit")])
+    @test occursin("{version: 'nightly', julia_ref: ''}", ci)
     for (name, entry) in manifest["fixtures"]
         get(entry, "status", "") in ("override", "derived") &&
             @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
@@ -294,13 +299,27 @@ mktempdir() do dir
     @test_throws "the ports of JuliaLICM do not exist" harness(write_manifest(no_port * override * excluded_cpp))
 
     # the checkout must be at the pinned commit, with its fixtures unchanged
-    @test_throws "pinned to" harness(write_manifest(good * override * excluded_cpp; commit="0"^40))
+    @test_throws "but the fixtures of Julia $VERSION are those of $("0"^40)" harness(write_manifest(good * override * excluded_cpp; commit="0"^40))
     mv(joinpath(passes, "good.ll"), joinpath(dir, "good.ll"))
     @test_throws "differ from commit" harness(write_manifest(good * override * excluded_cpp))
     mv(joinpath(dir, "good.ll"), joinpath(passes, "good.ll"))
     write(joinpath(passes, "new.ll"), "")
     @test_throws "differ from commit" harness(write_manifest(good * override * excluded_cpp))
     rm(joinpath(passes, "new.ll"))
+
+    # a pin without a commit (the development version's) takes the commit the running
+    # Julia was built from
+    dev = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
+    delete!(dev["pins"][minor], "commit")
+    check_pin(running_commit) = UpstreamHarness.check_pin(dev, src, minor; running_commit)
+    if isempty(VERSION.prerelease)
+        @test_throws "those of a development build" check_pin(commit)
+    else
+        @test check_pin(commit)["commit"] == commit
+        @test !haskey(dev["pins"][minor], "commit")
+        @test_throws "are those of $("1"^40) (test)" check_pin("1"^40)
+        @test_throws "doesn't know the commit" check_pin("")
+    end
 
     # the report covers every fixture
     code, out = harness(write_manifest(good * override * excluded_cpp), "--report")

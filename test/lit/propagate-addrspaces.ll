@@ -2,17 +2,16 @@
 ; on every dialect (Julia master's behaviour, JuliaLang/julia#62807).
 
 ; RUN: opt -passes='function(jl-propagate-addrspaces,dce)' -S %s | FileCheck %s
-; RUN: opt -julia=1.10 -passes='function(PropagateJuliaAddrspaces,dce)' -S %s | FileCheck %s
-; RUN: opt -julia=1.13 -passes='function(jl-propagate-addrspaces<julia=1.12>,dce)' -S %s | FileCheck %s
+; RUN: opt -passes='function(PropagateJuliaAddrspaces,dce)' -S %s | FileCheck %s
 
-; the port ran (also for Julia's name of the pass), and not on optnone functions
+; the port ran (also for Julia's name of the pass), and on optnone functions too
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=PropagateJuliaAddrspaces -julia=1.11 -S %s -o /dev/null
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=PropagateJuliaAddrspaces -S %s -o /dev/null
 ; RUN: FileCheck --check-prefix=LEDGER %s < %t.ledger
 ; RUN: grep -c 'pass	jl-propagate-addrspaces' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; LEDGER: jlopt jl-propagate-addrspaces
-; LEDGER-NEXT: pass jl-propagate-addrspaces julia=1.11.0 llvm=
-; COUNT: 11
+; LEDGER-NEXT: pass jl-propagate-addrspaces julia=
+; COUNT: 12
 
 declare void @llvm.memset.p11.i64(ptr addrspace(11), i8, i64, i1)
 declare void @llvm.memset.inline.p11.i64(ptr addrspace(11), i8, i64, i1)
@@ -176,10 +175,10 @@ define i64 @undef_leaf() {
   ret i64 %load
 }
 
-; not an optimization the pass applies to optnone functions
-; CHECK-LABEL: @skipped(
-; CHECK: load i64, ptr addrspace(11) %casted
-define i64 @skipped() noinline optnone {
+; a required pass, like Julia's C++ pass: optnone functions are processed too
+; CHECK-LABEL: @optnone(
+; CHECK: load i64, ptr %stack
+define i64 @optnone() noinline optnone {
   %stack = alloca i64
   %casted = addrspacecast ptr %stack to ptr addrspace(11)
   %load = load i64, ptr addrspace(11) %casted

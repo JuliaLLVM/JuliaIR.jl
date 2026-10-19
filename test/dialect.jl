@@ -17,11 +17,6 @@ using JuliaIR: Dialect
     # the running Julia is supported
     @test Dialect(VERSION).julia == VERSION
 
-    # from option text
-    @test Dialect("1.12").minor == v"1.12"
-    @test Dialect("1.14.0-DEV.3782").minor == v"1.14"
-    @test_throws ArgumentError Dialect("one.twelve")
-
     # unsupported versions
     @test_throws "not supported" Dialect(v"1.9.4")
     @test Dialect(v"1.10.0-DEV.100").minor == v"1.10"
@@ -64,7 +59,6 @@ end
     @test !d11.verifier_vector_pointers && d12.verifier_vector_pointers
     @test (d10.fp16_rule, d11.fp16_rule, d12.fp16_rule) ==
           (:target_features, :target_features_bf16, :attributes)
-    @test all(d -> d.propagate_addrspaces_target === :common_leaf, (d10, d13, dm))
 
     # LateLowerGCFrame
     @test (d13.gc_rooted_loads, dm.gc_rooted_loads) == (:tbaa, :regions)

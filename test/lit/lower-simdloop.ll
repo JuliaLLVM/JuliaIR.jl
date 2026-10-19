@@ -3,17 +3,17 @@
 ; floating-point reductions of simd loops. From Julia 1.12 on, it also marks the `fmul`
 ; that only feeds an addition of a reduction as `contract`.
 
-; RUN: opt -julia=1.10 -passes='loop(LowerSIMDLoop)' -S %s | FileCheck %s --check-prefixes=CHECK,NOCOMBINE
-; RUN: opt -julia=1.11 -passes=LowerSIMDLoop -S %s | FileCheck %s --check-prefixes=CHECK,NOCOMBINE
-; RUN: opt -julia=1.12 -passes='function(loop-mssa(LowerSIMDLoop))' -verify-memoryssa -S %s | FileCheck %s --check-prefixes=CHECK,COMBINE
-; RUN: opt -passes='jl-lower-simdloop<julia=1.13>' -S %s | FileCheck %s --check-prefixes=CHECK,COMBINE
-; RUN: opt -julia=1.14.0-DEV -passes='function(loop-mssa(LowerSIMDLoop),print<memoryssa>)' -S %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MSSA
+; RUN: opt -passes='loop(LowerSIMDLoop)' -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}
+; RUN: opt -passes=LowerSIMDLoop -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}
+; RUN: opt -passes='function(loop-mssa(LowerSIMDLoop))' -verify-memoryssa -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}
+; RUN: opt -passes=jl-lower-simdloop -S %s | FileCheck %s --check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}
+; RUN: opt -passes='function(loop-mssa(LowerSIMDLoop),print<memoryssa>)' -S %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MSSA
 
 ; the port ran once per loop, except in the optnone function
 ; (it is not required)
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.12 -passes='loop(LowerSIMDLoop)' -S %s -o /dev/null
-; RUN: grep -c 'pass	jl-lower-simdloop	julia=1.12.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='loop(LowerSIMDLoop)' -S %s -o /dev/null
+; RUN: grep -c 'pass	jl-lower-simdloop	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 14
 
 ; CHECK-LABEL: @ivdep(

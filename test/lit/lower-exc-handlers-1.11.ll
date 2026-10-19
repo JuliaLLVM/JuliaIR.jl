@@ -2,8 +2,9 @@
 ; task and returns the result of setjmp, and which also leaves handlers with
 ; `jl_pop_handler_noexcept`. See lower-exc-handlers-1.12.ll for the runtime profiles.
 
-; RUN: opt -julia=1.11 -passes='function(jl-lower-exc-handlers<handler-size=256;handler-align=16;setjmp=__sigsetjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,UNIX
-; RUN: opt -julia=1.11 -mtriple=x86_64-w64-windows-gnu -passes='function(jl-lower-exc-handlers<handler-size=256;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS
+; REQUIRES: julia-1.11
+; RUN: opt -passes='function(jl-lower-exc-handlers<handler-size=256;handler-align=16;setjmp=__sigsetjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,UNIX
+; RUN: opt -mtriple=x86_64-w64-windows-gnu -passes='function(jl-lower-exc-handlers<handler-size=256;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS
 
 declare i32 @julia.except_enter(ptr) returns_twice
 declare void @ijl_pop_handler(ptr, i32)

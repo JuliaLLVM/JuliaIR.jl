@@ -6,7 +6,8 @@
     JuliaIR.PassOptions
 
 The options of one occurrence of a pass in a pipeline: the [`JuliaIR.Dialect`](@ref) of
-the IR (`dialect`) and the pass-specific options (`extra`, a `NamedTuple`).
+the IR (`dialect`, the running Julia's, with the policies of the options) and the
+pass-specific options (`extra`, a `NamedTuple`).
 """
 struct PassOptions{T<:NamedTuple}
     dialect::Dialect
@@ -15,26 +16,24 @@ end
 
 Base.:(==)(a::PassOptions, b::PassOptions) = a.dialect == b.dialect && a.extra == b.extra
 
-# option keys shared by all passes, as written in a pipeline
-const DIALECT_KEYS = ("julia", "fp16", "bf16", "gc-barrier")
+# option keys shared by all passes (the policies of the dialect), as written in a pipeline
+const POLICY_KEYS = ("fp16", "bf16", "gc-barrier")
 
 option_key(name::Symbol) = replace(string(name), '_' => '-')
 
 """
-    JuliaIR.parse_options(str; julia=VERSION, fp16=:auto, bf16=:auto, gc_barrier=:stock,
-                          extra=(;))
+    JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, extra=(;))
 
 Parse the option text of a pass in a pipeline (the part between `<` and `>`, e.g.
-`julia=1.12;fp16=demote`) into [`JuliaIR.PassOptions`](@ref). Options are separated by
-`;`. The keyword arguments are the defaults for options that are not given. `extra`
+`fp16=demote;strong`) into [`JuliaIR.PassOptions`](@ref), whose dialect is the running
+Julia's. Options are separated by `;`. The keyword arguments are the defaults for
+options that are not given. `extra`
 holds the defaults of the pass-specific options, which determine how they are parsed:
 a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`.
 Unknown and repeated options are rejected.
 """
-function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
-                       bf16::Symbol=:auto, gc_barrier::Symbol=:stock,
-                       extra::NamedTuple=(;))
-    julia = julia isa VersionNumber ? julia : parse_julia_version(string(julia))
+function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
+                       gc_barrier::Symbol=:stock, extra::NamedTuple=(;))
     extra_values = Dict{Symbol,Any}(pairs(extra))
     seen = Set{Symbol}()
     for opt in split(str, ';'; keepempty=false)
@@ -55,10 +54,7 @@ function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
         name in seen && throw(ArgumentError("option $key is given more than once"))
         push!(seen, name)
 
-        if key == "julia"
-            value === nothing && throw(ArgumentError("option julia requires a version, e.g. julia=1.12"))
-            julia = parse_julia_version(value)
-        elseif key == "fp16"
+        if key == "fp16"
             value === nothing && throw(ArgumentError("option fp16 requires a value"))
             fp16 = Symbol(value)
         elseif key == "bf16"
@@ -92,18 +88,19 @@ function parse_options(str::AbstractString; julia=VERSION, fp16::Symbol=:auto,
                 error("unsupported type of option $key: $(typeof(default))")
             end
         else
-            known = [DIALECT_KEYS..., (option_key(k) for k in keys(extra))...]
+            known = [POLICY_KEYS..., (option_key(k) for k in keys(extra))...]
             throw(ArgumentError("unknown option $key; expected one of $(join(known, ", "))"))
         end
     end
-    dialect = Dialect(julia; fp16, bf16, gc_barrier)
+    dialect = Dialect(VERSION; fp16, bf16, gc_barrier)
     values = NamedTuple{keys(extra)}(Tuple(extra_values[k] for k in keys(extra)))
     return PassOptions(dialect, values)
 end
 
 # the options as text, the inverse of `parse_options`
 function options_string(opts::PassOptions)
-    parts = [options_string(opts.dialect)]
+    policies = options_string(opts.dialect)
+    parts = isempty(policies) ? String[] : [policies]
     for (k, v) in pairs(opts.extra)
         push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
                      v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
@@ -212,8 +209,8 @@ end
 
 # the LLVM.jl pass for a definition, with the defaults for options not given in the
 # pipeline
-function custom_pass(def::PassDefinition; julia=VERSION, fp16::Symbol=:auto,
-                     bf16::Symbol=:auto, gc_barrier::Symbol=:stock, kwargs...)
+function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
+                     gc_barrier::Symbol=:stock, kwargs...)
     for (k, v) in pairs(kwargs)
         haskey(def.extra, k) ||
             throw(ArgumentError("unknown option $k for pass $(def.name)"))
@@ -222,8 +219,8 @@ function custom_pass(def::PassDefinition; julia=VERSION, fp16::Symbol=:auto,
     end
     extra = merge(def.extra, values(kwargs))
     # validate the defaults now, rather than when the pass is first used
-    parse_options(""; julia, fp16, bf16, gc_barrier, extra)
-    parse = str -> parse_options(str; julia, fp16, bf16, gc_barrier, extra)
+    parse_options(""; fp16, bf16, gc_barrier, extra)
+    parse = str -> parse_options(str; fp16, bf16, gc_barrier, extra)
     callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
     constructor = def.kind === :module ? ModulePass :
                   def.kind === :function ? FunctionPass : LoopPass
@@ -239,17 +236,16 @@ The names of the passes of this package, as used in pipelines.
 passes() = [def.name for def in PASSES]
 
 """
-    JuliaIR.register!(pb::PassBuilder; julia=VERSION, fp16=:auto, bf16=:auto,
-                      gc_barrier=:stock)
+    JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock)
 
 Register every pass of this package with the pass builder `pb`, so that they can be used
-by name in its pipeline. The keyword arguments are the defaults of the options for
+by name in its pipeline. The keyword arguments are the defaults of the policy options for
 occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)).
 """
-function register!(pb::PassBuilder; julia=VERSION, fp16::Symbol=:auto,
-                   bf16::Symbol=:auto, gc_barrier::Symbol=:stock)
+function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
+                   gc_barrier::Symbol=:stock)
     for def in PASSES
-        LLVM.register!(pb, custom_pass(def; julia, fp16, bf16, gc_barrier))
+        LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier))
     end
     return pb
 end

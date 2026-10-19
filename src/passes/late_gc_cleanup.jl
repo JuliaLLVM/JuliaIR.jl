@@ -164,7 +164,7 @@ const LATE_GC_CLEANUP = define_pass("jl-late-gc-cleanup", :function, late_gc_cle
                                     required=true, cpp_name="")
 
 """
-    JuliaIR.LateGCCleanupPass(; julia=VERSION)
+    JuliaIR.LateGCCleanupPass()
 
 [`JuliaIR.LateLowerGCFramePass`](@ref) for functions without a GC frame
 (`jl-late-gc-cleanup` in a pipeline), as GPU back-ends emit them: the part of Julia's

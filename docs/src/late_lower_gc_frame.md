@@ -40,8 +40,8 @@ without a GC frame, as GPU back-ends emit them, after checking an input contract
 
 ## What changes between Julia versions
 
-The pass follows the C++ pass of the Julia version of its `julia` option. The differences
-are fields of `JuliaIR.Dialect`:
+The pass follows the C++ pass of the running Julia's version. The differences between
+versions are fields of `JuliaIR.Dialect`:
 
 | Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
 |-----------|------|------|------|------|--------|
@@ -73,8 +73,8 @@ for Julia 1.12's transitions), and where that state keeps the safepoint page
 (`tls_safepoint`) and the GC state (`tls_gc_state`). The pass takes them from the
 running Julia (see [Runtime facts](runtime.md)), only for functions that need them (the
 GPU cleanup never does), or from the pass options of the same names (`task-ptls=168`,
-...), which IR of another Julia version needs. Like the C++ pass, which compiles them in,
-it uses them whatever the module's target is.
+...), which override them. Like the C++ pass, which compiles them in, it uses them
+whatever the module's target is.
 
 ## The GPU cleanup: `jl-late-gc-cleanup`
 
@@ -90,7 +90,7 @@ skips (thunks) are checked too.
 
 ### Input contract
 
-The input is a function in the IR dialect of the `julia` version, after the back-end's
+The input is a function in the IR dialect of the running Julia, after the back-end's
 own GC lowering (GPUCompiler's `GPULowerGCFrame` and `GPULowerPTLS`). The function must
 not contain:
 
@@ -185,13 +185,7 @@ Fixes and features of later Julia versions that are applied to the IR of every v
 (none of them changes the output on IR that the older C++ pass handles):
 
 - Julia master: extractelements of tracked or derived pointers at a dynamic index are
-  lifted (the C++ pass of 1.13 and older crashes); calls marked `julia.safepoint` are
-  safepoints whatever their memory effects claim, and their memory effects are dropped
-  (with LLVM 15, the attributes that LLVM 16 replaced by `memory`);
-  `julia.blackbox` is lowered; thunks are skipped; `julia.gc_alloc_obj` calls with
-  `julia.gc_alloc_ptr_offsets` or `julia.gc_alloc_zeroinit` bundles initialize the new
-  object, and keep `julia.reset_region` metadata; `julia.gc_alloc_zeroinit_indirect`
-  bundles are discharged.
+  lifted (the C++ pass of 1.13 and older crashes).
 - Julia 1.13: allocas that rooted pointers are stored to are found through selects and
   phis, as are the allocas of returned roots, and a trampoline that forwards its own
   `sret` argument is accepted (1.12 and older handle direct allocas only, and crash
@@ -204,6 +198,14 @@ Fixes and features of later Julia versions that are applied to the IR of every v
 - Julia 1.11: aggregates that contain pointers in address space 13 are recognized as
   loaded values, and selects and phis of aggregates of derived pointers are lifted (1.10
   only handles vectors).
+
+The pass also handles, on the IR of every version, constructs that only Julia master
+emits, so older versions' IR doesn't contain them: calls marked `julia.safepoint` are
+safepoints whatever their memory effects claim, and their memory effects are dropped
+(with LLVM 15, the attributes that LLVM 16 replaced by `memory`); `julia.blackbox` is
+lowered; thunks are skipped; `julia.gc_alloc_obj` calls with `julia.gc_alloc_ptr_offsets`
+or `julia.gc_alloc_zeroinit` bundles initialize the new object, and keep
+`julia.reset_region` metadata; `julia.gc_alloc_zeroinit_indirect` bundles are discharged.
 
 What depends on the LLVM library rather than on the Julia version follows the library:
 the position of the pass-through operand of `llvm.masked.load` and `llvm.masked.gather`

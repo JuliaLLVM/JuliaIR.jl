@@ -5,22 +5,22 @@
 ; The runtime facts are given as pass options (x86-64 Linux's values), so that the output
 ; doesn't depend on the running Julia.
 ; RUN: split-file %s %t
-; RUN: opt -julia=1.10 -passes='function(LateLowerGCFrame<task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V110
-; RUN: opt -julia=1.11 -passes='function(LateLowerGCFrame<task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V111
-; RUN: opt -julia=1.12 -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V112
-; RUN: opt -julia=1.13 -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V113
-; RUN: opt -julia=1.14.0-DEV -passes='function(LateLowerGCFrame<task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V114
+; RUN: %if julia-1.10 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V110 %}
+; RUN: %if julia-1.11 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V111 %}
+; RUN: %if julia-1.12 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V112 %}
+; RUN: %if julia-1.13 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V113 %}
+; RUN: %if julia-1.14 %{ opt -passes='function(LateLowerGCFrame<task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>)' -S %t/lowering.ll | FileCheck %t/lowering.ll --check-prefixes=CHECK,V114 %}
 
 ; the facts serve any target: the running Julia's (like the C++ pass, which compiles in
-; its own) and explicit ones
+; its own) and explicit ones (in bytes from Julia 1.12 on)
 ; RUN: opt -passes='function(LateLowerGCFrame)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=NATIVE
-; RUN: opt -julia=1.12 -passes='function(LateLowerGCFrame<task-ptls=100>)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=OPTION
-; RUN: opt -julia=1.12 -passes='function(LateLowerGCFrame<task-ptls=124>)' -S %t/i686.ll | FileCheck %t/i686.ll
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(LateLowerGCFrame<task-ptls=100>)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=OPTION %}
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(LateLowerGCFrame<task-ptls=124>)' -S %t/i686.ll | FileCheck %t/i686.ll %}
 
 ; jlopt maps Julia's name to the port
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.13 -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll -o /dev/null
-; RUN: grep -c 'pass	jl-late-lower-gc-frame	julia=1.13.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='function(LateLowerGCFrame<task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>)' -S %t/lowering.ll -o /dev/null
+; RUN: grep -c 'pass	jl-late-lower-gc-frame	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 7
 
 ;--- lowering.ll

@@ -2060,10 +2060,8 @@ alloc_size_attr(elem_size_arg::Integer) =
 # the attributes of allocation functions (`addGCAllocAttributes`)
 function add_gc_alloc_attributes!(p::LateLowerGCFrame, f::LLVM.Function)
     if p.dialect.gc_alloc_bytes_tag
-        # the C++ only adds memory effects when built with LLVM 16 or later
-        LLVM.version() >= v"16" &&
-            push!(f.function_attributes,
-                  EnumAttribute(MemoryEffects(argmem=:read, inaccessiblemem=:readwrite)))
+        push!(f.function_attributes,
+              EnumAttribute(MemoryEffects(argmem=:read, inaccessiblemem=:readwrite)))
         push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc
         push!(f.function_attributes, EnumAttribute("willreturn"))
         push!(f.function_attributes, EnumAttribute("nounwind"))
@@ -3148,8 +3146,8 @@ const LATE_LOWER_GC_FRAME = define_pass("jl-late-lower-gc-frame", :function,
                                         cpp_name="LateLowerGCFrame")
 
 """
-    JuliaIR.LateLowerGCFramePass(; julia=VERSION, gc_barrier=:stock, task_gcstack=0,
-                                 task_ptls=0, tls_safepoint=0, tls_gc_state=0)
+    JuliaIR.LateLowerGCFramePass(; gc_barrier=:stock, task_gcstack=0, task_ptls=0,
+                                 tls_safepoint=0, tls_gc_state=0)
 
 Julia's GC root placement (`jl-late-lower-gc-frame` in a pipeline, `LateLowerGCFrame`
 in Julia's pipelines): roots the values in Julia's tracked address spaces that are live

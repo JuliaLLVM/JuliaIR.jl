@@ -43,7 +43,7 @@ function ReplacementBuilder(builder::IRBuilder, modify::Instruction)
     position!(builder, LLVM.before(modify))
     builder.debug_location = modify.debug_location
     md = modify.metadata
-    mmra = LLVM.version() >= v"19" && haskey(md, "mmra") ? md["mmra"] : nothing
+    mmra = haskey(md, "mmra") ? md["mmra"] : nothing
     pcsections = haskey(md, "pcsections") ? md["pcsections"] : nothing
     f = modify.parent.parent
     strictfp = haskey(f.function_attributes, :strictfp)
@@ -121,11 +121,9 @@ function rmw_intrinsic(f::LLVM.Function)
     for (name, op) in RMW_INTRINSICS
         LLVM.isintrinsic(f, Intrinsic(name)) && return op
     end
-    # `atomicrmw usub_sat` exists since LLVM 20; the C API of older versions doesn't
-    # define it
-    if LLVM.version() >= v"20" && LLVM.isintrinsic(f, Intrinsic("llvm.usub.sat"))
-        return getfield(API, :LLVMAtomicRMWBinOpUSubSat)
-    end
+    # `atomicrmw usub_sat` exists since LLVM 20 (Julia 1.13's, the first dialect with
+    # these calls); the API of older versions doesn't define it
+    LLVM.isintrinsic(f, Intrinsic("llvm.usub.sat")) && return API.LLVMAtomicRMWBinOpUSubSat
     return nothing
 end
 
@@ -504,17 +502,17 @@ const EXPAND_ATOMIC_MODIFY = define_pass("jl-expand-atomic-modify", :function,
                                          cpp_name="ExpandAtomicModify")
 
 """
-    JuliaIR.ExpandAtomicModifyPass(; julia=VERSION)
+    JuliaIR.ExpandAtomicModifyPass()
 
 Lower the `julia.atomicmodify.*` calls that Julia emits for `@atomic` modify operations
 (`jl-expand-atomic-modify` in a pipeline). Such a call atomically replaces the value at a
 pointer by the result of a function of the old value, and returns the old and the new
 value. When that function is a single operation that `atomicrmw` supports (integer and
 floating-point addition and subtraction, bitwise operations, minimum and maximum,
-saturating subtraction on LLVM 20 and later, or exchange when it ignores the old value),
-it is inlined and turned into that `atomicrmw`, also when it reaches the operation
-through up to three calls that pass the old value on; otherwise the call to the function
-is wrapped in a compare-exchange loop.
+saturating subtraction, or exchange when it ignores the old value), it is inlined and
+turned into that `atomicrmw`, also when it reaches the operation through up to three
+calls that pass the old value on; otherwise the call to the function is wrapped in a
+compare-exchange loop.
 
 Julia 1.13 introduced these calls, so the pass does nothing for the IR of earlier
 versions. Like Julia's C++ pass, it is skipped on `optnone` functions.

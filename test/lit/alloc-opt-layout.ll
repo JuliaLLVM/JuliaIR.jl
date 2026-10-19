@@ -2,7 +2,8 @@
 ; that width, and a byte array otherwise. Non-integral address spaces (`ni:`) are not
 ; native integer widths (`n8:...`).
 
-; RUN: opt -julia=1.11 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s
+; REQUIRES: julia-1.10 || julia-1.11
+; RUN: opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s
 
 target datalayout = "e-ni:10:11:12:13"
 

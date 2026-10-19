@@ -4,15 +4,16 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
 @testset "registration" begin
 
 @testset "option parsing" begin
-    opts = parse_options("julia=1.12;fp16=demote")
-    @test opts.dialect == Dialect(v"1.12"; fp16=:demote)
+    # the dialect is the running Julia's, with the policies of the options
+    opts = parse_options("fp16=demote")
+    @test opts.dialect == Dialect(VERSION; fp16=:demote)
+    @test opts.dialect.julia == VERSION
     @test opts.extra == (;)
 
     # defaults
     @test parse_options("").dialect == Dialect(VERSION)
-    @test parse_options(""; julia=v"1.11").dialect == Dialect(v"1.11")
-    @test parse_options("julia=1.13"; julia=v"1.11").dialect == Dialect(v"1.13")
-    @test parse_options("julia=1.15").dialect == Dialect(v"1.14.0-DEV")
+    @test parse_options(""; fp16=:keep).dialect == Dialect(VERSION; fp16=:keep)
+    @test parse_options("fp16=demote"; fp16=:keep).dialect.fp16 === :demote
     @test parse_options("gc-barrier=field-precise").dialect.gc_barrier === :field_precise
 
     # pass-specific options
@@ -26,38 +27,38 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
     let extra = (; size=0, name="")
         @test parse_options("size=264;name=__sigsetjmp"; extra).extra ==
               (; size=264, name="__sigsetjmp")
-        @test options_string(parse_options("julia=1.12.0;size=8;name=a_b-c"; extra)) ==
-              "julia=1.12.0;size=8;name=a_b-c"
+        @test options_string(parse_options("size=8;name=a_b-c"; extra)) == "size=8;name=a_b-c"
         @test_throws "non-negative integer" parse_options("size=x"; extra)
         @test_throws "non-negative integer" parse_options("size=-1"; extra)
         @test_throws "requires a value" parse_options("name"; extra)
     end
 
     # round trip
-    for str in ["julia=1.12.0", "julia=1.14.0-DEV.3782;fp16=demote",
-                "julia=1.11.9;fp16=keep;bf16=demote",
-                "julia=1.10.12;gc-barrier=snapshot-field-precise"]
+    for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
+                "gc-barrier=snapshot-field-precise"]
         @test options_string(parse_options(str)) == str
         @test parse_options(options_string(parse_options(str))) == parse_options(str)
     end
-    let opts = parse_options("julia=1.12.0;fp16=keep;strong;mode=slow"; extra)
-        @test options_string(opts) == "julia=1.12.0;fp16=keep;strong;mode=slow"
+    @test options_string(parse_options(""; extra)) == "no-strong;mode=fast"
+    let opts = parse_options("fp16=keep;strong;mode=slow"; extra)
+        @test options_string(opts) == "fp16=keep;strong;mode=slow"
         @test parse_options(options_string(opts); extra) == opts
     end
 
     # rejections
     @test_throws "unknown option frobnicate" parse_options("frobnicate")
     @test_throws "unknown option strong" parse_options("strong")
-    @test_throws "more than once" parse_options("julia=1.11;julia=1.12")
+    # the dialect isn't an option: it is the running Julia's
+    @test_throws "unknown option julia; expected one of fp16, bf16, gc-barrier" parse_options("julia=1.12")
+    @test_throws "unknown option julia" parse_options("julia")
+    @test_throws "more than once" parse_options("fp16=keep;fp16=demote")
     @test_throws "more than once" parse_options("strong;no-strong"; extra)
     @test_throws "more than once" parse_options("foo-bar;no-foo_bar"; extra=(; foo_bar=false))
-    @test_throws "requires a version" parse_options("julia")
-    @test_throws "not supported" parse_options("julia=1.9")
-    @test_throws "invalid Julia version" parse_options("julia=latest")
     @test_throws "invalid fp16 policy" parse_options("fp16=maybe")
     @test_throws "invalid bf16 policy" parse_options("bf16=maybe")
     @test_throws "requires a value" parse_options("bf16")
     @test parse_options(""; bf16=:keep).dialect == Dialect(VERSION; bf16=:keep)
+    @test_throws "invalid fp16 policy" parse_options(""; fp16=:maybe)
 end
 
 # a pass that records what it was called with, without being registered globally
@@ -78,28 +79,29 @@ test_ir = """
         mod.name = "test"
 
         empty!(calls)
-        run!(JuliaIR.custom_pass(test_pass; julia=v"1.11"), mod)
-        @test calls == [("test", PassOptions(Dialect(v"1.11"), (; strong=false)))]
+        run!(JuliaIR.custom_pass(test_pass), mod)
+        @test calls == [("test", PassOptions(Dialect(VERSION), (; strong=false)))]
 
         # options in the pipeline override the defaults of the pass
         empty!(calls)
         @dispose pb=PassBuilder() begin
-            LLVM.register!(pb, JuliaIR.custom_pass(test_pass; julia=v"1.11", strong=true))
-            add!(pb, "jl-test<julia=1.13;fp16=keep>,jl-test<no-strong>")
+            LLVM.register!(pb, JuliaIR.custom_pass(test_pass; bf16=:demote, strong=true))
+            add!(pb, "jl-test<fp16=keep>,jl-test<no-strong;bf16=keep>")
             run!(pb, mod)
         end
-        @test calls == [("test", PassOptions(Dialect(v"1.13"; fp16=:keep), (; strong=true))),
-                        ("test", PassOptions(Dialect(v"1.11"), (; strong=false)))]
+        @test calls == [("test", PassOptions(Dialect(VERSION; fp16=:keep, bf16=:demote), (; strong=true))),
+                        ("test", PassOptions(Dialect(VERSION; bf16=:keep), (; strong=false)))]
 
         # invalid option text in a pipeline
         @dispose pb=PassBuilder() begin
             LLVM.register!(pb, JuliaIR.custom_pass(test_pass))
-            add!(pb, "jl-test<julia=1.9>")
+            add!(pb, "jl-test<julia=1.12>")
             @test_throws PassException run!(pb, mod)
         end
 
         # invalid defaults are reported when the pass is created
-        @test_throws "not supported" JuliaIR.custom_pass(test_pass; julia=v"1.9")
+        @test_throws "invalid fp16 policy" JuliaIR.custom_pass(test_pass; fp16=:maybe)
+        @test_throws "unknown option julia" JuliaIR.custom_pass(test_pass; julia=v"1.12")
         @test_throws "unknown option" JuliaIR.custom_pass(test_pass; frobnicate=true)
         @test_throws "must be a Bool" JuliaIR.custom_pass(test_pass; strong=:no)
     end
@@ -147,16 +149,15 @@ end
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, test_ir) begin
                 # off
                 JuliaIR.LEDGER[] = ""
-                run!(JuliaIR.custom_pass(test_pass; julia=v"1.12"), mod)
+                run!(JuliaIR.custom_pass(test_pass), mod)
                 @test isempty(read(path, String))
 
                 # on
                 JuliaIR.LEDGER[] = path
-                run!(JuliaIR.custom_pass(test_pass; julia=v"1.12"), mod)
-                run!(JuliaIR.custom_pass(test_pass; julia=v"1.13"), mod)
-                lines = readlines(path)
-                @test lines == ["$(getpid())\tpass\tjl-test\tjulia=1.12.0\tllvm=$(LLVM.version())",
-                                "$(getpid())\tpass\tjl-test\tjulia=1.13.0\tllvm=$(LLVM.version())"]
+                run!(JuliaIR.custom_pass(test_pass), mod)
+                run!(JuliaIR.custom_pass(test_pass; fp16=:keep), mod)
+                line = "$(getpid())\tpass\tjl-test\tjulia=$VERSION\tllvm=$(LLVM.version())"
+                @test readlines(path) == [line, line]
             end
         end
     finally
@@ -180,7 +181,7 @@ end
     @test JuliaIR.passes() isa Vector{String}
     @test all(startswith("jl-"), JuliaIR.passes())
     @dispose pb=PassBuilder() begin
-        @test JuliaIR.register!(pb; julia=v"1.12") === pb
+        @test JuliaIR.register!(pb; fp16=:keep) === pb
         @test length(pb.custom_passes) == length(JuliaIR.passes())
     end
 end

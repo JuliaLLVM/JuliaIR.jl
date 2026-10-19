@@ -157,7 +157,7 @@ const DEMOTE_FLOAT16 = define_pass("jl-demote-float16", :function, demote_float1
                                    required=true, cpp_name="DemoteFloat16")
 
 """
-    JuliaIR.DemoteFloat16Pass(; julia=VERSION, fp16=:auto, bf16=:auto)
+    JuliaIR.DemoteFloat16Pass(; fp16=:auto, bf16=:auto)
 
 Perform floating-point arithmetic on `half` (`fp16`) and `bfloat` (`bf16`) values in
 `float`, truncating every result, so that the IEEE semantics of the 16-bit types are
@@ -169,7 +169,7 @@ attributes (1.12 and later; without them, `half` is demoted only on PowerPC and 
 is kept). Operations with all fast-math flags are left alone.
 
 Meant to run late in the pipeline, not followed by `instcombine` (which would fold the
-conversions away); `gvn` can clean up redundant conversions. Unlike Julia's C++ pass,
-it is not skipped on `optnone` functions, since it affects their semantics.
+conversions away); `gvn` can clean up redundant conversions. Like Julia's C++ pass, it
+is required, so it also runs on `optnone` functions, whose semantics it affects.
 """
 DemoteFloat16Pass(; kwargs...) = custom_pass(DEMOTE_FLOAT16; kwargs...)

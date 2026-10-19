@@ -43,7 +43,7 @@ const COMBINE_MULADD = define_pass("jl-combine-muladd", :function, combine_mulad
                                    required=false, cpp_name="CombineMulAdd")
 
 """
-    JuliaIR.CombineMulAddPass(; julia=VERSION)
+    JuliaIR.CombineMulAddPass()
 
 Allow the back-end to fuse a multiplication and the addition or subtraction it feeds into
 a multiply-add (`jl-combine-muladd` in a pipeline): when an `fadd` or `fsub` has the

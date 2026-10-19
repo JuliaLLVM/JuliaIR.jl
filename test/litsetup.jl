@@ -3,6 +3,7 @@
 
 using LLVM_utils_unified_jll
 using LLVM: LLVM
+using JuliaIR: JuliaIR
 
 const JULIAIR_DIR = dirname(@__DIR__)
 
@@ -38,6 +39,29 @@ function jlopt_bindir(dir::String; kwargs...)
     return dir
 end
 
+lit_minor(v::VersionNumber) = "$(v.major).$(v.minor)"
+
+# The lit features of the Julia versions that `test/lit` can name (`julia-1.12`,
+# `julia-ge-1.12`). A misspelled or unknown one would silently skip the RUN lines it gates.
+const LIT_JULIA_FEATURES = Set(["julia-$prefix$(lit_minor(v))" for v in JuliaIR.KNOWN_MINORS
+                                for prefix in ("", "ge-")])
+
+# the `julia-*` features named in lit test files that aren't known, as `file:line: feature`
+function unknown_julia_features(dir::String)
+    unknown = String[]
+    for file in sort(readdir(dir; join=true))
+        endswith(file, ".ll") || continue
+        for (i, line) in enumerate(eachline(file))
+            occursin(r"\b(RUN|REQUIRES|UNSUPPORTED|XFAIL)\b", line) || continue
+            for m in eachmatch(r"(?<![\w.-])julia-[\w.-]*", line)
+                m.match in LIT_JULIA_FEATURES ||
+                    push!(unknown, "$(basename(file)):$i: $(m.match)")
+            end
+        end
+    end
+    return unknown
+end
+
 function lit_params(; exec_root::String, bindir::String)
     tools = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools")
     return Dict(
@@ -52,6 +76,10 @@ function lit_params(; exec_root::String, bindir::String)
         # the library's targets differ per platform (macOS lacks X86, for one)
         "targets" => join(lowercase.(string.(LLVM.backends())), ","),
         "llvm_major" => string(LLVM.version().major),
+        # the passes process the running Julia's IR: its dialect's minor version, and the
+        # known ones
+        "julia_minor" => lit_minor(JuliaIR.Dialect(VERSION).minor),
+        "julia_minors" => join(lit_minor.(JuliaIR.KNOWN_MINORS), ","),
         # for lit's internal shell on Windows, with forward slashes (which Windows accepts,
         # and lit's lexer does not take for escapes)
         "jlopt_cmd" => join(map(arg -> "\"" * replace(arg, '\\' => '/') * "\"",

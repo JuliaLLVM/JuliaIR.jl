@@ -2,25 +2,22 @@
 ; GC frame, as GPU back-ends have them after their own GC lowering.
 
 ; RUN: split-file %s %t
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/rewrites.ll | FileCheck %t/rewrites.ll --check-prefixes=CHECK,V111
-; RUN: opt -julia=1.11 -passes='function(jl-late-gc-cleanup)' -S %t/rewrites.ll | FileCheck %t/rewrites.ll --check-prefixes=CHECK,V111
-; RUN: opt -julia=1.10 -passes='function(jl-late-gc-cleanup)' -S %t/rewrites.ll | FileCheck %t/rewrites.ll --check-prefixes=CHECK,V110
+; RUN: opt -passes='function(jl-late-gc-cleanup)' -S %t/rewrites.ll | FileCheck %t/rewrites.ll --check-prefixes=CHECK,%if julia-1.10 %{V110%} %else %{V111%}
 
 ; the TBAA types whose tags are made mutable depend on the Julia version
-; RUN: opt -julia=1.10 -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V110
-; RUN: opt -julia=1.11 -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V111
-; RUN: opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V111
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V114
+; RUN: %if julia-1.10 %{ opt -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V110 %}
+; RUN: %if julia-1.11 || julia-1.12 || julia-1.13 %{ opt -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V111 %}
+; RUN: %if julia-1.14 %{ opt -passes='function(jl-late-gc-cleanup)' -S %t/tbaa.ll | FileCheck %t/tbaa.ll --check-prefix=V114 %}
 
 ; what needs Julia's runtime or a GC frame is rejected, without changing the function
-; RUN: not opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/unsupported.ll 2>&1 | FileCheck %t/unsupported.ll --check-prefix=V113
-; RUN: not opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/unsupported.ll 2>&1 | FileCheck %t/unsupported.ll --check-prefix=V114
-; RUN: opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/supported.ll | FileCheck %t/supported.ll
-; RUN: not opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/unsupported-calls.ll 2>&1 | FileCheck %t/unsupported-calls.ll
+; RUN: %if julia-1.13 %{ not opt -passes='function(jl-late-gc-cleanup)' -S %t/unsupported.ll 2>&1 | FileCheck %t/unsupported.ll --check-prefix=V113 %}
+; RUN: %if julia-1.14 %{ not opt -passes='function(jl-late-gc-cleanup)' -S %t/unsupported.ll 2>&1 | FileCheck %t/unsupported.ll --check-prefix=V114 %}
+; RUN: opt -passes='function(jl-late-gc-cleanup)' -S %t/supported.ll | FileCheck %t/supported.ll
+; RUN: %if julia-1.14 %{ not opt -passes='function(jl-late-gc-cleanup)' -S %t/unsupported-calls.ll 2>&1 | FileCheck %t/unsupported-calls.ll %}
 ; a GC stack needs a GC frame as soon as values must be rooted, also when it is not used
-; RUN: not opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/unused-gcstack.ll 2>&1 | FileCheck %t/unused-gcstack.ll
-; RUN: not opt -julia=1.13 -passes='function(jl-late-gc-cleanup)' -S %t/frame-intrinsics.ll 2>&1 | FileCheck %t/frame-intrinsics.ll
-; RUN: not opt -julia=1.14.0-DEV -passes='function(jl-late-gc-cleanup)' -S %t/thunk.ll 2>&1 | FileCheck %t/thunk.ll
+; RUN: not opt -passes='function(jl-late-gc-cleanup)' -S %t/unused-gcstack.ll 2>&1 | FileCheck %t/unused-gcstack.ll
+; RUN: not opt -passes='function(jl-late-gc-cleanup)' -S %t/frame-intrinsics.ll 2>&1 | FileCheck %t/frame-intrinsics.ll
+; RUN: not opt -passes='function(jl-late-gc-cleanup)' -S %t/thunk.ll 2>&1 | FileCheck %t/thunk.ll
 
 ; Without the cleanup, a load of constant data through a by-pointer argument, inlined
 ; into a caller that passes a stack slot, is folded to undef (JuliaLang/julia#44285).
@@ -30,8 +27,8 @@
 
 ; the port ran, and on optnone functions too
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.12 -passes='function(jl-late-gc-cleanup)' -S %t/supported.ll -o /dev/null
-; RUN: grep -c 'pass	jl-late-gc-cleanup	julia=1.12.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes='function(jl-late-gc-cleanup)' -S %t/supported.ll -o /dev/null
+; RUN: grep -c 'pass	jl-late-gc-cleanup	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 3
 
 ;--- rewrites.ll

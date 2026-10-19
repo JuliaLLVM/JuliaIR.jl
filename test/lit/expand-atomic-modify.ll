@@ -2,14 +2,14 @@
 ; `atomicrmw` when the modify function is a single operation that `atomicrmw` supports,
 ; and otherwise into a compare-exchange loop around a call of the function.
 
-; REQUIRES: llvm-ge-20
-; RUN: opt -julia=1.13 -passes=ExpandAtomicModify -S %s | FileCheck %s
-; RUN: opt -passes='function(jl-expand-atomic-modify<julia=1.14.0-DEV>)' -S %s | FileCheck %s
+; REQUIRES: julia-ge-1.13
+; RUN: opt -passes=ExpandAtomicModify -S %s | FileCheck %s
+; RUN: opt -passes='function(jl-expand-atomic-modify)' -S %s | FileCheck %s
 
 ; the port ran on every function but the optnone one (it is not required)
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -julia=1.13 -passes=ExpandAtomicModify -S %s -o /dev/null
-; RUN: grep -c 'pass	jl-expand-atomic-modify	julia=1.13.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=ExpandAtomicModify -S %s -o /dev/null
+; RUN: grep -c 'pass	jl-expand-atomic-modify	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 95
 
 declare {i8, i8} @julia.atomicmodify.i8(ptr, ptr, i8, i8, ...)

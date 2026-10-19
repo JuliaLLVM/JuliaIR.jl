@@ -35,7 +35,6 @@ for var, value in os.environ.items():
         config.environment[var] = value
 # JuliaIR's ledger is opted into per RUN line (`env JULIAIR_LEDGER=%t.ledger opt ...`)
 config.environment.pop('JULIAIR_LEDGER', None)
-config.environment.pop('JULIAIR_JULIA', None)
 config.environment.pop('JULIAIR_MAP_PASSES', None)
 
 if platform.machine() in ('x86_64', 'AMD64'):
@@ -54,3 +53,15 @@ for target in params['targets'].split(','):
 # the version of LLVM, for `REQUIRES: llvm-ge-20` (at least LLVM 20)
 for major in range(15, int(params['llvm_major']) + 1):
     config.available_features.add('llvm-ge-%d' % major)
+
+# the Julia version, by the minor version of its dialect (a nightly newer than the known
+# versions has the newest one's), for `REQUIRES: julia-1.13` or `%if julia-1.12 %{ ... %}`;
+# `julia-ge-1.12` for 1.12 or later
+def minor_tuple(minor):
+    return tuple(int(part) for part in minor.split('.'))
+
+julia_minor = params['julia_minor']
+config.available_features.add('julia-' + julia_minor)
+for minor in params['julia_minors'].split(','):
+    if minor_tuple(minor) <= minor_tuple(julia_minor):
+        config.available_features.add('julia-ge-' + minor)

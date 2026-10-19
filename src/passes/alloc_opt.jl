@@ -955,7 +955,7 @@ const ALLOC_OPT = define_pass("jl-alloc-opt", :function, alloc_opt!; required=fa
                               cpp_name="AllocOpt")
 
 """
-    JuliaIR.AllocOptPass(; julia=VERSION)
+    JuliaIR.AllocOptPass()
 
 Remove Julia GC allocations whose object does not escape, or move them to the stack,
 whole or split into their fields (`jl-alloc-opt` in a pipeline).

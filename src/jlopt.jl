@@ -92,7 +92,6 @@ Base.@kwdef mutable struct JloptOptions
     output::String = "-"
     input::Union{Nothing,String} = nothing
     triple::Union{Nothing,String} = nothing
-    julia::VersionNumber = VERSION
     map_passes::Bool = true
     llvm_options::Vector{String} = String[]
 end
@@ -109,8 +108,6 @@ const JLOPT_USAGE = """
       -S                        write textual IR instead of bitcode
       -o FILE                   write the output to FILE (default: stdout)
       -mtriple=TRIPLE           override the module's target triple
-      -julia=VERSION            the Julia dialect of the input for JuliaIR's passes
-                                (default: \$JULIAIR_JULIA, or the running Julia's version)
       -map-julia-passes=0       don't replace Julia's C++ passes by the ports (default:
                                 \$JULIAIR_MAP_PASSES, or 1)
       -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
@@ -123,15 +120,13 @@ const JLOPT_USAGE = """
                                 accepted and ignored: Julia's passes are always available
                                 when running on Julia's LLVM
 
-    Passes that need facts about the Julia runtime (e.g. the size of an exception handler)
-    take the running Julia's unless the pipeline gives them.
+    JuliaIR's passes process IR of the running Julia's version. Passes that need facts
+    about the Julia runtime (e.g. the size of an exception handler) take the running
+    Julia's unless the pipeline gives them.
     """
 
 function parse_jlopt_args(args::Vector{String})
     opts = JloptOptions()
-    opts.julia = let v = get(ENV, "JULIAIR_JULIA", "")
-        isempty(v) ? VERSION : parse_julia_version(v)
-    end
     opts.map_passes = get(ENV, "JULIAIR_MAP_PASSES", "1") != "0"
     i = 1
     # the next argument, as the value of option `arg`
@@ -156,8 +151,6 @@ function parse_jlopt_args(args::Vector{String})
             opts.output = m[1]
         elseif (m = match(r"^--?mtriple=(.*)$", arg)) !== nothing
             opts.triple = m[1]
-        elseif (m = match(r"^--?julia=(.*)$", arg)) !== nothing
-            opts.julia = parse_julia_version(m[1])
         elseif (m = match(r"^--?map-julia-passes=([01])$", arg)) !== nothing
             opts.map_passes = m[1] == "1"
         elseif occursin(LLVM_OPTIONS, arg)
@@ -247,7 +240,7 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
             tm = target_machine(mod)
             try
                 @dispose pb=PassBuilder() begin
-                    register!(pb; julia=opts.julia)
+                    register!(pb)
                     add!(pb, pipeline)
                     run!(pb, mod, tm)
                 end

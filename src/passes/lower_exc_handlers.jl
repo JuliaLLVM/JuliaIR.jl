@@ -246,8 +246,8 @@ const LOWER_EXC_HANDLERS =
                 cpp_name="LowerExcHandlers")
 
 """
-    JuliaIR.LowerExcHandlersPass(; julia=VERSION, handler_size=0, handler_align=0,
-                                 setjmp="", setjmp_savemask=:auto)
+    JuliaIR.LowerExcHandlersPass(; handler_size=0, handler_align=0, setjmp="",
+                                 setjmp_savemask=:auto)
 
 Lower Julia's exception handlers (`julia.except_enter` and the matching
 `jl_pop_handler` calls) to calls of the runtime's `jl_enter_handler` and `setjmp` on

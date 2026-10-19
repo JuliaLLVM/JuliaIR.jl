@@ -2,7 +2,7 @@
 # depend on and that changed between Julia versions.
 
 # Julia minor versions whose dialect is known. The last one is the development version,
-# whose dialect is the one of the master commit pinned in test/upstream/manifest.toml.
+# whose dialect is the one of current Julia master (as tested with the nightly build).
 const KNOWN_MINORS = (v"1.10", v"1.11", v"1.12", v"1.13", v"1.14")
 const DEVELOPMENT_MINOR = last(KNOWN_MINORS)
 
@@ -16,18 +16,16 @@ const FP16_POLICIES = (:auto, :keep, :demote)
 
 """
     JuliaIR.Dialect(julia::VersionNumber; fp16=:auto, bf16=:auto, gc_barrier=:stock)
-    JuliaIR.Dialect(julia::AbstractString; ...)
 
-The IR dialect emitted by Julia version `julia`, which every pass of this package takes
-as its `julia` option. Every Julia version from 1.10 up to the development version this
-package knows about has one; a prerelease like `v"1.13.0-DEV.123"` has the dialect
-of the release it precedes, and the development version has the dialect of the Julia
-master commit this package is tested against. Newer versions get the development
-version's dialect: a new minor version starts out emitting the same IR as its
-predecessor, and only diverges as changes land on master.
+The IR dialect emitted by Julia version `julia`. The passes process the IR of the running
+Julia, so they use `Dialect(VERSION)`, with the policies of their options; constructing
+the dialect of another version is useful to inspect how the versions differ.
 
-The passes process the IR of the running Julia, whose dialect is the default; the
-dialects of other Julia versions exist for testing the passes on any Julia.
+Every Julia version from 1.10 up to the development version this package knows about has
+a dialect; a prerelease like `v"1.13.0-DEV.123"` has the dialect of the release it
+precedes, and the development version has the dialect of current Julia master. Newer
+versions get the development version's dialect: a new minor version starts out emitting
+the same IR as its predecessor, and only diverges as changes land on master.
 
 The dialect only describes Julia's IR. What depends on the version of LLVM (e.g., the
 signature of the lifetime intrinsics) is determined by the library the passes run on,
@@ -116,12 +114,6 @@ struct Dialect
     is not `true`; without these attributes, `half` on PowerPC only and never `bfloat`;
     1.12 and later)."
     fp16_rule::Symbol
-
-    # PropagateJuliaAddrspaces
-    "The address space PropagateJuliaAddrspaces rewrites to. Always `:common_leaf` (the
-    common address space of the leaves, as on Julia master); kept for the record since
-    Julia 1.13 and older used the alloca address space."
-    propagate_addrspaces_target::Symbol
 
     # LateLowerGCFrame
     "Which loads LateLowerGCFrame refines to the object they load from (rooted by it):
@@ -255,7 +247,6 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.12",                      # simdloop_check_combine
                    minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
-                   :common_leaf,
                    development ? :regions : :tbaa,        # gc_rooted_loads
                    gc_immutable_tbaa,
                    minor <= v"1.12",                      # gc_frame_ref_refinement
@@ -276,14 +267,6 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
                    minor >= v"1.12",                      # gc_declare_small_alloc
                    fp16, bf16, gc_barrier)
-end
-
-Dialect(julia::AbstractString; kwargs...) = Dialect(parse_julia_version(julia); kwargs...)
-
-function parse_julia_version(str::AbstractString)
-    v = tryparse(VersionNumber, str)
-    v === nothing && throw(ArgumentError("invalid Julia version \"$str\""))
-    return v
 end
 
 # the known minor version whose dialect a Julia version has
@@ -311,11 +294,11 @@ function Base.show(io::IO, d::Dialect)
     print(io, ")")
 end
 
-# the dialect as option text, e.g. `julia=1.12;fp16=demote`
+# the policies of a dialect as option text, e.g. `fp16=demote;gc-barrier=snapshot`
 function options_string(d::Dialect)
-    str = "julia=$(d.julia)"
-    d.fp16 === :auto || (str *= ";fp16=$(d.fp16)")
-    d.bf16 === :auto || (str *= ";bf16=$(d.bf16)")
-    d.gc_barrier === :stock || (str *= ";gc-barrier=$(replace(string(d.gc_barrier), '_' => '-'))")
-    return str
+    parts = String[]
+    d.fp16 === :auto || push!(parts, "fp16=$(d.fp16)")
+    d.bf16 === :auto || push!(parts, "bf16=$(d.bf16)")
+    d.gc_barrier === :stock || push!(parts, "gc-barrier=$(replace(string(d.gc_barrier), '_' => '-'))")
+    return join(parts, ";")
 end

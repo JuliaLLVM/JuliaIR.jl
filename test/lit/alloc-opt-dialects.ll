@@ -2,10 +2,9 @@
 ; which changed between Julia versions (see `alloc_layout` and `alloc_initialization`).
 ; The lifetime markers lost their size argument in LLVM 22.
 
-; RUN: opt -julia=1.10 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V110,LEGACY
-; RUN: opt -julia=1.11 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V111,LEGACY
-; RUN: opt -julia=1.12 -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V112,CHUNKED
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V112,CHUNKED
+; RUN: %if julia-1.10 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V110,LEGACY %}
+; RUN: %if julia-1.11 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V111,LEGACY %}
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(jl-alloc-opt)' -S %s | FileCheck %s --check-prefixes=CHECK,V112,CHUNKED %}
 
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
 

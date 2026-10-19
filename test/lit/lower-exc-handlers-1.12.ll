@@ -4,13 +4,13 @@
 ; one, and a Windows one, whose triple drops setjmp's savemask argument. The lifetime
 ; markers lost their size argument in LLVM 22.
 
-; RUN: opt -julia=1.12 -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=__sigsetjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,UNIX
-; RUN: opt -julia=1.12 -mtriple=x86_64-w64-windows-gnu -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS
+; REQUIRES: julia-ge-1.12
+; RUN: %if julia-1.12 %{ opt -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=__sigsetjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,UNIX %}
+; RUN: %if julia-1.12 %{ opt -mtriple=x86_64-w64-windows-gnu -passes='function(jl-lower-exc-handlers<handler-size=264;handler-align=16;setjmp=jl_setjmp>)' -S %s | FileCheck %s --check-prefixes=CHECK,WINDOWS %}
 
 ; Julia 1.13 and later have no LowerExcHandlers: nothing changes, and no runtime facts
 ; are needed
-; RUN: opt -julia=1.13 -passes='function(jl-lower-exc-handlers)' -S %s | FileCheck %s --check-prefix=NOOP
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-lower-exc-handlers)' -S %s | FileCheck %s --check-prefix=NOOP
+; RUN: %if julia-ge-1.13 %{ opt -passes='function(jl-lower-exc-handlers)' -S %s | FileCheck %s --check-prefix=NOOP %}
 ; NOOP-LABEL: @simple(
 ; NOOP: %rb = call { i32, ptr } @julia.except_enter(ptr %ct)
 ; NOOP-NOT: alloca

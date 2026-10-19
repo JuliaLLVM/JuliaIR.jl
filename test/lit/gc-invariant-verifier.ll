@@ -3,37 +3,37 @@
 
 ; RUN: split-file %s %t
 ; RUN: opt -passes='function(jl-gc-invariant-verifier)' -S %t/valid.ll | FileCheck %s --check-prefix=VALID
-; RUN: opt -julia=1.10 -passes='function(GCInvariantVerifier)' -S %t/valid.ll | FileCheck %s --check-prefix=VALID
+; RUN: opt -passes='function(GCInvariantVerifier)' -S %t/valid.ll | FileCheck %s --check-prefix=VALID
 ; RUN: not --crash opt -passes='function(GCInvariantVerifier)' -S %t/invalid.ll 2>&1 | FileCheck %s --check-prefix=INVALID
-; RUN: not --crash opt -julia=1.11 -passes='function(GCInvariantVerifier<no-strong>)' -S %t/invalid.ll 2>&1 | FileCheck %s --check-prefix=INVALID
+; RUN: not --crash opt -passes='function(GCInvariantVerifier<no-strong>)' -S %t/invalid.ll 2>&1 | FileCheck %s --check-prefix=INVALID
 
 ; GEPs of tracked pointers are only rejected by the strong check
 ; RUN: opt -passes='function(jl-gc-invariant-verifier)' -S %t/gep.ll -o /dev/null
-; RUN: not --crash opt -passes='function(jl-gc-invariant-verifier<julia=1.12;strong>)' -S %t/gep.ll 2>&1 | FileCheck %s --check-prefix=GEP
+; RUN: not --crash opt -passes='function(jl-gc-invariant-verifier<strong>)' -S %t/gep.ll 2>&1 | FileCheck %s --check-prefix=GEP
 
 ; vectors of pointers are checked from Julia 1.12 on
-; RUN: opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/vector.ll -o /dev/null
-; RUN: not --crash opt -julia=1.12 -passes='function(jl-gc-invariant-verifier)' -S %t/vector.ll 2>&1 | FileCheck %s --check-prefix=VECTOR
-; RUN: opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/scalable.ll -o /dev/null
-; RUN: not --crash opt -julia=1.12 -passes='function(jl-gc-invariant-verifier)' -S %t/scalable.ll 2>&1 | FileCheck %s --check-prefix=SCALABLE
+; RUN: %if julia-1.10 || julia-1.11 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/vector.ll -o /dev/null %}
+; RUN: %if julia-ge-1.12 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/vector.ll 2>&1 | FileCheck %s --check-prefix=VECTOR %}
+; RUN: %if julia-1.10 || julia-1.11 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/scalable.ll -o /dev/null %}
+; RUN: %if julia-ge-1.12 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/scalable.ll 2>&1 | FileCheck %s --check-prefix=SCALABLE %}
 
 ; jlcall arguments: on Julia 1.10, the function (in address space 0) and tracked
 ; arguments; from 1.11 on, the variadic arguments after the fixed ones
-; RUN: opt -julia=1.10 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall110.ll -o /dev/null
-; RUN: not --crash opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall110.ll 2>&1 | FileCheck %s --check-prefix=JLCALL
-; RUN: opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall.ll -o /dev/null
-; RUN: not --crash opt -julia=1.10 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall.ll 2>&1 | FileCheck %s --check-prefix=JLCALL
-; RUN: opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3.ll -o /dev/null
-; RUN: not --crash opt -julia=1.11 -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3-invalid.ll 2>&1 | FileCheck %s --check-prefix=JLCALL
+; RUN: %if julia-1.10 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall110.ll -o /dev/null %}
+; RUN: %if julia-ge-1.11 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall110.ll 2>&1 | FileCheck %s --check-prefix=JLCALL %}
+; RUN: %if julia-ge-1.11 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall.ll -o /dev/null %}
+; RUN: %if julia-1.10 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall.ll 2>&1 | FileCheck %s --check-prefix=JLCALL %}
+; RUN: %if julia-ge-1.11 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3.ll -o /dev/null %}
+; RUN: %if julia-ge-1.11 %{ not --crash opt -passes='function(jl-gc-invariant-verifier)' -S %t/jlcall3-invalid.ll 2>&1 | FileCheck %s --check-prefix=JLCALL %}
 
 ; field barriers (Julia master) must be whole-object barriers in field-precise builds
-; RUN: opt -julia=1.14.0-DEV -passes='function(jl-gc-invariant-verifier)' -S %t/object-barrier.ll -o /dev/null
-; RUN: not --crash opt -julia=1.14.0-DEV -passes='function(jl-gc-invariant-verifier<gc-barrier=field-precise>)' -S %t/object-barrier.ll 2>&1 | FileCheck %s --check-prefix=PRECISE
+; RUN: %if julia-1.14 %{ opt -passes='function(jl-gc-invariant-verifier)' -S %t/object-barrier.ll -o /dev/null %}
+; RUN: %if julia-1.14 %{ not --crash opt -passes='function(jl-gc-invariant-verifier<gc-barrier=field-precise>)' -S %t/object-barrier.ll 2>&1 | FileCheck %s --check-prefix=PRECISE %}
 
 ; the port ran, and on optnone functions too
 ; RUN: rm -f %t.ledger
-; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=GCInvariantVerifier -julia=1.13 -S %t/valid.ll -o /dev/null
-; RUN: grep -c 'pass	jl-gc-invariant-verifier	julia=1.13.0' %t.ledger | FileCheck --check-prefix=COUNT %s
+; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=GCInvariantVerifier -S %t/valid.ll -o /dev/null
+; RUN: grep -c 'pass	jl-gc-invariant-verifier	julia=' %t.ledger | FileCheck --check-prefix=COUNT %s
 ; COUNT: 2
 
 ;--- valid.ll

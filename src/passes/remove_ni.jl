@@ -17,7 +17,7 @@ const REMOVE_NI = define_pass("jl-remove-ni", :module, remove_ni!; required=true
                               cpp_name="RemoveNI")
 
 """
-    JuliaIR.RemoveNIPass(; julia=VERSION)
+    JuliaIR.RemoveNIPass()
 
 Remove the non-integral address spaces from the data layout of a module (`jl-remove-ni`
 in a pipeline). Needed before code generation by back-ends that don't support

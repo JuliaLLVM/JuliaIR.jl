@@ -21,6 +21,7 @@ read it first, including its Log). This file says where things are and how to co
 | S8 LowerSIMDLoop (`jl-lower-simdloop`), loop passes, LLVM.jl branch | done, branch `tb/s8-lower-simdloop` (on S24c, PR #9) | 72da87e, bc882e2, 43b272e |
 | S6b LateLowerGCFrame (`jl-late-lower-gc-frame`) | port done, every dialect; branch `tb/s6b-late-lower-gc-frame` (on S8, PR #10) | see `git log` |
 | S10 ExpandAtomicModify (`jl-expand-atomic-modify`) | done, branch `tb/s10-expand-atomic-modify` (on S6b, PR #11) | see `git log` |
+| S26 `julia` option removed, S27 master fixtures at the nightly's commit, S28 `required` flags | done, branch `tb/s26-drop-julia-option` (on S10) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -35,8 +36,8 @@ On GitHub: https://github.com/JuliaLLVM/JuliaIR.jl. PRs #1 (CI against LLVM.jl `
 
 Scope and workflow changed on 2026-10-18 (plan decisions S-D12–S-D14, "Operating mode"): all of Julia's
 passes get faithful, general ports (CPU paths included), for dialects D ≤ the running Julia and on every
-LLVM from the dialect's own on. Narrowed by S-D17: a Julia version only processes its own IR (the `julia`
-option stays for tests); only the LLVM library may be newer than Julia's. A coordinator session (kick-off prompt
+LLVM from the dialect's own on. Narrowed by S-D17: a Julia version only processes its own IR (S26 removed
+the `julia` option: the passes use `Dialect(VERSION)`); only the LLVM library may be newer than Julia's. A coordinator session (kick-off prompt
 `~/Julia/plans/llvm-middleend/PROMPT.coordinator.md`) delegates items to subagents, stacks PRs with
 `gh stack`, and may push `tb/*` branches and open PRs on JuliaIR.jl and LLVM.jl.
 
@@ -55,8 +56,8 @@ the differences between Julia versions are the `gc_*` fields of `Dialect`.
 (`UnsupportedInputError`) and runs the same code (without declaring
 `ijl_gc_small_alloc`). The task and TLS offsets come from S24c's runtime facts
 (`runtime_layout(opts, mod)`, pass options `task-ptls` etc. via `runtime_options`), read
-only by the allocation and GC-transition lowerings; tests of other dialects than the
-running one give them as options. The GC constants are in the pass
+only by the allocation and GC-transition lowerings; lit tests give them as options so
+their output doesn't depend on the host. The GC constants are in the pass
 file. The docs page `docs/src/late_lower_gc_frame.md` has the per-version table,
 the contract and every deviation. All `late-lower-gc*.ll`, `gcroots.ll`,
 `refinements.ll`, `returnstwicegc.ll`, `gc-writebarrier-volatile.ll`,
@@ -119,7 +120,24 @@ before 1.13. Not required, like the C++ at both pins (S-D7 said required). Wraps
 `supports_mmra`). Inputs where the C++ crashes, hangs or emits invalid IR throw
 `JuliaIR.AtomicModifyError` or are handled (docs/src/index.md). Upstream
 `atomic-modify.ll` runs at the 1.13 and master pins; `test/lit/expand-atomic-modify.ll`
-(`REQUIRES: llvm-ge-20`) covers the cases.
+(`REQUIRES: julia-ge-1.13`) covers the cases.
+
+S26–S28 details: the dialect is always the running Julia's (`Dialect(VERSION; fp16, bf16,
+gc_barrier)` in `parse_options`); `julia=` in a pipeline is an unknown option, and
+`Dialect(::VersionNumber)` remains the map from a version to the drift table
+(`test/dialect.jl` checks every row on any Julia). Each Julia tests its own dialect: the
+testsets branch on `JuliaIR.Dialect(VERSION)`, and lit RUN lines of some versions are
+gated by the features `julia-1.X`/`julia-ge-1.X` (see "Lit convention" below). Dead LLVM
+checks in dialect-only code went (ExpandAtomicModify's LLVM 19/20, LateLowerGCFrame's
+LLVM 16 in the 1.11+ allocation attributes), and `Dialect.propagate_addrspaces_target`.
+S27: the development pin in `test/upstream/manifest.toml` has no commit; `run.jl`
+requires the checkout at `Base.GIT_VERSION_INFO.commit` of the running nightly, and CI
+reads it from the installed nightly before the sparse checkout. S28: every port's
+`required` equals `passes.h` at every pin (PropagateJuliaAddrspaces was the only
+mismatch). Validated: `Pkg.test()` 1.10 431, 1.11 431, 1.12 428, 1.13 396, nightly 394;
+lit RUN lines executed 104/107/112/112/114 (549 over the five versions, 765 before, when
+every version ran every dialect's lines); mode A 20/21/22/24/27 and `--cpp` 28/32/33/35/
+40 + 2 unsupported, master at the nightly's commit 08e5253dc0.
 
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
@@ -133,7 +151,7 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
 
 - `src/dialect.jl`: `Dialect` (what each Julia version's IR looks like; passes branch on
   its fields, and the `fp16`/`bf16`/`gc_barrier` policies). `src/irutils.jl`: helpers
-  shared by passes (metadata copy, pointer types by reference, alloca address space). `src/registration.jl`: option parsing (`jl-x<julia=1.12;fp16=demote>`),
+  shared by passes (metadata copy, pointer types by reference, alloca address space). `src/registration.jl`: option parsing (`jl-x<fp16=demote;strong>`),
   `PassDefinition`/`define_pass`, `custom_pass` (the LLVM.jl pass with defaults),
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
   `src/runtime.jl`: `runtime_layout` and the probes behind it (facts about the
@@ -193,7 +211,24 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
   passes; checks jlopt/harness) and `... --report`. On 1.10/1.11 first
   `julia --project=test -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate()'`
   (it writes `test/Manifest.toml`: delete it before running `Pkg.test()` again).
+  For master, check out the nightly's own commit:
+  `git -C DIR checkout $(julia +nightly -e 'print(Base.GIT_VERSION_INFO.commit)')`.
 - Docs: `julia +1.12 --project=docs docs/make.jl`.
+- Each Julia version only tests its own dialect (lit lines and testsets): a change to the
+  1.10 code path is only exercised by running Julia 1.10, so run all five versions.
+
+## Lit convention
+
+`test/litsetup.jl` passes the running dialect's minor version to `common.cfg.py`, which
+defines the lit feature `julia-1.X` for it (a nightly newer than the known versions has
+the newest one's) and `julia-ge-1.X` for it and every older known minor. A test file for
+some versions says `REQUIRES: julia-1.10 || julia-1.11` (or `UNSUPPORTED: julia-ge-1.13`);
+a RUN line for some versions is `; RUN: %if julia-1.12 %{ opt ... | FileCheck ... %}`, and
+per-version check prefixes on a shared line are
+`--check-prefixes=CHECK,%if julia-ge-1.12 %{COMBINE%} %else %{NOCOMBINE%}`. lit prints
+"has no command after substitutions" for a line whose `%if` is false. `test/lit.jl` fails
+on any `julia-*` feature under `test/lit` that isn't a known minor, since a misspelled
+one would skip its lines silently. Ledger checks match `julia=` without a version.
 - update_test_checks.py: not in any JLL; copy `llvm/utils/update_test_checks.py` and
   `UpdateTestChecks/` from an LLVM source tree, write a wrapper with `jlopt_bindir(dir)`,
   run `python3 update_test_checks.py --opt-binary=dir/opt test.ll`.
@@ -232,7 +267,8 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
   itself (`ConstantAsMetadata`), not as an `MDNode`.
 - `jld eval` and shell heredocs inside complex commands are refused by the worktree
   sandbox; run scripts from files (`jld run`, `python3 script.py`).
-- `julia +nightly` moves: the master pin's checks warn when the running nightly differs.
+- `julia +nightly` moves: the master fixtures must be checked out at its commit
+  (`Base.GIT_VERSION_INFO.commit`), or `run.jl` refuses them.
 
 - LLVM.jl 10 exports little: `using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis`
   and `using LLVM: API`; `LLVM.Target`/`LLVM.TargetMachine` are not exported anywhere.
@@ -252,8 +288,8 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
   names (`pipeline-prints.ll`); not investigated (not ported).
 - Julia 1.10's fixtures without `--opaque-pointers` rely on LLVM 15's opt parsing typed
   IR into a typed context; jlopt always uses opaque contexts.
-- Nightly moves daily; the harness warns (doesn't fail) when it differs from the pinned
-  build. Refresh the master pin (manifest + CI `julia_ref`) when fixtures change.
+- Nightly moves daily, and with it the master fixtures: the manifest's entries for 1.14
+  apply to whatever master is, so a changed fixture can fail CI without any change here.
 - `LLVM.clopts` options set by jlopt (`-verify-memoryssa`, ...) are process-wide.
 - LLVM.jl 10: `bb.successors`/`bb.predecessors` are properties (no exported functions);
   `inst.prev`/`inst.next`; `call.called_function.intrinsic`; `LLVM.constant_offset(gep, dl)`
@@ -324,7 +360,8 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
   `LLVM.Opcode.FAdd` instead of `LLVMFAdd`; `opcode_name` handles both. `get(inst.metadata, kind, default)` doesn't
   exist (use `haskey`), and `terminator`, `uses`, `user` aren't exported.
 - lit features `llvm-ge-<N>` (from `test/litsetup.jl`'s `llvm_major`) gate tests on the
-  LLVM version, e.g. dialect-1.13 tests that need LLVM 20.
+  LLVM version; a dialect's own LLVM is implied by `julia-ge-1.X`, so they are only
+  needed for LLVM versions newer than a dialect's own.
 - Julia 1.13/nightly's `code_llvm` of `modifyfield!` with a callable struct prints an op
   helper referring to the caller's alloca (unparsable); ExpandAtomicModify's inlining
   hides it. Julia's C++ ExpandAtomicModify aborts (bad_variant_access) on an `fadd` op
@@ -337,7 +374,7 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
 
 1. Name and repo: `JuliaLLVM/JuliaIR.jl`.
 2. Versions newer than the development minor get its dialect (no error, no warning).
-3. Nightly pin check: explained, decision pending.
+3. Nightly pin check: replaced by S-D19 (fixtures at the nightly's own commit, S27).
 4. CI covers Windows and macOS; no local runs needed before pushing.
 
 ## Peer conversations (pegasus)
