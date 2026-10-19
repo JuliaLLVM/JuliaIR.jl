@@ -59,8 +59,8 @@ records them in the flag.
 
 ## What changes between Julia versions
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
-|-----------|------|------|------|------|--------|
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
+|-----------|------|------|------|------|----------------|
 | encoding of the targets' flags | `JL_TARGET_*` bits | same | same | same | packed flags |
 | loops and CPU feature queries cloned by every target | no | no | no | no | yes |
 | `bfloat` values as a category | no | yes | yes | yes | yes |

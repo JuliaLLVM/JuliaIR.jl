@@ -41,7 +41,7 @@ end
                                                          0x40 | 8 | 256 | 1024]
     @test JuliaIR.encode_flags.(targets, Ref(dm)) == [0, 1, 4 | 8 | 16 | 32, 2 | 64]
     @test_throws "doesn't clone functions for bfloat16" JuliaIR.encode_flags(targets[4], dialects[1])
-    # master clones loops and CPU queries for every target that doesn't clone everything
+    # Julia 1.14 clones loops and CPU queries for every target that doesn't clone everything
     @test JuliaIR.normalize_target(MultiVersioningTarget("a", ""; clone=(:math,)), dm).clone ==
           (:loop, :math, :cpu)
     @test JuliaIR.normalize_target(MultiVersioningTarget("a", ""; clone=(:math,)), d13).clone ==

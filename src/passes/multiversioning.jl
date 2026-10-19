@@ -6,7 +6,7 @@
 ## targets
 
 # The categories of functions that a target can ask to clone, by what a function contains
-# (`collect_func_info`). The bits are those of Julia master's `JL_CLONE_*`.
+# (`collect_func_info`). The bits are those of Julia 1.14's `JL_CLONE_*`.
 const CLONE_CATEGORIES = (:loop, :simd, :math, :cpu, :float16, :bfloat16)
 
 clone_bit(category::Symbol) =
@@ -17,7 +17,7 @@ clone_mask(categories) = reduce(|, (clone_bit(c) for c in categories); init=UInt
 clone_categories(mask::Integer) =
     Tuple(c for c in CLONE_CATEGORIES if mask & clone_bit(c) != 0)
 
-# the `JL_TARGET_*` flags of Julia 1.13 and older (`processor.h`), and the bits of master's
+# the `JL_TARGET_*` flags of Julia 1.13 and older (`processor.h`), and the bits of 1.14's
 # `TargetSpec::packed_flags`
 const JL_TARGET_CLONE_ALL = UInt32(1) << 1
 const JL_TARGET_OPTSIZE = UInt32(1) << 6
@@ -30,7 +30,7 @@ const PACKED_OPT_SIZE = UInt32(1) << 1
 const PACKED_MIN_SIZE = UInt32(1) << 2
 const PACKED_CATEGORIES = (:math => UInt32(1) << 3, :simd => UInt32(1) << 4,
                            :float16 => UInt32(1) << 5, :bfloat16 => UInt32(1) << 6)
-# the categories that Julia master clones for every target that doesn't clone everything
+# the categories that Julia 1.14 clones for every target that doesn't clone everything
 const PACKED_ALWAYS = (:loop, :cpu)
 
 """
