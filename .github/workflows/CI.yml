@@ -104,6 +104,232 @@ jobs:
           name: differential-${{ matrix.version }}
           path: differential
 
+  # A standalone LLVM 23 (LLVM.jl's `deps/build_standalone.jl`: LLVM_full_jll linked with
+  # LLVMExtra), with the LLVM 23 tools that the tests need next to it, for the mode-B and
+  # oracle jobs. It is only built when the cache misses, i.e. when the LLVM.jl release,
+  # the LLVM version or the runner image change.
+  standalone-llvm:
+    name: Standalone LLVM 23
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      oracle: ${{ steps.changes.outputs.oracle }}
+    env:
+      LLVM_VERSION: '23.1.4'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # to find the changed files
+      # the oracle runs when what it validates changes: the harness, the pins, the patches
+      # and their generator (test/upstream), or this workflow
+      - name: Determine whether the oracle runs
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          oracle=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "$BASE" ] &&
+             git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            git diff --name-only "$BASE" HEAD |
+              grep -qE '^(test/upstream/|test/litsetup\.jl|bin/jlopt|\.github/workflows/CI\.yml)' ||
+              oracle=false
+          fi
+          echo "oracle=$oracle" >> "$GITHUB_OUTPUT"
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      # the LLVM.jl release that the package resolves to, which the mode-b jobs load: the
+      # library contains its LLVMExtra
+      - name: Install LLVM.jl
+        id: llvm-jl
+        shell: julia --project --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.instantiate()
+          llvm = only(p for p in values(Pkg.dependencies()) if p.name == "LLVM")
+          open(ENV["GITHUB_OUTPUT"], "a") do io
+              println(io, "dir=", llvm.source)
+              println(io, "version=", llvm.version)
+          end
+      # the build's inputs; bump the revision when the steps below change what they produce
+      - name: Determine the cache key
+        id: key
+        env:
+          LLVM_JL: ${{ steps.llvm-jl.outputs.version }}
+        run: echo "key=standalone-llvm$LLVM_VERSION-r2-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: standalone
+          key: ${{ steps.key.outputs.key }}
+      # from a copy of the installed package's deps/, as the script instantiates its
+      # environment there
+      - name: Build the standalone library
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          LLVM_JL: ${{ steps.llvm-jl.outputs.dir }}
+        run: |
+          cp -r "$LLVM_JL/deps" "$RUNNER_TEMP/llvm-deps"
+          chmod -R u+w "$RUNNER_TEMP/llvm-deps"
+          julia --project="$RUNNER_TEMP/llvm-deps" "$RUNNER_TEMP/llvm-deps/build_standalone.jl" "$LLVM_VERSION" "$PWD/standalone"
+      # LLVM_full_jll's tools find libLLVM in ../lib (the build step downloaded the JLL)
+      - name: Add the LLVM tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.activate(; temp=true)
+          Pkg.add(; name="LLVM_full_jll", version=ENV["LLVM_VERSION"])
+          using LLVM_full_jll
+          src = LLVM_full_jll.artifact_dir
+          mkpath("standalone/tools")
+          for tool in ("opt", "FileCheck", "not", "count", "llvm-dis", "llvm-as")
+              cp(joinpath(src, "tools", tool), joinpath("standalone/tools", tool))
+          end
+          for lib in readdir(joinpath(src, "lib"))
+              # the versioned name that the tools link, not the unversioned symlink
+              startswith(lib, "libLLVM.so.") || continue
+              cp(joinpath(src, "lib", lib), joinpath("standalone/lib", lib); follow_symlinks=true)
+          end
+          run(`standalone/tools/llvm-dis --version`)
+      # an archive, as artifacts don't keep the tools' permissions
+      - name: Archive the library and tools
+        run: tar -cf standalone.tar standalone
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-llvm
+          path: standalone.tar
+          retention-days: 1
+
+  # Julia's pass tests and the package tests with the ports on the standalone LLVM, for
+  # the IR of each pinned Julia (mode B; see the documentation's "Testing" page). Julia
+  # itself runs on its own LLVM, which produces the IR.
+  mode-b:
+    name: Julia ${{ matrix.version }} on LLVM 23 - mode B
+    needs: standalone-llvm
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:  # the pins of the `upstream` job
+          - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
+          - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
+          - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
+          - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
+          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
+          - {version: 'nightly', julia_ref: ''}  # master
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      # while the nightly builds use LLVM 23 too, their jobs test a standalone build of
+      # their own LLVM version; once one uses a newer LLVM, the standalone LLVM must follow
+      - name: Check that the standalone LLVM is not older than Julia's
+        run: |
+          julia --startup-file=no -e 'Base.libllvm_version.major <= 23 ||
+              error("Julia uses LLVM $(Base.libllvm_version), newer than the standalone LLVM 23; update the standalone-llvm job")'
+      - uses: actions/download-artifact@v5
+        with:
+          name: standalone-llvm
+          path: ${{ runner.temp }}
+      - name: Unpack the standalone LLVM
+        run: tar -xf standalone.tar
+        working-directory: ${{ runner.temp }}
+      - uses: julia-actions/cache@v3
+      # LLVM.jl's `libLLVM` preference selects the library, in every environment that
+      # loads LLVM.jl; the lit tests need the tools of its LLVM version
+      - name: Use the standalone LLVM
+        run: |
+          for dir in . test docs test/differential; do
+            printf '[LLVM]\nlibLLVM = "%s"\n' "$RUNNER_TEMP/standalone/lib/libLLVM-standalone-23.so" > "$dir/LocalPreferences.toml"
+          done
+          echo "JULIAIR_LLVM_TOOLS=$RUNNER_TEMP/standalone/tools" >> "$GITHUB_ENV"
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Check that LLVM.jl uses the standalone LLVM
+        run: |
+          julia --project -e 'using LLVM; (!LLVM.julia_llvm && LLVM.version().major == 23) ||
+              error("LLVM.jl uses LLVM $(LLVM.version()) (julia_llvm = $(LLVM.julia_llvm)) instead of the standalone LLVM 23")'
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: false
+      - name: Determine the fixtures' commit
+        id: fixtures
+        run: |
+          ref='${{ matrix.julia_ref }}'
+          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: JuliaLang/julia
+          ref: ${{ steps.fixtures.outputs.ref }}
+          path: julia-src
+          sparse-checkout: |
+            test/llvmpasses
+            test/testhelpers
+          sparse-checkout-cone-mode: true
+      - name: Install dependencies
+        # Julia 1.10 and 1.11 don't support workspaces
+        run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
+      - name: Run the fixtures with the ports on the standalone LLVM
+        run: julia --project=test test/upstream/run.jl julia-src --mode B
+
+  # The upgrade oracle: Julia's C++ passes, on Julia's own LLVM, with their textual output
+  # re-printed by LLVM 23's opt, against the fixtures with the mode-B patches. It checks
+  # that the patches describe LLVM 23 rather than the ports, so it runs when they or the
+  # harness change.
+  oracle:
+    name: Julia ${{ matrix.version }} - upgrade oracle for LLVM 23
+    needs: standalone-llvm
+    if: needs.standalone-llvm.outputs.oracle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:  # the pins of the `upstream` job
+          - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
+          - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
+          - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
+          - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
+          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
+          - {version: 'nightly', julia_ref: ''}  # master
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: standalone-llvm
+          path: ${{ runner.temp }}
+      - name: Unpack the standalone LLVM
+        run: tar -xf standalone.tar
+        working-directory: ${{ runner.temp }}
+      - name: Determine the fixtures' commit
+        id: fixtures
+        run: |
+          ref='${{ matrix.julia_ref }}'
+          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: JuliaLang/julia
+          ref: ${{ steps.fixtures.outputs.ref }}
+          path: julia-src
+          sparse-checkout: |
+            test/llvmpasses
+            test/testhelpers
+          sparse-checkout-cone-mode: true
+      - uses: julia-actions/cache@v3
+      - name: Install dependencies
+        # Julia 1.10 and 1.11 don't support workspaces
+        run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
+      - name: Run the fixtures with Julia's passes, re-printed by LLVM 23
+        run: julia --project=test test/upstream/run.jl julia-src --cpp --reprint "$RUNNER_TEMP/standalone/tools/opt"
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
