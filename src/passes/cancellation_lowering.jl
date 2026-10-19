@@ -127,20 +127,6 @@ function terminating_musttail_call(bb::BasicBlock)
     return nothing
 end
 
-# `Module::getOrInsertFunction`: whatever global has the name (a function of another
-# type, an alias) is called with `ft`
-function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
-    f = get(mod.functions, name, nothing)
-    f === nothing || return f
-    for lookup in (API.LLVMGetNamedGlobalAlias, API.LLVMGetNamedGlobalIFunc)
-        ref = lookup(mod, name, length(name))
-        ref == C_NULL || return LLVM.Value(ref)
-    end
-    ref = API.LLVMGetNamedGlobal(mod, name)
-    ref == C_NULL || return LLVM.Value(ref)
-    return LLVM.Function(mod, name, ft)
-end
-
 # the addresses of the task's `reset_ctx`, `ptls` and `eh` fields, after the GC stack's
 # getter call or, for a GC stack argument, after the entry block's allocas
 # (`computeResetCtxPtr`)

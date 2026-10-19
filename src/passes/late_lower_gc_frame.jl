@@ -200,37 +200,6 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     end
 end
 
-
-# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
-function called_function(call::Instruction)
-    callee = call.called_operand
-    callee isa LLVM.Function || return nothing
-    callee.function_type == call.called_type || return nothing
-    return callee
-end
-
-# whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
-function is_intrinsic_call(call::Instruction)
-    callee = called_function(call)
-    return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
-end
-
-intrinsic_is(call::Instruction, intr::Intrinsic) =
-    let callee = called_function(call)
-        callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
-    end
-
-# `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
-# function type differs from the function's (unlike `called_function`); `kind` is the
-# name of an LLVM attribute (a symbol) or of a string attribute
-function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
-    haskey(call.function_attributes, kind) && return true
-    callee = call.called_operand
-    return callee isa LLVM.Function && haskey(callee.function_attributes, kind)
-end
-
-can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
-
 # the memory effects of the attributes of a function or call site: the `memory`
 # attribute, or the legacy ones before LLVM 16; unrestricted without them
 function attribute_memory_effects(attrs)
@@ -279,9 +248,6 @@ only_reads_memory(e::MemoryEffects) =
     all(loc -> !(e[loc] in (:write, :readwrite)), MEMORY_LOCATIONS)
 only_accesses_arg_pointees(e::MemoryEffects) =
     all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
-
-# the integer of a constant, at most INT_MAX (`getLimitedValue(INT_MAX)`)
-limited_value(c::LLVM.ConstantInt) = min(convert(UInt64, c), UInt64(typemax(Int32)))
 
 # the element `i` of a constant aggregate, or nothing
 function aggregate_element(c::LLVM.Constant, i::Integer)

@@ -69,6 +69,102 @@ function clone_call!(builder::IRBuilder, call::Instruction,
 end
 
 
+## values, calls and attributes
+
+# the type of a value, by its reference
+typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
+
+# whether `callee` is the function `f`, which may be absent (`nothing`)
+is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
+
+# the integer of a constant, at most INT_MAX (`getLimitedValue(INT_MAX)`)
+limited_value(c::LLVM.ConstantInt) = min(convert(UInt64, c), UInt64(typemax(Int32)))
+
+# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
+function called_function(call::Instruction)
+    callee = call.called_operand
+    callee isa LLVM.Function || return nothing
+    callee.function_type == call.called_type || return nothing
+    return callee
+end
+
+# whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
+function is_intrinsic_call(call::Instruction)
+    callee = called_function(call)
+    return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
+end
+
+intrinsic_is(call::Instruction, intr::Intrinsic) =
+    let callee = called_function(call)
+        callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
+    end
+
+# `Module::getOrInsertFunction`: whatever global has the name (a function of another
+# type, an alias) is called with `ft`
+function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
+    f = get(mod.functions, name, nothing)
+    f === nothing || return f
+    for lookup in (API.LLVMGetNamedGlobalAlias, API.LLVMGetNamedGlobalIFunc)
+        ref = lookup(mod, name, length(name))
+        ref == C_NULL || return LLVM.Value(ref)
+    end
+    ref = API.LLVMGetNamedGlobal(mod, name)
+    ref == C_NULL || return LLVM.Value(ref)
+    return LLVM.Function(mod, name, ft)
+end
+
+# position the builder before `inst`, with `inst`'s debug location like C++'s
+# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
+function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
+    position!(builder, LLVM.before(inst))
+    builder.debug_location = debug ? inst.debug_location : nothing
+end
+
+# `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
+# function type differs from the function's (unlike `called_function`); `kind` is the
+# name of an LLVM attribute (a symbol) or of a string attribute
+function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
+    haskey(call.function_attributes, kind) && return true
+    callee = call.called_operand
+    return callee isa LLVM.Function && haskey(callee.function_attributes, kind)
+end
+
+can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
+
+# the attributes of a function, on a call of it
+function copy_function_attributes!(call::Instruction, f::LLVM.Function)
+    for attr in collect(f.function_attributes)
+        push!(call.function_attributes, attr)
+    end
+    for attr in collect(f.return_attributes)
+        push!(call.return_attributes, attr)
+    end
+    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
+        push!(call.argument_attributes[i], attr)
+    end
+end
+
+
+## metadata
+
+i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
+
+md_kind(@nospecialize(v::Value), name::String) =
+    API.LLVMGetMDKindIDInContext(context(v), name, length(name))
+
+function metadata_by_name(inst::Instruction, name::String)
+    kind = md_kind(inst, name)
+    for (k, md) in inst.metadata
+        k == kind && return md
+    end
+    return nothing
+end
+
+function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
+    API.LLVMSetMetadata(inst, md_kind(inst, name), API.LLVMMetadataAsValue(context(inst), md))
+end
+
+
 ## TBAA
 
 # the integer in a `ConstantAsMetadata` operand

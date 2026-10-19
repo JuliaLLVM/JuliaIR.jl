@@ -52,42 +52,6 @@ function get_pgcstack(dialect::Dialect, f::LLVM.Function, getter, adopt)
     return nothing
 end
 
-is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
-
-# position the builder before `inst`, with `inst`'s debug location like C++'s
-# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
-function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
-    position!(builder, LLVM.before(inst))
-    builder.debug_location = debug ? inst.debug_location : nothing
-end
-
-function copy_function_attributes!(call::Instruction, f::LLVM.Function)
-    for attr in collect(f.function_attributes)
-        push!(call.function_attributes, attr)
-    end
-    for attr in collect(f.return_attributes)
-        push!(call.return_attributes, attr)
-    end
-    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
-        push!(call.argument_attributes[i], attr)
-    end
-end
-
-md_kind(@nospecialize(v::Value), name::String) =
-    API.LLVMGetMDKindIDInContext(context(v), name, length(name))
-
-function metadata_by_name(inst::Instruction, name::String)
-    kind = md_kind(inst, name)
-    for (k, md) in inst.metadata
-        k == kind && return md
-    end
-    return nothing
-end
-
-function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
-    API.LLVMSetMetadata(inst, md_kind(inst, name), API.LLVMMetadataAsValue(context(inst), md))
-end
-
 
 ## declarations of GC intrinsics (`jl_intrinsics`, `jl_well_known`)
 
@@ -273,8 +237,6 @@ end
 
 
 ## metadata and type tags
-
-i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 
 # Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
 # node (`tbaa_make_child_with_context`)

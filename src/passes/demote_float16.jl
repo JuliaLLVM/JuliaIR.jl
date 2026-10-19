@@ -94,8 +94,6 @@ function float_type(ty::API.LLVMTypeRef, T_float::API.LLVMTypeRef)
     return T_float
 end
 
-typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
-
 function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     dialect = opts.dialect
     triple = f.parent.triple
