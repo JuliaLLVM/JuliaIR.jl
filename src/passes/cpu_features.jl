@@ -1,12 +1,12 @@
 # CPUFeatures: fold the intrinsics that ask about the CPU the code runs on,
-# `julia.cpu.have_fma.<type>` (`Core.Intrinsics.have_fma`) and, on Julia master,
+# `julia.cpu.have_fma.<type>` (`Core.Intrinsics.have_fma`) and, from Julia 1.14 on,
 # `julia.cpu.supports.<features>` (`Base.@cpu_supports`), to constants, from the target
 # of the calling function. Port of Julia's `src/llvm-cpufeatures.cpp`, which is two
 # passes (`Dialect.cpu_features_rule`):
 #
 # - up to Julia 1.13 (`:tokens`), a feature string is searched for some features: the
 #   caller's `target-features`, or else the feature string of Julia's JIT;
-# - on master (`:subtarget`), LLVM's subtarget tables are asked about the caller's
+# - from 1.14 on (`:subtarget`), LLVM's subtarget tables are asked about the caller's
 #   `target-cpu` and `target-features`, which take precedence over the target machine's
 #   when Julia's pipeline gives the pass one (by name, there is none: the attributes
 #   alone, with the generic CPU, describe the target).
@@ -214,7 +214,7 @@ function jit_have_fma(run::CPUFeaturesRun, typ::String)
     return typ == "f32" ? facts.jit_fma_f32 : facts.jit_fma_f64
 end
 
-## Julia master: LLVM's subtarget tables
+## Julia 1.14 and later: LLVM's subtarget tables
 
 # The subtarget of a function, like `TargetMachine::getSubtargetImpl(F)` with a target
 # machine, and otherwise one for the function's `target-cpu` and `target-features`,

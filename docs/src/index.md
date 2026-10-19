@@ -124,8 +124,8 @@ Differences with Julia's C++ passes:
 - CPUFeatures throws a `JuliaIR.CPUFeaturesError` for uses of its intrinsics it can't
   fold (not called, passed as an argument, called with `invoke`), where the C++ pass
   crashes or corrupts the IR. Up to Julia 1.13, it reads the JIT's answers from the code
-  Julia generates for `have_fma` rather than from the JIT's feature string; on Julia
-  master, its `target_cpu` and `target_features` options create a subtarget without a
+  Julia generates for `have_fma` rather than from the JIT's feature string; from Julia
+  1.14 on, its `target_cpu` and `target_features` options create a subtarget without a
   target machine. See [CPUFeatures](cpu_features.md).
 - ExpandAtomicModify places the `atomicrmw xchg` that replaces an operation that ignores
   the old value after the inlined code that computes the new one, for the IR of every
