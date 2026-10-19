@@ -31,13 +31,17 @@ struct PassSpec
     # the C++ pass aborts the process on input it rejects (a verifier): compare the
     # messages it printed with those of the port's exception
     aborts::Bool
+    # passes whose recorded deviations (exceptions.toml) apply to this one too, which
+    # runs them (a pipeline)
+    inherits::Vector{String}
 end
 
 function PassSpec(name; cpp=name, port=nothing, kind=:function, inputs=r"", prefixes=["raw"],
                   prepare=Pair{String,Any}["" => identity], remarks=String[], cpp_runs=1,
-                  aborts=false)
+                  aborts=false, inherits=String[])
     port === nothing && (port = JuliaIR.cpp_mapping()[name])
-    PassSpec(name, cpp, port, kind, inputs, prefixes, prepare, remarks, cpp_runs, aborts)
+    PassSpec(name, cpp, port, kind, inputs, prefixes, prepare, remarks, cpp_runs, aborts,
+             inherits)
 end
 
 # the pipelines a pass runs in, labelled
@@ -187,3 +191,17 @@ const PASS_SPECS = [
     # also changes functions without cancellation points (calls in IPO-safe functions)
     PassSpec("CancellationLowering"; prefixes=["raw", "optimized"]),
 ]
+
+# Julia's optimization pipeline (`julia<level=N>`), rebuilt from the ports and the C++
+# passes that have no port yet (`JuliaIR.CPP_FALLBACKS`), at every optimization level.
+# The deviations of the ports it runs are its own; it runs LateLowerGCFrame (hence the
+# retries) and GCInvariantVerifier (which aborts).
+const PIPELINE_PASSES = ["RemoveNI", "AllocOpt", "PropagateJuliaAddrspaces", "DemoteFloat16",
+                         "GCInvariantVerifier", "LateLowerGCFrame", "CombineMulAdd",
+                         "LowerExcHandlers", "LowerSIMDLoop", "ExpandAtomicModify",
+                         "CancellationLowering"]
+for level in 0:3
+    push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp="julia<level=$level>",
+                               port=JuliaIR.pipeline(; level), kind=:module, cpp_runs=8,
+                               aborts=true, inherits=PIPELINE_PASSES))
+end

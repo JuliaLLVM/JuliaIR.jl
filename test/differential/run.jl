@@ -521,7 +521,7 @@ function dialect_minor()
     return "$(minor.major).$(minor.minor)"
 end
 
-applies(e::Recorded, job::Job) = e.pass == job.spec.name &&
+applies(e::Recorded, job::Job) = (e.pass == job.spec.name || e.pass in job.spec.inherits) &&
     occursin(e.input, job.input.id) && (isempty(e.julia) || dialect_minor() in e.julia) &&
     (isempty(e.prefix) || e.prefix == job.prefix)
 
@@ -699,7 +699,8 @@ function report(opts::Options, jobs, skipped)
 
     for (i, e) in enumerate(exceptions)
         used[i] && continue
-        any(job -> applies(e, job), jobs) || continue
+        # (inherited exceptions need not apply to the passes that inherit them)
+        any(job -> e.pass == job.spec.name && applies(e, job), jobs) || continue
         println("unused exception for $(e.pass): input $(e.glob), ",
                 e.action === :accept ? "accept" : "lines", " '$(e.lines.pattern)'")
     end
