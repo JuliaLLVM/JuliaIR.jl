@@ -51,6 +51,8 @@ read the first time a pass needs it, once per process:
 | `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.14 and later) |
 | `smalltag_shift` | the header of a boxed `Int64`, whose small type tag is a field of `Int64.flags` |
 | `max_small_tag` | the code Julia generates for `typeof` of an object of unknown type: the bound below which a tag indexes `jl_small_typeof` |
+| `task_world_age` | the field of the current task that `Core._call_in_world` sets to the world it calls in |
+| `cfunction_cache`, `cfuncdata_size` | the code Julia generates for a `@cfunction` (Julia 1.12 and later): the arguments of its call of `jl_get_abi_converter` |
 
 The generated code is the text that `code_llvm` prints for a small function, parsed
 into a context of the LLVM library that LLVM.jl uses, which may be newer than Julia's

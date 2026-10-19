@@ -75,6 +75,21 @@ end
     @test Int(Int64.flags) >> rt.smalltag_shift > 0
     @test Int(Some{Int}.flags) >> rt.smalltag_shift == 0
 
+    # the world age: the runtime's, also in the latest world
+    read_world_age() = GC.@preserve task unsafe_load(Ptr{UInt}(pointer_from_objref(task) + rt.task_world_age))
+    @test read_world_age() == ccall(:jl_get_tls_world_age, UInt, ())
+    @test Base.invokelatest(read_world_age) == Base.get_world_counter()
+
+    # the call-site data of a `@cfunction`: 6 words, 8 with the cached entry point and
+    # world (`cfuncdata_t` in src/runtime_ccall.c)
+    if VERSION >= v"1.12"
+        @test rt.cfunction_cache == (VERSION < v"1.13-" ? :arguments : :cfuncdata)
+        @test rt.cfuncdata_size == (rt.cfunction_cache === :arguments ? 6W : 8W)
+    else
+        @test_throws "doesn't exist in the runtime of the running Julia" rt.cfunction_cache
+        @test_throws "doesn't exist in the runtime of the running Julia" rt.cfuncdata_size
+    end
+
     # the values measured on x86-64 Linux with glibc; 1.14's were measured on a nightly
     # build, so prereleases (and newer versions, which have the newest dialect) only
     # report differences
@@ -82,20 +97,23 @@ end
         measured = Dict(
             v"1.10" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
                         tls_gc_state=25, handler_size=256, smalltag_shift=10,
-                        max_small_tag=64),
+                        max_small_tag=64, task_world_age=120),
             v"1.11" => (; task_gcstack=112, task_ptls=128, task_eh=144, tls_safepoint=16,
                         tls_gc_state=25, handler_size=256, smalltag_shift=10,
-                        max_small_tag=64),
+                        max_small_tag=64, task_world_age=120),
             v"1.12" => (; task_gcstack=152, task_ptls=168, task_eh=184, tls_safepoint=16,
                         tls_gc_state=25, handler_size=264, smalltag_shift=10,
-                        max_small_tag=64),
+                        max_small_tag=64, task_world_age=160, cfunction_cache=:arguments,
+                        cfuncdata_size=48),
             v"1.13" => (; task_gcstack=152, task_ptls=168, task_eh=184, tls_safepoint=16,
                         tls_gc_state=25, handler_size=264, smalltag_shift=10,
-                        max_small_tag=64),
+                        max_small_tag=64, task_world_age=160, cfunction_cache=:cfuncdata,
+                        cfuncdata_size=64),
             v"1.14" => (; task_gcstack=192, task_ptls=208, task_eh=224, tls_safepoint=16,
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
                         reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,
-                        smalltag_shift=10, max_small_tag=64))
+                        smalltag_shift=10, max_small_tag=64, task_world_age=200,
+                        cfunction_cache=:cfuncdata, cfuncdata_size=64))
         minor = JuliaIR.dialect_minor(VERSION)
         exact = isempty(VERSION.prerelease) &&
                 VersionNumber(VERSION.major, VERSION.minor) == minor
