@@ -206,6 +206,8 @@ the Julia dialect of the IR:
 
 - `llvm`: the version of LLVM;
 - `lifetime_size`: whether the lifetime intrinsics take a size argument (before LLVM 22);
+- `lifetime_on_alloca`: whether the lifetime intrinsics must be given an `alloca` itself,
+  not a pointer derived from one such as an `addrspacecast` (LLVM 22 and later);
 - `masked_load_alignment`: whether `llvm.masked.load` and `llvm.masked.gather` take an
   alignment argument (before LLVM 22);
 - `null_pointer_alignment`: whether LLVM's `Value::getPointerAlignment` takes a null
@@ -216,8 +218,8 @@ function library_facts(ctx::Context)
     # LLVM.jl supports one library per session; this is where a per-context library
     # would be queried once it supports several.
     llvm = LLVM.version()
-    return (; llvm, lifetime_size = llvm < v"22", masked_load_alignment = llvm < v"22",
-             null_pointer_alignment = llvm < v"22")
+    return (; llvm, lifetime_size = llvm < v"22", lifetime_on_alloca = llvm >= v"22",
+             masked_load_alignment = llvm < v"22", null_pointer_alignment = llvm < v"22")
 end
 
 

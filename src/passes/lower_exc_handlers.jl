@@ -150,16 +150,16 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
                                         LLVM.FunctionType(T_int32, params))
         push!(setjmp_func.function_attributes, EnumAttribute("returns_twice"))
     end
-    lifetime_start = LLVM.Function(mod, LIFETIME_START, LLVMType[T_ptr])
-    lifetime_end = LLVM.Function(mod, LIFETIME_END, LLVMType[T_ptr])
-    lifetime_args(buff) = facts.lifetime_size ?
-        Value[ConstantInt(T_int64, handler_size), buff] : Value[buff]
+    # (the lifetime intrinsics for generic pointers are declared even where unused)
+    LLVM.Function(mod, LIFETIME_START, LLVMType[T_ptr])
+    LLVM.Function(mod, LIFETIME_END, LLVMType[T_ptr])
 
     @dispose builder=IRBuilder() begin
         # step 2: one buffer per nesting level, in the entry block; separate allocas, so
         # that the optimizer can merge or rearrange them
         first_inst = first(first(f.blocks).instructions)
         alloca_as = alloca_addrspace(unsafe_string(API.LLVMGetDataLayoutStr(mod)))
+        allocas = Value[]
         buffs = Value[]
         position!(builder, LLVM.before(first_inst))
         builder.debug_location = nothing
@@ -167,17 +167,29 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
             buff = array_alloca!(builder, LLVM.Int8Type(),
                                  ConstantInt(T_int32, handler_size);
                                  align=handler_align)
+            push!(allocas, buff)
             if alloca_as != 0
                 buff = addrspacecast!(builder, buff, LLVM.PointerType(AS_GENERIC))
             end
             push!(buffs, buff)
         end
 
+        # The C++ pass marks the lifetime of the generic pointer that it casts a buffer to
+        # on targets with another alloca address space. LLVM 22 requires the alloca itself,
+        # and upgrades the C++ pass's output to that, so this port marks the alloca there.
+        function lifetime!(intrinsic, level)
+            ptr = facts.lifetime_on_alloca ? allocas[level] : buffs[level]
+            decl = LLVM.Function(mod, intrinsic, LLVMType[LLVM.value_type(ptr)])
+            args = facts.lifetime_size ? Value[ConstantInt(T_int64, handler_size), ptr] :
+                                         Value[ptr]
+            call!(builder, decl.function_type, decl, args)
+        end
+
         for (enter, depth) in enters
             buff = buffs[depth+1]
             position!(builder, LLVM.before(enter))
             builder.debug_location = nothing
-            call!(builder, lifetime_start.function_type, lifetime_start, lifetime_args(buff))
+            lifetime!(LIFETIME_START, depth+1)
             args = task_arg ? Value[enter.arguments[1], buff] : Value[buff]
             new_enter = call!(builder, jlenter_func.function_type, jlenter_func, args)
             sj_args = savemask ? Value[buff, ConstantInt(T_int32, 0)] :
@@ -216,8 +228,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
             position!(builder, LLVM.after(leave))
             builder.debug_location = nothing
             for level in depth-npops+1:depth
-                call!(builder, lifetime_end.function_type, lifetime_end,
-                      lifetime_args(buffs[level]))
+                lifetime!(LIFETIME_END, level)
             end
         end
     end
