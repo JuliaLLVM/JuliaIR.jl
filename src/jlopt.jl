@@ -130,7 +130,8 @@ const JLOPT_USAGE = """
       -mtriple=TRIPLE           override the module's target triple
       -mcpu=CPU, -mattr=FEATURES
                                 the CPU and features (e.g. +avx2,-fma) of the target
-                                machine, as in opt; also the target that CPUFeatures
+                                machine, as in opt (`-mcpu=native` is the host's CPU,
+                                with its features); also the target that CPUFeatures
                                 (jl-cpu-features) folds for (which, unlike Julia's C++
                                 pass by name in opt, then uses them)
       -map-julia-passes=0       don't replace Julia's C++ passes and pipeline by the ports
@@ -286,10 +287,11 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
             opts.triple === nothing || (mod.triple = opts.triple)
             # like opt, refuse broken input, and verify the output
             verify(mod)
-            tm = target_machine(mod; cpu=something(opts.cpu, ""),
-                                features=something(opts.features, ""))
+            cpu, features = resolve_cpu(opts.cpu, opts.features)
+            tm = target_machine(mod; cpu=something(cpu, ""),
+                                features=something(features, ""))
             # the target that CPUFeatures folds for, if given
-            cpu_target = (; target_cpu=opts.cpu, target_features=opts.features)
+            cpu_target = (; target_cpu=cpu, target_features=features)
             try
                 @dispose pb=PassBuilder() begin
                     register!(pb; options=Dict(CPU_FEATURES.name => cpu_target))
@@ -311,6 +313,14 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
         end
     end
     return
+end
+
+# The CPU and features of `-mcpu` and `-mattr`, resolved like `opt` does: the CPU `native`
+# is the host's, with the host's features before those given.
+function resolve_cpu(cpu::Union{Nothing,String}, features::Union{Nothing,String})
+    cpu == "native" || return cpu, features
+    return LLVM.host_cpu_name(),
+           join(filter(!isempty, [LLVM.host_cpu_features(), something(features, "")]), ",")
 end
 
 # Like `opt`, optimize for the module's target if it has one (with the CPU and features

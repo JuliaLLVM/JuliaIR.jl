@@ -121,6 +121,21 @@ ir = """
         end
     end
 
+    # the CPU of the target machine, and the host's
+    @test JuliaIR.resolve_cpu(nothing, "+avx") == (nothing, "+avx")
+    cpu, features = JuliaIR.resolve_cpu("native", "-avx")
+    @test cpu == LLVM.host_cpu_name() && endswith(features, ",-avx")
+    @test JuliaIR.resolve_cpu("native", nothing)[2] == LLVM.host_cpu_features()
+    @dispose ctx=Context() mod=parse(LLVM.Module, ir) begin
+        LLVM.triple!(mod, LLVM.default_triple())
+        @dispose tm=JuliaIR.target_machine(mod) begin
+            @test LLVM.cpu(tm) in ("", "generic")
+        end
+        @dispose tm=JuliaIR.target_machine(mod; cpu) begin
+            @test LLVM.cpu(tm) == LLVM.host_cpu_name()
+        end
+    end
+
     # input that does not verify
     broken = """
         define i32 @f() {
