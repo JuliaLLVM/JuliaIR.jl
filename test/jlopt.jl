@@ -121,7 +121,8 @@ ir = """
         end
     end
 
-    # the CPU of the target machine, and the host's
+    # the CPU and features: of the target machine, and of the functions (as `opt`, which
+    # appends the features to those a function has)
     @test JuliaIR.resolve_cpu(nothing, "+avx") == (nothing, "+avx")
     cpu, features = JuliaIR.resolve_cpu("native", "-avx")
     @test cpu == LLVM.host_cpu_name() && endswith(features, ",-avx")
@@ -134,6 +135,22 @@ ir = """
         @dispose tm=JuliaIR.target_machine(mod; cpu) begin
             @test LLVM.cpu(tm) == LLVM.host_cpu_name()
         end
+    end
+    attributed = """
+        define void @f() #0 {
+          ret void
+        }
+        define void @g() {
+          ret void
+        }
+        attributes #0 = { "target-cpu"="x86-64" "target-features"="+avx2" }"""
+    if :X86 in LLVM.backends()
+        out = sprint() do io
+            jlopt(["-mtriple=x86_64-unknown-linux-gnu", "-mcpu=skylake", "-mattr=-avx2",
+                   "-passes=jl-remove-ni", "-S"]; stdin=IOBuffer(attributed), stdout=io)
+        end
+        @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
+        @test occursin("\"target-cpu\"=\"skylake\" \"target-features\"=\"-avx2\"", out)
     end
 
     # output to a file, from the API with the standard output discarded

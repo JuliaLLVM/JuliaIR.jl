@@ -292,6 +292,8 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
             cpu, features = resolve_cpu(opts.cpu, opts.features)
             tm = target_machine(mod; cpu=something(cpu, ""),
                                 features=something(features, ""))
+            tm === nothing ||
+                set_function_attributes!(mod, something(cpu, ""), something(features, ""))
             # the target that CPUFeatures folds for, if given
             cpu_target = (; target_cpu=cpu, target_features=features)
             try
@@ -343,6 +345,25 @@ function target_machine(mod::LLVM.Module; cpu::String="", features::String="")
         return nothing
     end
     return LLVM.TargetMachine(target, triple; cpu, features)
+end
+
+# Like `opt` (`codegen::setFunctionAttributes`), give every function the CPU unless it has
+# one, and append the features to its own: the functions' attributes take precedence over
+# the target machine's.
+function set_function_attributes!(mod::LLVM.Module, cpu::String, features::String)
+    for f in LLVM.functions(mod)
+        attrs = f.function_attributes
+        if !isempty(cpu) && !haskey(attrs, "target-cpu")
+            push!(attrs, StringAttribute("target-cpu", cpu))
+        end
+        if !isempty(features)
+            old = haskey(attrs, "target-features") ? attrs["target-features"].value : ""
+            delete!(attrs, "target-features")
+            push!(attrs, StringAttribute("target-features",
+                                         isempty(old) ? features : old * "," * features))
+        end
+    end
+    return mod
 end
 
 function write_output(mod::LLVM.Module, opts::JloptOptions, stdout::IO)
