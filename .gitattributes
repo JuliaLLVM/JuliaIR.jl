@@ -1,0 +1,3 @@
+# The fixture patches apply to Julia's fixtures, which Julia checks out unconverted
+# (`* -text`): keep their LF line endings on Windows too
+*.patch -text

@@ -5,6 +5,7 @@ InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 JuliaIR = "3913dba9-7ba9-44aa-bf76-1cfa3b3073b1"
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 LLVM_utils_unified_jll = "0def2053-1a45-54bc-bfc1-6427e7aae702"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
