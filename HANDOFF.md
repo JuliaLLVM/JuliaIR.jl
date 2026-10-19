@@ -453,10 +453,9 @@ S23 details: `src/pipeline/pipeline.jl` has `JuliaPipeline` (level, `ports`, Jul
 `jl-irce-with-cleanup` (1.14's `IRCEWithCleanupPass`), `build_pipeline!`/`pipeline`/
 `optimize!`/`alias_analyses!` and `expand_julia_pipeline`; one recipe per version
 (`src/pipeline/julia-1.1x.jl`, `Recipe{minor}` by `dialect_minor`, a stage that didn't
-change is the previous version's; 1.14 serves 1.15). Ports not on the stack yet are
-named by their port names and fall back to the C++ pass through `CPP_FALLBACKS` (one
-entry per port: delete it when the port lands; `test/upstream.jl`'s mode-B test then
-expects `julia<...>` lines to run). `jlopt` (and so the upstream harness) expands
+change is the previous version's; 1.14 serves 1.15). Every pass is ported, so
+`CPP_FALLBACKS` is empty: it is where a pass that a newer Julia adds can fall back to
+the C++ until its port lands (mode B then skips `julia<...>` lines). `jlopt` (and so the upstream harness) expands
 `julia<...>` unless `-map-julia-passes=0`; it gained `-mcpu`/`-mattr` (`native` = host),
 and with a `-print-*` option runs the pipeline once before setting LLVM's options, as
 those also apply to Julia's JIT compiling the passes. `test/pipeline.jl` compares

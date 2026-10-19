@@ -192,8 +192,8 @@ const PASS_SPECS = [
     PassSpec("CancellationLowering"; prefixes=["raw", "optimized"]),
 ]
 
-# Julia's optimization pipeline (`julia<level=N>`), rebuilt from the ports and the C++
-# passes that have no port yet (`JuliaIR.CPP_FALLBACKS`), at every optimization level.
+# Julia's optimization pipeline (`julia<level=N>`), rebuilt from the ports, at every
+# optimization level.
 # The deviations of the ports it runs are its own; it runs LateLowerGCFrame (hence the
 # retries) and GCInvariantVerifier (which aborts).
 const PIPELINE_PASSES = ["RemoveNI", "AllocOpt", "PropagateJuliaAddrspaces", "DemoteFloat16",

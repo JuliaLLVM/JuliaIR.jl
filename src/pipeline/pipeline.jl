@@ -139,17 +139,11 @@ struct Recipe{minor} end
 
 recipe(p::JuliaPipeline) = Recipe{Int(p.minor.minor)}()
 
-# Ports of Julia's passes that this package doesn't define yet. The recipes name them by
-# the ports' names; until a port is defined, Julia's C++ pass of this name runs in its
-# place, which is only available on Julia's own LLVM. Remove an entry when its port lands.
-const CPP_FALLBACKS = Dict(
-    "jl-remove-addrspaces" => "RemoveJuliaAddrspaces",
-    "jl-licm" => "JuliaLICM",
-    "jl-final-lower-gc" => "FinalLowerGC",
-    "jl-lower-ptls" => "LowerPTLSPass",
-    "jl-cpu-features" => "CPUFeatures",
-    "jl-multiversioning" => "JuliaMultiVersioning",
-)
+# Ports of Julia's passes that this package doesn't define yet, by the ports' names, which
+# the recipes use, to the names of Julia's C++ passes that run in their place (only
+# available on Julia's own LLVM). Every pass of the pipelines up to Julia 1.15 is ported;
+# a pass that a newer Julia adds can be named here until its port lands.
+const CPP_FALLBACKS = Dict{String,String}()
 
 # The pipeline text of one of Julia's passes, by the name of its port, with options
 # written like in Julia's pipeline (which are the same for the ports): the port, or

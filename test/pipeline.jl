@@ -73,8 +73,8 @@ end
     rebuilt = normalize_rebuilt(printed(JuliaIR.pipeline(; ports=false, config...)))
     @test cpp == rebuilt
 
-    # with the ports, which take the place of the C++ passes (and the C++ passes that
-    # aren't ported yet)
+    # with the ports, which take the place of the C++ passes (except for those in
+    # `CPP_FALLBACKS`)
     cpp_names = Dict(def.name => def.cpp_name for def in JuliaIR.PASSES
                      if !isempty(def.cpp_name))
     ports = printed(JuliaIR.pipeline(; config...))

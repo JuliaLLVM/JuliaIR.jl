@@ -68,11 +68,14 @@ end
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
 
     # mode B: lines that need Julia's C++ passes are skipped, those of the ports run
-    # Julia's pipeline is rebuilt from the ports, and the C++ passes not ported yet
+    # Julia's pipeline is rebuilt from the ports (lines with C++ passes in
+    # `CPP_FALLBACKS` would be skipped)
+    @test isempty(JuliaIR.CPP_FALLBACKS)
     st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
-    @test st == (isempty(JuliaIR.CPP_FALLBACKS) ? :run : :skip)
+    @test st == :run
     @test startswith(only(pipelines), "jl-remove-ni,BeforeOptimization,")
-    for name in setdiff(JULIA_CPP_PASSES, ported_passes())
+    # (Julia's pipeline is rebuilt, as every pass in it is ported)
+    for name in setdiff(JULIA_CPP_PASSES, ported_passes(), ["julia"])
         @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
     end
     st, _, pipelines = classify_run(run("opt -passes='module(RemoveNI)' -S %s"); mode="B")
@@ -585,17 +588,16 @@ mktempdir() do dir
         @test_throws "good.ll has no mode-A patch at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
     end
 
-    # Julia's C++ passes are skipped in mode B
+    # Julia's pipeline runs in mode B, as it is rebuilt from the ports only
     manifest = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
-    cpponly = mkpath(joinpath(dir, "cpponly", "test", "llvmpasses"))
-    write(joinpath(cpponly, "good.ll"), """
+    pipelined = mkpath(joinpath(dir, "pipelined", "test", "llvmpasses"))
+    write(joinpath(pipelined, "good.ll"), """
         ; RUN: opt -passes='julia<level=2>' -S %s | FileCheck %s
         """)
-    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(pipelined)), "good.ll", minor;
                                      cpp=false, mode="B", manifest_dir=dir)
-    @test !f.included
-    # (Julia's pipeline, while some of its passes have no port)
-    @test startswith(f.reason, "every RUN line skipped: no port of Julia's ")
+    @test f.included
+    @test only(f.runs)[2] == :run
 
     # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
     # whose RUN lines all check stderr sees the pin's printing only

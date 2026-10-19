@@ -333,12 +333,13 @@ kind = "port"
 ports = ["LowerExcHandlers"]
 status = "run"
 
+## Julia's optimization pipeline
 
 [fixtures."pipeline-prints.ll"]
-kind = "mixed"
-ports = ["AllocOpt", "PropagateJuliaAddrspaces", "LowerSIMDLoop", "LowerExcHandlers", "GCInvariantVerifier", "RemoveNI", "LateLowerGCFrame", "DemoteFloat16"]
+kind = "port"
+ports = ["AllocOpt", "PropagateJuliaAddrspaces", "LowerSIMDLoop", "LowerExcHandlers", "GCInvariantVerifier", "RemoveNI", "LateLowerGCFrame", "DemoteFloat16", "CPUFeatures", "JuliaMultiVersioning", "JuliaLICM", "FinalLowerGC", "LowerPTLSPass", "RemoveJuliaAddrspaces"]
 status = "run"
-reason = "Julia's optimization pipeline (`julia`), rebuilt from the ports and the C++ passes not ported yet"
+reason = "Julia's optimization pipeline (`julia`), rebuilt from the ports"
 
 
 ## Julia's code generator

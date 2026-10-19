@@ -72,11 +72,10 @@ Julia's pipeline brackets its stages by marker passes that do nothing, such as
 
 ## Passes without a port
 
-Julia's passes that JuliaIR doesn't port yet are named by their future port names in
-the recipes and fall back to Julia's C++ passes, which only exist on Julia's own LLVM.
-`JuliaIR.CPP_FALLBACKS` lists them: RemoveJuliaAddrspaces (`jl-remove-addrspaces`),
-JuliaLICM (`jl-licm`), FinalLowerGC (`jl-final-lower-gc`), LowerPTLS (`jl-lower-ptls`),
-CPUFeatures (`jl-cpu-features`) and JuliaMultiVersioning (`jl-multiversioning`).
+Every pass of Julia's pipelines up to 1.15 is ported, so the rebuilt pipeline runs on any
+LLVM that JuliaIR supports. A pass that a newer Julia adds can be named in a recipe by
+its future port name before the port exists, with an entry in `JuliaIR.CPP_FALLBACKS`
+that makes Julia's C++ pass run in its place (only on Julia's own LLVM).
 
 ## Differences from Julia's pipeline
 
