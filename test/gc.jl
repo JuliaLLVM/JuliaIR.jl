@@ -166,6 +166,10 @@ end
     @test count(l -> occursin(r"^call void @julia.safepoint\(ptr %safepoint\d*\)$", l), body(out)) == 2
     @test occursin("declare void @julia.safepoint(ptr) #0", out)
     @test occursin("attributes #0 = { nounwind }", out)
+    # also with another type
+    out = llgcf(transition(X86_64; decl="declare void @julia.safepoint(ptr, ...)"), v"1.13")
+    @test count(l -> occursin(r"^call void \(ptr, \.\.\.\) @julia.safepoint\(ptr %safepoint\d*\)$", l), body(out)) == 2
+    @test occursin("declare void @julia.safepoint(ptr, ...)\n", out)
 
     # a 32-bit target
     out = llgcf(transition(I686; decl=""), v"1.12", "task-gcstack=76;task-ptls=84;tls-safepoint=8;tls-gc-state=13")
