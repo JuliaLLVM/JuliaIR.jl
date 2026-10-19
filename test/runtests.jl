@@ -8,6 +8,7 @@ include("litsetup.jl")
 
 include("dialect.jl")
 include("irutils.jl")
+include("gc.jl")
 include("registration.jl")
 include("jlopt.jl")
 include("passes.jl")
