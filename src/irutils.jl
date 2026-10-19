@@ -149,14 +149,10 @@ intrinsic_is(call::Instruction, intr::Intrinsic) =
 # `Module::getOrInsertFunction`: whatever global has the name (a function of another
 # type, an alias) is called with `ft`
 function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
-    f = get(mod.functions, name, nothing)
-    f === nothing || return f
-    for lookup in (API.LLVMGetNamedGlobalAlias, API.LLVMGetNamedGlobalIFunc)
-        ref = lookup(mod, name, length(name))
-        ref == C_NULL || return LLVM.Value(ref)
+    for globals in (mod.functions, LLVM.aliases(mod), LLVM.ifuncs(mod), mod.globals)
+        gv = get(globals, name, nothing)
+        gv === nothing || return gv
     end
-    ref = API.LLVMGetNamedGlobal(mod, name)
-    ref == C_NULL || return LLVM.Value(ref)
     return LLVM.Function(mod, name, ft)
 end
 
@@ -211,7 +207,7 @@ end
 # The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
 # C++ passes render instructions that way.
 function opcode_name(inst::Instruction)
-    opcode = API.LLVMGetInstructionOpcode(inst)
+    opcode = inst.opcode
     opcode == API.LLVMAtomicCmpXchg && return "cmpxchg"
     opcode == API.LLVMVAArg && return "va_arg"
     # `LLVM.Opcode.FAdd`, or `LLVMFAdd` with older LLVM.jl

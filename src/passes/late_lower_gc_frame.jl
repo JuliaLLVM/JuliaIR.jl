@@ -33,17 +33,13 @@ is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
 # `ConstantData`: constants without operands
 is_constant_data(@nospecialize(v::Value)) =
-    API.LLVMIsAConstantInt(v) != C_NULL || API.LLVMIsAConstantFP(v) != C_NULL ||
-    API.LLVMIsAConstantPointerNull(v) != C_NULL ||
-    API.LLVMIsAConstantAggregateZero(v) != C_NULL ||
-    API.LLVMIsAConstantDataSequential(v) != C_NULL ||
-    API.LLVMIsAConstantTokenNone(v) != C_NULL || API.LLVMIsAUndefValue(v) != C_NULL
+    v isa Union{ConstantInt,ConstantFP,LLVM.PointerNull,LLVM.ConstantAggregateZero,
+                LLVM.ConstantDataSequential,LLVM.ConstantTokenNone,LLVM.UndefValue,
+                LLVM.PoisonValue}
 
 # the opcode of an instruction or constant expression (`Operator::getOpcode`), or nothing
 function operator_opcode(@nospecialize(v::Value))
-    v isa Instruction && return v.opcode
-    v isa LLVM.ConstantExpr && return API.LLVMGetConstOpcode(v)
-    return nothing
+    return v isa Union{Instruction,LLVM.ConstantExpr} ? v.opcode : nothing
 end
 
 # the argument a call returns (`CallBase::getReturnedArgOperand`), or nothing
@@ -127,10 +123,6 @@ shuffle_mask(inst::Instruction) =
 
 # shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
 const UNDEF_MASK_ELEM = -1
-
-# the index list of an extractvalue or insertvalue
-aggregate_indices(inst::Instruction) =
-    [Int(unsafe_load(API.LLVMGetIndices(inst), i)) for i in 1:Int(API.LLVMGetNumIndices(inst))]
 
 # the constant-folding builder inserts constants instead of instructions; these create
 # an instruction (like the C++'s `XInst::Create`) by building it from a placeholder
@@ -248,7 +240,7 @@ function simplify_extract_value(@nospecialize(agg::Value), idxs::Vector{Int})
     end
     ivi = agg
     while ivi isa LLVM.InsertValueInst
-        ins_idxs = aggregate_indices(ivi)
+        ins_idxs = collect(ivi.indices)
         n = min(length(ins_idxs), length(idxs))
         if ins_idxs[1:n] == idxs[1:n]
             length(ins_idxs) == length(idxs) && return ivi.operands[2]
@@ -803,7 +795,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
         numbers = copy(number_all!(p, S, cur.operands[1]))
         tracked_paths = track_composite_type(typeref(cur))
         insert_numbers = number_all!(p, S, cur.operands[2])
-        idxs = aggregate_indices(cur)
+        idxs = collect(cur.indices)
         j = 0
         for (i, elem) in enumerate(tracked_paths)
             if starts_with(elem, idxs)
@@ -813,7 +805,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
     elseif cur isa LLVM.ExtractValueInst
         base_numbers = number_all!(p, S, cur.operands[1])
         tracked_paths = track_composite_type(typeref(cur.operands[1]))
-        idxs = aggregate_indices(cur)
+        idxs = collect(cur.indices)
         for (i, elem) in enumerate(tracked_paths)
             starts_with(elem, idxs) && push!(numbers, base_numbers[i])
         end

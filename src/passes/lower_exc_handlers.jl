@@ -61,8 +61,7 @@ end
 function runtime_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
     f = get(mod.functions, name, nothing)
     f === nothing || return f
-    API.LLVMGetNamedGlobal(mod, name) == C_NULL &&
-        API.LLVMGetNamedGlobalAlias(mod, name, length(name)) == C_NULL ||
+    (haskey(mod.globals, name) || haskey(LLVM.aliases(mod), name)) &&
         throw(ArgumentError("module has a global named $name that is not a function"))
     return LLVM.Function(mod, name, ft)
 end

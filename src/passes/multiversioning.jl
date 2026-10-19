@@ -830,7 +830,7 @@ function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariabl
     ft = f.function_type
     trampoline = LLVM.Function(ctx.mod, "", ft)
     copy_attributes!(trampoline, f)
-    trampoline.visibility = LLVM.API.LLVMHiddenVisibility
+    trampoline.visibility = LLVM.Visibility.Hidden
     trampoline.dso_local = true
     delete!(trampoline.function_attributes, "julia.mv.reloc")
     delete!(trampoline.function_attributes, "julia.mv.clones")
@@ -865,7 +865,7 @@ function prepare_slots!(ctx::CloneCtx)
     for f in ctx.orig_funcs
         f in ctx.sets.reloc || continue
         slot = GlobalVariable(ctx.mod, f.value_type, f.name * ".reloc_slot")
-        slot.visibility = LLVM.API.LLVMHiddenVisibility
+        slot.visibility = LLVM.Visibility.Hidden
         slot.dso_local = true
         if isdeclaration(f)
             ctx.extern_relocs[f] = slot
@@ -909,7 +909,7 @@ function clone_function!(f::LLVM.Function, new_f::LLVM.Function, vmap::ValueMap)
         vmap[src] = dst
     end
     clone_into!(new_f, f; value_map=vmap,
-                changes=API.LLVMCloneFunctionChangeTypeGlobalChanges)
+                changes=LLVM.CloneFunctionChangeType.GlobalChanges)
 end
 
 # Map the compile units to themselves in the value maps of the targets that clone from a
@@ -1160,7 +1160,7 @@ function hidden_global!(ctx::CloneCtx, ty::LLVMType, name::String, init;
     gv = GlobalVariable(ctx.mod, ty, name)
     gv.constant = constant
     init === nothing || (gv.initializer = init)
-    gv.visibility = LLVM.API.LLVMHiddenVisibility
+    gv.visibility = LLVM.Visibility.Hidden
     gv.dso_local = true
     return gv
 end
@@ -1185,7 +1185,7 @@ function emit_offset_table!(ctx::CloneCtx, vars::Vector, name::String, suffix::S
     else
         b = const_bitcast(vars[1], LLVM.PointerType())
         ga = GlobalAlias(ctx.mod, ctx.T_size, b, name * "_base" * suffix)
-        ga.visibility = LLVM.API.LLVMHiddenVisibility
+        ga.visibility = LLVM.Visibility.Hidden
         ga.dso_local = true
         b
     end

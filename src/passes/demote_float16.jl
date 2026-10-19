@@ -111,7 +111,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     erase = Instruction[]
     @dispose builder=IRBuilder() begin
         for bb in f.blocks, inst in bb.instructions
-            opcode = API.LLVMGetInstructionOpcode(inst)
+            opcode = inst.opcode
             opcode in DEMOTED_OPCODES || continue
             ops = inst.operands
             any(demoted, ops) || continue
