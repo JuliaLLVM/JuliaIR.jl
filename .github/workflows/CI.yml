@@ -203,8 +203,13 @@ jobs:
           retention-days: 1
 
   # Julia's pass tests and the package tests with the ports on the standalone LLVM, for
-  # the IR of each pinned Julia (mode B; see the documentation's "Testing" page). Julia
+  # the IR of a pinned Julia (mode B; see the documentation's "Testing" page). Julia
   # itself runs on its own LLVM, which produces the IR.
+  #
+  # Only the LTS: old IR on a newer LLVM is what GPUCompiler does, and where the ports
+  # broke (LowerExcHandlers' lifetime markers on an addrspace cast, which LLVM 22's
+  # verifier rejects); the LTS has the oldest IR of a supported release, and the nightly
+  # `test` and `upstream` jobs cover new IR on LLVM 23. Any pin of `upstream` can be added.
   mode-b:
     name: Julia ${{ matrix.version }} on LLVM 23 - mode B
     needs: standalone-llvm
@@ -213,20 +218,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:  # the pins of the `upstream` job
+        include:  # pins of the `upstream` job
           - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
-          - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
-          - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
-          - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
-          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
-          - {version: 'nightly', julia_ref: ''}  # master
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-      # while the nightly builds use LLVM 23 too, their jobs test a standalone build of
-      # their own LLVM version; once one uses a newer LLVM, the standalone LLVM must follow
+      # a pin whose Julia uses LLVM 23 tests a standalone build of its own LLVM version; one
+      # that uses a newer LLVM needs the standalone LLVM to follow
       - name: Check that the standalone LLVM is not older than Julia's
         run: |
           julia --startup-file=no -e 'Base.libllvm_version.major <= 23 ||
@@ -279,7 +279,7 @@ jobs:
   # The upgrade oracle: Julia's C++ passes, on Julia's own LLVM, with their textual output
   # re-printed by LLVM 23's opt, against the fixtures with the mode-B patches. It checks
   # that the patches describe LLVM 23 rather than the ports, so it runs when they or the
-  # harness change.
+  # harness change. Only for the LTS, like `mode-b`.
   oracle:
     name: Julia ${{ matrix.version }} - upgrade oracle for LLVM 23
     needs: standalone-llvm
@@ -289,13 +289,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:  # the pins of the `upstream` job
+        include:  # pins of the `upstream` job
           - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
-          - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
-          - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
-          - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
-          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
-          - {version: 'nightly', julia_ref: ''}  # master
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
