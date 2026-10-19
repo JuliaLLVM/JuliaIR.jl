@@ -251,8 +251,11 @@ function ledger_write(fields...)
     return
 end
 
-ledger_record(name::String, dialect::Dialect) =
+function ledger_record(name::String, dialect::Dialect)
+    # before formatting the line: this runs for every function a pass runs on
+    isempty(LEDGER[]) && return
     ledger_write("pass", name, "julia=$(dialect.julia)", "llvm=$(LLVM.version())")
+end
 
 
 ## pass definitions
