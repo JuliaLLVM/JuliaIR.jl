@@ -24,7 +24,7 @@
 ; RUN: %if x86_64 %{ opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/no-triple.ll | FileCheck %t/no-triple.ll %}
 
 ; JIT mode, through the getter: at the process address up to Julia 1.13 (with the key on
-; Darwin), through `jl_get_pgcstack_resolved` on master (always with `tls-getters`)
+; Darwin), through `jl_get_pgcstack_resolved` from 1.14 on (always with `tls-getters`)
 ; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0x2000>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=ADDRESS %}
 ; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ opt -mtriple=x86_64-apple-darwin -passes='jl-lower-ptls<tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0x2000>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=ADDRESS-KEY %}
 ; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-1>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
@@ -44,7 +44,7 @@
 
 ; `julia.get_pgcstack_or_new`: adopting the thread, entering and leaving the GC-unsafe
 ; state (1.12 has 1.13's fix of the entry safepoint); the safepoint page is loaded
-; atomically from 1.13 on, through an address named on master
+; atomically from 1.13 on, through an address named from 1.14 on
 ; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V110,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
 ; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V111,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
 ; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,PLAINSP,V112 -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
@@ -221,7 +221,7 @@ declare void @use(ptr)
 ; RESOLVED-NEXT:       %pgcstack = call ptr @jl_get_pgcstack_resolved() #[[ATTRS:[0-9]+]]
 ; RESOLVED:          declare void @jl_get_pgcstack_resolved()
 ; RESOLVED:          attributes #[[ATTRS]] = { nounwind memory(none) }
-; NO-TLS-GETTERS:    the option tls-getters only exists on Julia master
+; NO-TLS-GETTERS:    the option tls-getters only exists from Julia 1.14 on
 define void @get() {
 top:
   %pgcstack = call ptr @julia.get_pgcstack()

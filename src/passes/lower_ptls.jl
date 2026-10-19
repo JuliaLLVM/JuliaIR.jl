@@ -419,7 +419,7 @@ function lower_ptls!(mod::LLVM.Module, am, opts::PassOptions)
     imaging = opts.extra.imaging
     tls_getters = opts.extra.tls_getters
     tls_getters && dialect.ptls_jit_getter !== :resolved &&
-        throw(ArgumentError("the option tls-getters only exists on Julia master, not on $(running_julia())"))
+        throw(ArgumentError("the option tls-getters only exists from Julia 1.14 on, not on $(running_julia())"))
     getters = [(name, get(mod.functions, name, nothing), name == PGCSTACK_GETTER_OR_NEW)
                for name in (PGCSTACK_GETTER, PGCSTACK_GETTER_OR_NEW)]
     all(g -> g[2] === nothing, getters) && return PreservedAnalyses(AllAnalyses)
@@ -471,7 +471,7 @@ entry, and back at the returns unless the function returns tracked pointers).
 
 In JIT mode (the default), the code reads the GC stack through the thread pointer, at the
 running process's `jl_tls_offset`, or calls the runtime's getter (at its address in the
-process up to Julia 1.13, through the symbol `jl_get_pgcstack_resolved` on master, where
+process up to Julia 1.13, through the symbol `jl_get_pgcstack_resolved` from 1.14 on, where
 `tls_getters=true` always calls it). The result only works in the process that compiled
 it. With `imaging=true`, it loads the getter, and the TLS offset where the running Julia
 uses ELF TLS, from variables of the system image that its loader fills in.

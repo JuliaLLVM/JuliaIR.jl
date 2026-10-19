@@ -602,7 +602,7 @@ end
             _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8")
             @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
         else
-            @test_throws "only exists on Julia master" lower(ir(get_ir), "tls-getters")
+            @test_throws "only exists from Julia 1.14 on" lower(ir(get_ir), "tls-getters")
         end
     end
 

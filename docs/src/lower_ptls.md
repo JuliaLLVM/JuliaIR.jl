@@ -13,12 +13,12 @@ that C code may call from a thread Julia doesn't know yet (a `@cfunction`). Juli
     and a load at that offset;
   - otherwise a call of the runtime's getter: at its address in the process up to Julia
     1.13 (with the key of the thread-local variable as argument on Darwin), through the
-    symbol `jl_get_pgcstack_resolved` on master;
+    symbol `jl_get_pgcstack_resolved` from Julia 1.14 on;
 - in *imaging mode*, for the system image and package images, code that loads the getter
   (and, where the runtime uses ELF TLS, the TLS offset) from variables of the image that
   the loader fills in: `jl_pgcstack_func_slot`, `jl_pgcstack_key_slot` (Darwin) and
-  `jl_tls_offset` (`jl_image_tls_offset` on master). With ELF TLS, the code reads the
-  thread pointer when the offset is nonzero and calls the getter otherwise.
+  `jl_tls_offset` (`jl_image_tls_offset` from Julia 1.14 on). With ELF TLS, the code
+  reads the thread pointer when the offset is nonzero and calls the getter otherwise.
 
 For `julia.get_pgcstack_or_new`, the code then checks whether the thread has a GC stack
 (the branch weights make it likely), and if not, calls the runtime to adopt the thread
@@ -41,7 +41,7 @@ code keeps the names and the structure of the C++ (`fix_pgcstack_use!`,
 | Option | Keyword | Meaning |
 |--------|---------|---------|
 | `imaging` | `imaging` | imaging mode instead of JIT mode |
-| `tls-getters` | `tls_getters` | always call the getter in JIT mode (master only, like the C++) |
+| `tls-getters` | `tls_getters` | always call the getter in JIT mode (Julia 1.14 and later, like the C++) |
 | `tls-elf-support=yes\|no` | `tls_elf_support` | whether the runtime uses ELF TLS (imaging mode) |
 | `tls-offset=N` | `tls_offset` | the GC stack's offset from the thread pointer, or -1 (JIT mode) |
 | `pgcstack-getter=0x...` | `pgcstack_getter` | the getter's address in the process (JIT mode, up to 1.13) |
@@ -58,7 +58,7 @@ offset are the running Julia's, whatever the module's target.
 
 The differences between versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | master |
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
 |-----------|------|------|------|------|--------|
 | the GC stack argument (`ptls_stack_argument`) | `swiftself` | `swiftself` | `swiftself` | `"gcstack"` | `"gcstack"` |
 | the argument takes the call's name (`ptls_argument_takes_name`) | no | yes | yes | yes | yes |
@@ -98,4 +98,4 @@ The differences between versions are fields of `JuliaIR.Dialect`:
   variable) is an error, as is a declaration of the function that adopts threads with
   another type than the getter's. New declarations are in
   the data layout's address space for globals, like the C++'s.
-- `tls-getters` is rejected before master, which doesn't have it.
+- `tls-getters` is rejected before Julia 1.14, which doesn't have it.
