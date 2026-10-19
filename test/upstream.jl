@@ -281,13 +281,11 @@ end
     released = deepcopy(manifest)
     released["pins"]["1.15"]["commit"] = "0"^40
     @test_throws "no pin for Julia 1.16" UpstreamHarness.pin_minor(released, v"1.16.0-DEV.1")
-    for (name, entry) in manifest["fixtures"]
-        get(entry, "status", "") in ("override", "derived") &&
+    # the patches exist (a fixture may have one per pin)
+    for name in keys(manifest["fixtures"]), minor in keys(manifest["pins"])
+        entry = UpstreamHarness.fixture_entry(manifest, name, minor)
+        entry["status"] in ("override", "derived") &&
             @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
-        for (_, overrides) in get(entry, "pins", Dict())
-            get(overrides, "status", "") in ("override", "derived") &&
-                @test isfile(joinpath(@__DIR__, "upstream", overrides["patch"]))
-        end
     end
 end
 
