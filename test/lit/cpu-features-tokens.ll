@@ -10,6 +10,9 @@
 ; RUN: opt -passes=CPUFeatures -S %t/aarch64.ll | FileCheck %t/aarch64.ll
 ; RUN: opt -passes=CPUFeatures -S %t/arm.ll | FileCheck %t/arm.ll
 
+; features are not trimmed; from LLVM 22, the verifier rejects such features
+; RUN: %if !llvm-ge-22 %{ opt -passes=CPUFeatures -S %t/space.ll | FileCheck %t/space.ll %}
+
 ; other spellings of x86
 ; RUN: opt -passes=CPUFeatures -S %t/i686.ll | FileCheck %t/i686.ll
 ; RUN: opt -passes=CPUFeatures -S %t/amd64.ll | FileCheck %t/amd64.ll
@@ -82,14 +85,6 @@ define i1 @empty() "target-cpu"="haswell" "target-features"="" {
   ret i1 %r
 }
 
-; features are not trimmed
-; CHECK-LABEL: @space(
-; CHECK-NEXT: ret i1 false
-define i1 @space() "target-features"="+sse2, +fma" {
-  %r = call i1 @julia.cpu.have_fma.f64()
-  ret i1 %r
-}
-
 ; CHECK-LABEL: @f16(
 ; CHECK-NEXT: ret i1 false
 define i1 @f16() "target-features"="+fma" {
@@ -136,6 +131,18 @@ declare i1 @julia.cpu.have_fma.f64()
 ; CHECK-LABEL: @fma(
 ; CHECK-NEXT: ret i1 true
 define i1 @fma() "target-features"="+fma" {
+  %r = call i1 @julia.cpu.have_fma.f64()
+  ret i1 %r
+}
+
+;--- space.ll
+target triple = "x86_64-unknown-linux-gnu"
+
+declare i1 @julia.cpu.have_fma.f64()
+
+; CHECK-LABEL: @space(
+; CHECK-NEXT: ret i1 false
+define i1 @space() "target-features"="+sse2, +fma" {
   %r = call i1 @julia.cpu.have_fma.f64()
   ret i1 %r
 }
