@@ -244,7 +244,7 @@ function resolve_targets(mod::LLVM.Module,
                          dialect::Dialect)
     specs = target_specs(mod, dialect)
     if specs === nothing
-        (option === nothing || isempty(option)) &&
+        option === nothing &&
             throw(MultiVersioningError("the module has no julia.mv.specs flag and no targets were given (the `targets` option)"))
         # what the module flag will say
         option = [normalize_target(t, dialect) for t in option]

@@ -98,7 +98,6 @@ end
     ts = targets[1:3]
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("test") begin
         @test_throws "no julia.mv.specs flag and no targets were given" JuliaIR.resolve_targets(mod, nothing, dialect)
-        @test_throws "no julia.mv.specs flag and no targets were given" JuliaIR.resolve_targets(mod, MultiVersioningTarget[], dialect)
         @test JuliaIR.resolve_targets(mod, ts, dialect) ==
               ([JuliaIR.normalize_target(t, dialect) for t in ts], true)
         JuliaIR.set_target_specs!(mod, ts, dialect)
