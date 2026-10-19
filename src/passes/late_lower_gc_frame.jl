@@ -8,30 +8,7 @@
 # docs/src/late_lower_gc_frame.md.
 
 
-## constants of Julia's runtime (the same on every target)
-
-# GC states of a thread (`julia_threads.h`)
-const JL_GC_STATE_SAFE = 2
-
-
 ## types and values
-
-const TypeRef = API.LLVMTypeRef
-const ValueRef = API.LLVMValueRef
-
-type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
-vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
-
-is_pointer_type(t::TypeRef) = type_kind(t) == API.LLVMPointerTypeKind
-is_vector_type(t::TypeRef) = type_kind(t) in (API.LLVMVectorTypeKind,
-                                              API.LLVMScalableVectorTypeKind)
-is_struct_type(t::TypeRef) = type_kind(t) == API.LLVMStructTypeKind
-is_array_type(t::TypeRef) = type_kind(t) == API.LLVMArrayTypeKind
-type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
-
-# a scalar pointer type in one of Julia's address spaces (10 to 13)
-is_special_ptr(t::TypeRef) =
-    is_pointer_type(t) && AS_TRACKED <= type_addrspace(t) <= AS_LOADED
 
 # a pointer, or vector of pointers, in the tracked address space
 is_tracked_value(@nospecialize(v::Value)) =
@@ -43,96 +20,6 @@ is_tracked_value(@nospecialize(v::Value)) =
 value_addrspace(@nospecialize(v::Value)) = type_addrspace(scalar_typeref(typeref(v)))
 
 is_pointer_value(@nospecialize(v::Value)) = is_pointer_type(typeref(v))
-
-function array_length(t::TypeRef)
-    return LLVM.version() >= v"17" ? Int(API.LLVMGetArrayLength2(t)) :
-                                     Int(API.LLVMGetArrayLength(t))
-end
-
-# the number of elements of a struct, array or vector type (the minimum for scalable
-# vectors), like `getCompositeNumElements`
-function composite_num_elements(t::TypeRef)
-    is_struct_type(t) && return Int(API.LLVMCountStructElementTypes(t))
-    is_array_type(t) && return array_length(t)
-    return Int(API.LLVMGetVectorSize(t))
-end
-
-# the type of element `i` (0-based) of a struct, array or vector type
-composite_element_type(t::TypeRef, i::Integer) =
-    is_struct_type(t) ? API.LLVMStructGetTypeAtIndex(t, i) : API.LLVMGetElementType(t)
-
-# the types contained in a struct, array or vector type (`Type::subtypes`)
-function subtypes(t::TypeRef)
-    is_struct_type(t) || return [API.LLVMGetElementType(t)]
-    return [API.LLVMStructGetTypeAtIndex(t, i) for i in 0:composite_num_elements(t)-1]
-end
-
-is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_type(t)
-
-# how many pointers in Julia's address spaces a type holds (`count`), whether it holds
-# anything else (`all == false`), and whether any of them isn't tracked (`derived`)
-struct CountTrackedPointers
-    count::Int
-    all::Bool
-    derived::Bool
-end
-
-function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
-    count = 0
-    all = true
-    derived = false
-    if is_pointer_type(t)
-        if is_special_ptr(t)
-            as = type_addrspace(t)
-            if !(ignore_loaded && as == AS_LOADED)
-                count += 1
-                as != AS_TRACKED && (derived = true)
-            end
-        end
-    elseif is_composite(t)
-        for elt in subtypes(t)
-            sub = CountTrackedPointers(elt, ignore_loaded)
-            count += sub.count
-            all &= sub.all
-            derived |= sub.derived
-        end
-        if is_array_type(t)
-            count *= array_length(t)
-        elseif is_vector_type(t)
-            count *= Int(API.LLVMGetVectorSize(t))
-        end
-    end
-    count == 0 && (all = false)
-    return CountTrackedPointers(count, all, derived)
-end
-
-function has_loaded_ty(t::TypeRef)
-    if is_pointer_type(t)
-        return type_addrspace(t) == AS_LOADED
-    elseif is_composite(t)
-        return any(has_loaded_ty, subtypes(t))
-    end
-    return false
-end
-
-# the index paths of the special pointers inside a type, like `TrackCompositeType`
-function track_composite_type(t::TypeRef)
-    numberings = Vector{Vector{Int}}()
-    idxs = Int[]
-    function walk(t)
-        if is_pointer_type(t)
-            is_special_ptr(t) && push!(numberings, copy(idxs))
-        elseif is_composite(t)
-            for idx in 0:composite_num_elements(t)-1
-                push!(idxs, idx)
-                walk(composite_element_type(t, idx))
-                pop!(idxs)
-            end
-        end
-    end
-    walk(t)
-    return numberings
-end
 
 # the type at a path of indices in an aggregate type (`ExtractValueInst::getIndexedType`)
 function indexed_type(t::TypeRef, idxs)
@@ -2146,7 +2033,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
 
     # replace allocas
     alloca_slot = GC_FRAME_HEADER_SLOTS
-    frame_align = TAG_ALIGNMENT
+    frame_align = JL_SMALL_BYTE_ALIGNMENT
     ptrsize = pointer_size(p)
     function replace_alloca(ai::Instruction)
         # preserve both the alloca's alignment and its offset within the frame
@@ -2202,7 +2089,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     end
     nroots = ConstantInt(T_int32, max_color + 1 + alloca_slot - GC_FRAME_HEADER_SLOTS)
     gcframe.operands[1] = nroots
-    if frame_align > TAG_ALIGNMENT
+    if frame_align > JL_SMALL_BYTE_ALIGNMENT
         push!(gcframe.return_attributes, EnumAttribute("align", frame_align))
     end
     push_gcframe.operands[2] = nroots
@@ -2355,14 +2242,14 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # valid in general, since the load might not be a type on other paths, but it is
         # for constant globals, which are the important cases.
         task_local = Ref(false)
-        if is_load_from_const_gv(p, tag, task_local) && get_load_value_align(tag) < TAG_ALIGNMENT
-            tag.metadata[LLVM.MD_align] = MDNode([i64_metadata(TAG_ALIGNMENT)])
+        if is_load_from_const_gv(p, tag, task_local) && get_load_value_align(tag) < JL_SMALL_BYTE_ALIGNMENT
+            tag.metadata[LLVM.MD_align] = MDNode([i64_metadata(JL_SMALL_BYTE_ALIGNMENT)])
         end
     end
     # as a last resort, an alignment assumption
     tag_type = LLVM.value_type(tag)
-    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < TAG_ALIGNMENT
-        emit_alignment_assumption!(p, tag, TAG_ALIGNMENT)
+    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < JL_SMALL_BYTE_ALIGNMENT
+        emit_alignment_assumption!(p, tag, JL_SMALL_BYTE_ALIGNMENT)
     end
 
     if p.dialect.gc_alloc_bytes_tag

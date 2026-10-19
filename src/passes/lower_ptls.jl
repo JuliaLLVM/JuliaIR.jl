@@ -164,7 +164,7 @@ end
 # whether the GC state is restored at the returns of a function that adopts threads: the
 # C++ only does so when the function returns no tracked pointers
 restores_gc_state(f::LLVM.Function) =
-    CountTrackedPointers(Base.unsafe_convert(TypeRef, LLVM.return_type(f.function_type))).count == 0
+    CountTrackedPointers(LLVM.return_type(f.function_type)).count == 0
 
 # Call another function (`CallBase::setCalledOperand`), which may be in another address
 # space than the getter: the callee is the last operand of a call. (LLVM.jl's

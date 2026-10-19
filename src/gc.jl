@@ -1,8 +1,9 @@
-# What Julia's GC lowering passes share (LateLowerGCFrame, FinalLowerGC): the constants
-# of the runtime's GC, the declarations of the GC intrinsics and of the runtime functions
-# they are lowered to (`JuliaPassContext`, `jl_intrinsics` and `jl_well_known` in Julia's
-# `llvm-pass-helpers.cpp`), TBAA nodes, and the code both passes emit (type tag loads,
-# write barriers). JuliaLICM uses the write-barrier helpers too.
+# What Julia's GC lowering passes share (LateLowerGCFrame, FinalLowerGC, LowerPTLS,
+# CancellationLowering, JuliaLICM): the constants of the runtime's GC, the counting of
+# tracked pointers in types, Julia's TBAA nodes, the declarations of the GC intrinsics and
+# of the runtime functions they are lowered to (`JuliaPassContext`, `jl_intrinsics` and
+# `jl_well_known` in Julia's `llvm-pass-helpers.cpp`), and the code the passes emit (type
+# tag loads, write barriers).
 
 ## constants of Julia's runtime (the same on every target)
 
@@ -13,13 +14,90 @@ const GC_IN_IMAGE = 4
 const GC_IN_IMAGE_REMSET = 8
 const GC_IN_IMAGE_NOT_REMSET = GC_IN_IMAGE
 
-# type tags are the header word before an object; types are 16-byte aligned, so the low
-# 4 bits of the tag are GC bits (`JL_SMALL_BYTE_ALIGNMENT`)
-const TAG_ALIGNMENT = 16
+# the alignment of small GC allocations and of types (`JL_SMALL_BYTE_ALIGNMENT`): type
+# tags are the header word before an object, whose low 4 bits are GC bits
+const JL_SMALL_BYTE_ALIGNMENT = 16
+
+# GC states of a thread (`julia_threads.h`)
+const JL_GC_STATE_SAFE = 2
 
 # a GC frame starts with two words (`jl_gcframe_t`: nroots, prev)
 const GC_FRAME_HEADER_SLOTS = 2
 
+
+## tracked pointers
+
+# a scalar pointer type in one of Julia's address spaces (10 to 13)
+is_special_ptr(t::TypeRef) =
+    is_pointer_type(t) && AS_TRACKED <= type_addrspace(t) <= AS_LOADED
+
+# how many pointers in Julia's address spaces a type holds (`count`), whether it holds
+# anything else (`all == false`), and whether any of them isn't tracked (`derived`)
+struct CountTrackedPointers
+    count::Int
+    all::Bool
+    derived::Bool
+end
+
+function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
+    count = 0
+    all = true
+    derived = false
+    if is_pointer_type(t)
+        if is_special_ptr(t)
+            as = type_addrspace(t)
+            if !(ignore_loaded && as == AS_LOADED)
+                count += 1
+                as != AS_TRACKED && (derived = true)
+            end
+        end
+    elseif is_composite(t)
+        for elt in subtypes(t)
+            sub = CountTrackedPointers(elt, ignore_loaded)
+            count += sub.count
+            all &= sub.all
+            derived |= sub.derived
+        end
+        if is_array_type(t)
+            count *= array_length(t)
+        elseif is_vector_type(t)
+            count *= Int(API.LLVMGetVectorSize(t))
+        end
+    end
+    count == 0 && (all = false)
+    return CountTrackedPointers(count, all, derived)
+end
+
+CountTrackedPointers(@nospecialize(t::LLVMType), ignore_loaded::Bool=false) =
+    CountTrackedPointers(Base.unsafe_convert(TypeRef, t), ignore_loaded)
+
+function has_loaded_ty(t::TypeRef)
+    if is_pointer_type(t)
+        return type_addrspace(t) == AS_LOADED
+    elseif is_composite(t)
+        return any(has_loaded_ty, subtypes(t))
+    end
+    return false
+end
+
+# the index paths of the special pointers inside a type, like `TrackCompositeType`
+function track_composite_type(t::TypeRef)
+    numberings = Vector{Vector{Int}}()
+    idxs = Int[]
+    function walk(t)
+        if is_pointer_type(t)
+            is_special_ptr(t) && push!(numberings, copy(idxs))
+        elseif is_composite(t)
+            for idx in 0:composite_num_elements(t)-1
+                push!(idxs, idx)
+                walk(composite_element_type(t, idx))
+                pop!(idxs)
+            end
+        end
+    end
+    walk(t)
+    return numberings
+end
 
 ## the state of a GC lowering pass
 
@@ -50,6 +128,75 @@ function get_pgcstack(dialect::Dialect, f::LLVM.Function, getter, adopt)
         end
     end
     return nothing
+end
+
+
+## TBAA
+
+# Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
+# node (`tbaa_make_child_with_context`)
+function tbaa_make_child(name::String, parent=nothing; constant::Bool=false)
+    jtbaa = MDNode([MDString("jtbaa")])
+    root = MDNode([MDString("jtbaa"), jtbaa, i64_metadata(0)])
+    scalar = MDNode([MDString(name), something(parent, root), i64_metadata(0)])
+    tag = constant ? MDNode([scalar, scalar, i64_metadata(0), i64_metadata(1)]) :
+                     MDNode([scalar, scalar, i64_metadata(0)])
+    return tag, scalar
+end
+
+tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
+tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
+tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
+
+# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
+# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
+struct TBAATags
+    gcframe::MDNode
+    tag::MDNode
+    constant::MDNode
+end
+
+TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
+
+# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
+# invariant (`tbaa_decorate`)
+function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
+    inst.metadata[LLVM.MD_tbaa] = md
+    if inst isa LLVM.LoadInst && md == constant
+        inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
+    end
+    return inst
+end
+
+# Whether the access tag `tag`, or a type it derives from up to the root, has one of
+# `names`, like Julia's `isTBAA`.
+function tbaa_derives_from(tag::MDNode, names)
+    node = tag
+    while length(node.operands) > 1
+        parent = node.operands[2]
+        parent isa MDNode && !isempty(parent.operands) || return false
+        name = parent.operands[1]
+        name isa MDString || return false
+        convert(String, name) in names && return true
+        node = parent
+    end
+    return false
+end
+
+# The access tag `tag` without its immutability flag, like LLVM's
+# `MDBuilder::createMutableTBAAAccessTag`: the tag itself if it is mutable, otherwise a
+# new tag `!{base, access, i64 offset}`, or `!{base, access, i64 offset, i64 size}` for the
+# new TBAA format (whose access types aren't named by a string).
+function mutable_tbaa_tag(tag::MDNode)
+    ops = tag.operands
+    base, access = ops[1], ops[2]
+    new_format = access.operands[1] isa MDNode
+    flag = new_format ? 5 : 4
+    length(ops) < flag && return tag
+    metadata_int(ops[flag]) == 0 && return tag
+    i64(op) = Metadata(ConstantInt(LLVM.Int64Type(), metadata_int(op)))
+    return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
+                        MDNode([base, access, i64(ops[3])])
 end
 
 
@@ -236,42 +383,7 @@ function call_intrinsic!(p::GCLowering, which::Symbol, args::Vector{<:Value},
 end
 
 
-## metadata and type tags
-
-# Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
-# node (`tbaa_make_child_with_context`)
-function tbaa_make_child(name::String, parent=nothing; constant::Bool=false)
-    jtbaa = MDNode([MDString("jtbaa")])
-    root = MDNode([MDString("jtbaa"), jtbaa, i64_metadata(0)])
-    scalar = MDNode([MDString(name), something(parent, root), i64_metadata(0)])
-    tag = constant ? MDNode([scalar, scalar, i64_metadata(0), i64_metadata(1)]) :
-                     MDNode([scalar, scalar, i64_metadata(0)])
-    return tag, scalar
-end
-
-tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
-tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
-tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
-
-# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
-# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
-struct TBAATags
-    gcframe::MDNode
-    tag::MDNode
-    constant::MDNode
-end
-
-TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
-
-# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
-# invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
-    inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == constant
-        inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
-    end
-    return inst
-end
+## type tags
 
 # the address of the type tag of an object: the word before it (`EmitTagPtr`)
 function emit_tag_ptr!(p::GCLowering, t::LLVMType, @nospecialize(v::Value))
@@ -288,7 +400,7 @@ function emit_load_tag!(p::GCLowering, @nospecialize(v::Value))
                  volatile=p.dialect.gc_tag_load_volatile)
     load.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
-    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, TAG_ALIGNMENT),
+    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, JL_SMALL_BYTE_ALIGNMENT),
                                            i64_metadata_of(p.T_size, 0)])
     return load
 end

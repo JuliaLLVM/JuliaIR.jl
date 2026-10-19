@@ -69,6 +69,47 @@ function clone_call!(builder::IRBuilder, call::Instruction,
 end
 
 
+## types, by reference
+
+const TypeRef = API.LLVMTypeRef
+const ValueRef = API.LLVMValueRef
+
+type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
+vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
+
+is_pointer_type(t::TypeRef) = type_kind(t) == API.LLVMPointerTypeKind
+is_vector_type(t::TypeRef) = type_kind(t) in (API.LLVMVectorTypeKind,
+                                              API.LLVMScalableVectorTypeKind)
+is_struct_type(t::TypeRef) = type_kind(t) == API.LLVMStructTypeKind
+is_array_type(t::TypeRef) = type_kind(t) == API.LLVMArrayTypeKind
+type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
+
+function array_length(t::TypeRef)
+    return LLVM.version() >= v"17" ? Int(API.LLVMGetArrayLength2(t)) :
+                                     Int(API.LLVMGetArrayLength(t))
+end
+
+# the number of elements of a struct, array or vector type (the minimum for scalable
+# vectors), like `getCompositeNumElements`
+function composite_num_elements(t::TypeRef)
+    is_struct_type(t) && return Int(API.LLVMCountStructElementTypes(t))
+    is_array_type(t) && return array_length(t)
+    return Int(API.LLVMGetVectorSize(t))
+end
+
+# the type of element `i` (0-based) of a struct, array or vector type
+composite_element_type(t::TypeRef, i::Integer) =
+    is_struct_type(t) ? API.LLVMStructGetTypeAtIndex(t, i) : API.LLVMGetElementType(t)
+
+# the types contained in a struct, array or vector type (`Type::subtypes`)
+function subtypes(t::TypeRef)
+    is_struct_type(t) || return [API.LLVMGetElementType(t)]
+    return [API.LLVMStructGetTypeAtIndex(t, i) for i in 0:composite_num_elements(t)-1]
+end
+
+is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_type(t)
+
+
 ## values, calls and attributes
 
 # the type of a value, by its reference
@@ -155,6 +196,9 @@ end
 
 i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 
+# the integer in a `ConstantAsMetadata` operand
+metadata_int(md::Metadata) = convert(Int, Value(md))
+
 md_kind(@nospecialize(v::Value), name::String) =
     API.LLVMGetMDKindIDInContext(context(v), name, length(name))
 
@@ -171,41 +215,7 @@ function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
 end
 
 
-## TBAA
-
-# the integer in a `ConstantAsMetadata` operand
-metadata_int(md::Metadata) = convert(Int, Value(md))
-
-# Whether the access tag `tag`, or a type it derives from up to the root, has one of
-# `names`, like Julia's `isTBAA`.
-function tbaa_derives_from(tag::MDNode, names)
-    node = tag
-    while length(node.operands) > 1
-        parent = node.operands[2]
-        parent isa MDNode && !isempty(parent.operands) || return false
-        name = parent.operands[1]
-        name isa MDString || return false
-        convert(String, name) in names && return true
-        node = parent
-    end
-    return false
-end
-
-# The access tag `tag` without its immutability flag, like LLVM's
-# `MDBuilder::createMutableTBAAAccessTag`: the tag itself if it is mutable, otherwise a
-# new tag `!{base, access, i64 offset}`, or `!{base, access, i64 offset, i64 size}` for the
-# new TBAA format (whose access types aren't named by a string).
-function mutable_tbaa_tag(tag::MDNode)
-    ops = tag.operands
-    base, access = ops[1], ops[2]
-    new_format = access.operands[1] isa MDNode
-    flag = new_format ? 5 : 4
-    length(ops) < flag && return tag
-    metadata_int(ops[flag]) == 0 && return tag
-    i64(op) = Metadata(ConstantInt(LLVM.Int64Type(), metadata_int(op)))
-    return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
-                        MDNode([base, access, i64(ops[3])])
-end
+## uses and opcodes
 
 # whether `v` has exactly one use (C++'s `hasOneUse`: `fadd %m, %m` uses `%m` twice)
 function has_one_use(@nospecialize(v::Value))
