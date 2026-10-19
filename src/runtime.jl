@@ -33,7 +33,7 @@ const RUNTIME_FACTS = (
 # the option that gives a fact explicitly, with the value that means "not given"
 function fact_option_default(name::Symbol)
     name in (:setjmp, :tp_asm) && return ""
-    name === :tls_elf_support && return :auto
+    name in (:tls_elf_support, :cfunction_cache) && return :auto
     return 0
 end
 
@@ -92,6 +92,9 @@ function runtime_fact(rt::RuntimeFacts, name::Symbol)
             given === :yes && return true
             given === :no && return false
             throw(ArgumentError("invalid option $(option_key(name))=$given; expected yes or no"))
+        elseif name === :cfunction_cache
+            given in (:arguments, :cfuncdata) ||
+                throw(ArgumentError("invalid option $(option_key(name))=$given; expected arguments or cfuncdata"))
         end
         return given
     end

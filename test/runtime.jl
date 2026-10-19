@@ -161,19 +161,24 @@ end
     @test rt.task_gcstack == facts().task_gcstack
     @test facts(; tp_asm="mov \$0, tp").tp_asm == "mov \$0, tp"
     @test_throws "invalid option tls-elf-support" facts(; tls_elf_support=:maybe).tls_elf_support
+    @test facts(; cfunction_cache=:arguments).cfunction_cache === :arguments
+    @test_throws "invalid option cfunction-cache" facts(; cfunction_cache=:maybe).cfunction_cache
     @test_throws "unknown runtime fact" facts(; task_foo=1)
     @test propertynames(facts()) == keys(JuliaIR.RUNTIME_FACTS)
 
     # as pass options
-    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tp_asm) ==
-          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tp_asm="")
+    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tp_asm,
+                                  :cfunction_cache) ==
+          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tp_asm="", cfunction_cache=:auto)
     @test_throws "unknown runtime fact" JuliaIR.runtime_options(:task_foo)
-    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support)
-    opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes"; extra)
+    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :cfunction_cache)
+    opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;cfunction-cache=arguments";
+                                 extra)
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
         rt = JuliaIR.runtime_layout(opts, mod)
         @test rt.task_ptls == 100
         @test rt.tls_elf_support === true
+        @test rt.cfunction_cache === :arguments
         @test rt.task_gcstack == facts().task_gcstack
         @test JuliaIR.runtime_fact(JuliaIR.Dialect(VERSION), mod, :task_ptls; task_ptls=12) == 12
     end
