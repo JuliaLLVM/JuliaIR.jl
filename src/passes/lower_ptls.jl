@@ -130,8 +130,8 @@ end
 
 function load_slot!(p::LowerPTLS, T::LLVMType, slot::String)
     load = load!(p.builder, T, p.slots[slot])
-    tbaa = tbaa_tags(p.gc).constant
-    tbaa_decorate!(tbaa, load, tbaa)
+    tags = tbaa_tags(p.gc)
+    tbaa_decorate!(tags, tags.constant, load)
     return load
 end
 
