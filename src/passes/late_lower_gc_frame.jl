@@ -2098,40 +2098,12 @@ end
 
 ## cleanup
 
-# the thread-local state of a task (`get_current_ptls_from_task`)
-function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value), tbaa::MDNode)
-    builder = p.builder
-    offset = p.gc.layout.task_ptls
-    T_ptr = LLVM.PointerType(AS_GENERIC)
-    pptls = if p.dialect.gc_ptls_gep === :pointer
-        inbounds_gep!(builder, T_ptr, task,
-                      [ConstantInt(p.gc.T_size, offset ÷ pointer_size(p.gc))], "ptls_field")
-    else
-        inbounds_gep!(builder, LLVM.Int8Type(), task,
-                      [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
-    end
-    ptls_load = load!(builder, T_ptr, pptls, "ptls_load"; align=pointer_align(p.gc))
-    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(p.gc).constant)
-    return ptls_load
-end
-
-# a safepoint (`emit_gc_safepoint`, not final)
-emit_gc_safepoint!(p::LateLowerGCFrame, @nospecialize(ptls::Value), tbaa::MDNode) =
-    emit_gc_safepoint!(p.builder, p.mod, ptls, p.dialect.gc_safepoint_load,
-                       p.gc.layout.tls_safepoint, pointer_align(p.gc), tbaa)
-
 # the GC stack of the function, created if there is none (Julia 1.12's `getOrAddPGCstack`)
 function get_or_add_pgcstack!(p::LateLowerGCFrame)
     fns = p.fns
+    pgcstack = get_pgcstack(p.dialect, p.f, fns.pgcstack_getter, fns.adoptthread)
+    pgcstack === nothing || return pgcstack
     entry = first(p.f.blocks)
-    if fns.pgcstack_getter !== nothing || fns.adoptthread !== nothing
-        for inst in entry.instructions
-            inst isa LLVM.CallInst || continue
-            callee = inst.called_operand
-            (is_fn(fns.pgcstack_getter, callee) || is_fn(fns.adoptthread, callee)) &&
-                return inst
-        end
-    end
     getter = fns.pgcstack_getter
     if getter === nothing
         getter = LLVM.Function(p.mod, "julia.get_pgcstack",
@@ -2152,31 +2124,27 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
     if lowering === :pgcstack
         pgcstack = get_or_add_pgcstack!(p)
         position_before!(builder, call; debug=true)
-        task = inbounds_gep!(builder, LLVM.Int8Type(), pgcstack,
-                             [ConstantInt(LLVM.Int32Type(), -p.gc.layout.task_gcstack)],
-                             "current_task")
-        ptls = current_ptls_from_task!(p, task, tbaa_tags(p.gc).gcframe)
+        ptls = current_ptls_from_task!(p.gc, current_task_from_pgcstack!(p.gc, pgcstack),
+                                       tbaa_tags(p.gc).gcframe)
     else
         position_before!(builder, call; debug=true)
         ptls = first(LLVM.inputs(bundle))
     end
-    offset = p.gc.layout.tls_gc_state
     # the C++ claims pointer alignment for this byte, which only holds on 1.14's layout
-    align = gcd(pointer_align(p.gc), offset)
+    align = gcd(pointer_align(p.gc), p.gc.layout.tls_gc_state)
     T_int8 = LLVM.Int8Type()
-    gc_state = inbounds_gep!(builder, T_int8, ptls, [ConstantInt(LLVM.Int32Type(), offset)],
-                             "gc_state")
+    gc_state = gc_state_address!(p.gc, ptls)
     last_gc_state = load!(builder, T_int8, gc_state; align,
                           ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
     tbaa = tbaa_tags(p.gc).constant
-    emit_gc_safepoint!(p, ptls, tbaa)
+    emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
     next = call.next
     position_before!(builder, next; debug=true)
     store!(builder, last_gc_state, gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
-    emit_gc_safepoint!(p, ptls, tbaa)
+    emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
 end
 
 function update_ptr_numbering!(S::Union{Nothing,State}, @nospecialize(from::Value),
@@ -2210,7 +2178,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     new_call = nothing
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p.gc).gcframe)
+        ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
@@ -2243,7 +2211,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # `julia.gc_alloc_bytes` specializes on the size of the object, and doesn't set
         # its tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p.gc).gcframe)
+        ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,

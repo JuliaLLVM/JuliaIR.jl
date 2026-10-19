@@ -290,6 +290,8 @@ function gc_declaration_name(dialect::Dialect, which::Symbol)
         "julia.push_gc_frame"
     elseif which === :pop_gc_frame
         "julia.pop_gc_frame"
+    elseif which === :safepoint
+        "julia.safepoint"
     elseif which === :queue_gc_root
         "julia.queue_gc_root"
     elseif which === :gc_queue_root
@@ -329,6 +331,8 @@ function gc_declaration_type(g::GCCodegen, which::Symbol)
     elseif which === :push_gc_frame
         LLVM.FunctionType(T_void, [T_ptr, T_int32])
     elseif which === :pop_gc_frame
+        LLVM.FunctionType(T_void, [T_ptr])
+    elseif which === :safepoint
         LLVM.FunctionType(T_void, [T_ptr])
     elseif which in (:queue_gc_root, :gc_queue_root, :gc_queue_root_reset_safe)
         LLVM.FunctionType(T_void, [g.T_prjlvalue])
@@ -396,7 +400,7 @@ function get_or_declare(g::GCCodegen, which::Symbol; check::Bool=false)
     elseif which === :new_gc_frame
         push!(f.return_attributes, EnumAttribute("noalias"))
         push!(f.return_attributes, EnumAttribute("nonnull"))
-    elseif which in (:queue_gc_root, :gc_queue_root)
+    elseif which in (:queue_gc_root, :gc_queue_root, :safepoint)
         push!(f.function_attributes, inaccessible_or_arg_mem_only())
     end
     return f
@@ -576,8 +580,10 @@ function current_ptls_from_task!(g::GCCodegen, @nospecialize(task::Value), tbaa:
     return ptls_load
 end
 
-# the safepoint page of a thread (`get_current_signal_page_from_ptls`)
-function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value), tbaa::MDNode)
+# the safepoint page of a thread (`get_current_signal_page_from_ptls`), without TBAA when
+# `tbaa` is `nothing`
+function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value),
+                                tbaa::Union{Nothing,MDNode})
     T_ptr = LLVM.PointerType(AS_GENERIC)
     offset = g.layout.tls_safepoint
     style = g.dialect.gc_safepoint_load
@@ -592,19 +598,25 @@ function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value), tbaa::
     load = load!(g.builder, T_ptr, psafepoint, "safepoint"; align=pointer_align(g),
                  ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
                                              LLVM.API.LLVMAtomicOrderingMonotonic)
-    tbaa_decorate!(tbaa, load, tbaa_tags(g).constant)
+    tbaa === nothing || tbaa_decorate!(tbaa, load, tbaa_tags(g).constant)
     return load
 end
 
 emit_signal_fence!(g::GCCodegen) =
     fence!(g.builder, LLVM.API.LLVMAtomicOrderingSequentiallyConsistent; scope="singlethread")
 
-# a final safepoint (`emit_gc_safepoint(..., final=true)`): a volatile load from the
-# safepoint page, which faults when the GC wants this thread to stop
-function emit_gc_final_safepoint!(g::GCCodegen, @nospecialize(ptls::Value), tbaa::MDNode)
+# A safepoint (`emit_gc_safepoint`): with `final`, a volatile load from the safepoint
+# page, which faults when the GC wants this thread to stop; otherwise a call of
+# `julia.safepoint` on the page, which FinalLowerGC lowers to that load.
+function emit_gc_safepoint!(g::GCCodegen, @nospecialize(ptls::Value),
+                            tbaa::Union{Nothing,MDNode}; final::Bool)
     signal_page = signal_page_from_ptls!(g, ptls, tbaa)
     emit_signal_fence!(g)
-    load!(g.builder, g.T_size, signal_page; volatile=true)
+    if final
+        load!(g.builder, g.T_size, signal_page; volatile=true)
+    else
+        call_intrinsic!(g, :safepoint, Value[signal_page])
+    end
     emit_signal_fence!(g)
     return
 end
@@ -656,7 +668,7 @@ function emit_gc_state_set!(g::GCCodegen, @nospecialize(ptls::Value), state::Val
     end
     br!(builder, cond, pass_bb, exit_bb)
     position!(builder, LLVM.at_end(pass_bb))
-    emit_gc_final_safepoint!(g, ptls, tbaa_tags(g).constant)
+    emit_gc_safepoint!(g, ptls, tbaa_tags(g).constant; final=true)
     br!(builder, exit_bb)
     position!(builder, LLVM.at_end(exit_bb))
     return old_state

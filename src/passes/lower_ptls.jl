@@ -233,7 +233,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
                 if p.dialect.ptls_exit_safepoint
                     store!(builder, last_gc_state, gc_state_address!(gc, ptls);
                            align=GC_STATE_ALIGN, ordering=LLVM.API.LLVMAtomicOrderingRelease)
-                    emit_gc_final_safepoint!(gc, ptls, tbaa_tags(gc).gcframe)
+                    emit_gc_safepoint!(gc, ptls, tbaa_tags(gc).gcframe; final=true)
                 else
                     emit_gc_unsafe_leave!(gc, ptls, last_gc_state)
                 end
