@@ -14,6 +14,7 @@ include("passes.jl")
 include("multiversioning.jl")
 include("runtime.jl")
 include("type_lowering.jl")
+include("crossing.jl")
 include("lit.jl")
 include("upstream.jl")
 
