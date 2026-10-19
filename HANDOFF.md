@@ -43,7 +43,7 @@ read it first, including its Log). This file says where things are and how to co
 
 S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
 LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks
-uses with a concretely typed stack, and keeps its data layout and types per run in
+uses with a typed stack without boxed captures, and keeps its data layout and types per run in
 `module_facts` (src/registration.jl); LateLowerGCFrame keeps its TBAA tags and the memos of
 `tbaa_derives_from`/the downgraded tags per run, FinalLowerGC and LowerPTLS keep their
 `TBAATags` (src/gc.jl) per function and per run, the shared `get_or_declare` looks GC
