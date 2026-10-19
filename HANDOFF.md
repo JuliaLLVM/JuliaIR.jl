@@ -27,6 +27,7 @@ read it first, including its Log). This file says where things are and how to co
 | S14 type lowering (`julia_type`, `isboxed`, `julia_struct_type`, `deserves_*`, `check_layout`) | done, branch `tb/s14-type-lowering` (on S32) | see `git log` |
 | S12 differential harness (`test/differential/`) | done, branch `tb/s12-differential` (on S14) | see `git log` |
 | S11a mode B in the upstream harness, upgrade oracle, rule-generated patches for LLVM 23 (S11 steps 4–5) | done, branch `tb/s11a-mode-b-harness` (on S12) | see `git log` |
+| v115 Julia 1.15 (master after 1.14 branched): pins, dialect gates, CI | done, branch `tb/julia-1.15` (on S11a) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -223,7 +224,7 @@ The differential found CancellationLowering inserting the task field addresses o
 stack argument after the entry's `#dbg_value` records where the C++ (`entry.begin()`,
 which keeps the iterator's head bit when no alloca is skipped) inserts them before;
 fixed on this branch (`test/lit/cancellation-lowering-debug-records.ll`). CI's
-`upstream` job runs the differential on 1.12 and nightly (fixtures, `code_llvm` corpus,
+`upstream` job runs the differential on 1.12, 1.14-nightly and nightly (fixtures, `code_llvm` corpus,
 `inputs/`; no GPUCompiler), about 4.5 minutes locally on 1.12; the `llvm-dev` action
 also strips `test/differential`'s `[sources]` and copies the preferences there.
 
@@ -248,6 +249,22 @@ adaptation it reproduces, and an exact per-(pin, fixture) count of lines changed
 for 1.10–1.13; the oracle passes at every pin with them and at master without. Mode B was
 only run on Julia's own LLVM (nightly 20/20, 1.12 15/15), since no LLVM.jl branch loads a
 standalone library with the pass APIs yet (S11 step 1).
+
+v115 details: Julia master is 1.15.0-DEV since c4ee915 (1.14 branched at 08e5253dc0, the
+commit S27 validated). No C++ pass, `passes.h`, `pipeline.cpp` or `test/llvmpasses` changed
+between the two (only dead declarations), so 1.15 has 1.14's dialect: `KNOWN_MINORS` still
+ends at 1.14 (`NEWEST_MINOR`; newer versions get its dialect, Tim's decision 2), and the
+dialect's fields that keyed on "the development version" now say `minor >= v"1.14"`, so
+adding a minor no longer changes 1.14's dialect. Lit features and the differential's
+`julia = [...]` exceptions follow the dialect's minor (1.15 runs `julia-1.14` lines and
+1.14's exceptions). Pins: `1.14` has tag `release-1.14` and no commit (its fixtures are the
+1.14 nightly build's commit until 1.14.0 is tagged), `1.15` is master; a prerelease newer
+than every pin uses the newest pin if it has no commit (`pin_minor` in `run.jl`), so the
+next version bump of master doesn't break CI. CI runs `1.14-nightly` in the test matrix
+and the upstream and differential jobs; `all.sh` defaults to it too (juliaup channel
+`1.14-nightly`).
+The docs and comments that said "Julia master" for the newest dialect's behaviour say
+"Julia 1.14 (and later)" now.
 
 From S8 on, JuliaIR.jl depends on LLVM.jl's unmerged custom loop passes (#670), from S10
 on also on its inlining API (#671, stacked on #670):
@@ -285,7 +302,7 @@ checkout, as Pkg 1.11 and later refuse to replace a `url` source by a `path`.
 ## How to run each test tier (pegasus)
 
 - Package tests: `julia +<ver> --project -e 'using Pkg; Pkg.test()'` (1.10, 1.11, 1.12,
-  1.13, nightly). Each ~1 min. Stay in your worktree; give each Julia version its own
+  1.13, 1.14-nightly, nightly). Each ~1 min. Stay in your worktree; give each Julia version its own
   manifest (`touch Manifest-v1.10.toml`, then `Pkg.resolve()`; gitignored). On 1.10 and
   1.11 (no workspaces) use `Pkg.test()` from the root: `--project=test` there loads the
   registered packages, and instantiating it writes a `test/Manifest.toml` that Pkg.test
@@ -400,8 +417,12 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   names (`pipeline-prints.ll`); not investigated (not ported).
 - Julia 1.10's fixtures without `--opaque-pointers` rely on LLVM 15's opt parsing typed
   IR into a typed context; jlopt always uses opaque contexts.
-- Nightly moves daily, and with it the master fixtures: the manifest's entries for 1.14
-  apply to whatever master is, so a changed fixture can fail CI without any change here.
+- Nightly moves daily, and with it the master fixtures: the manifest's entries for 1.15
+  apply to whatever master is (and those for 1.14 to whatever `release-1.14` is, until
+  1.14.0 is tagged), so a changed fixture can fail CI without any change here.
+- On pegasus, `julia +1.14-nightly` is the release branch's nightly (added 2026-10-19);
+  `julia +nightly` was then still 1.14.0-DEV.3787 (08e5253dc0, the branch point), not
+  master: run `juliaup update nightly` (once no other run uses it) to get 1.15.
 - `LLVM.clopts` options set by jlopt (`-verify-memoryssa`, ...) are process-wide.
 - LLVM.jl 10: `bb.successors`/`bb.predecessors` are properties (no exported functions);
   `inst.prev`/`inst.next`; `call.called_function.intrinsic`; `LLVM.constant_offset(gep, dl)`
