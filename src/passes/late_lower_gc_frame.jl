@@ -2122,6 +2122,8 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
     builder = p.builder
     lowering = p.dialect.gc_transition_lowering
     if lowering === :pgcstack
+        # only 1.12 lowers this way, a dialect with byte GEPs into the task, like the C++'s
+        # `get_current_task_from_pgcstack`
         pgcstack = get_or_add_pgcstack!(p)
         position_before!(builder, call; debug=true)
         ptls = current_ptls_from_task!(p.gc, current_task_from_pgcstack!(p.gc, pgcstack),
