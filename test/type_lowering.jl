@@ -111,7 +111,8 @@ end
 
 @testset "type lowering" begin
 
-@testset "against Julia's C++" begin
+# Julia's lowering creates types in a context of Julia's LLVM
+julia_llvm_in_use() && @testset "against Julia's C++" begin
     @dispose ctx=Context(; opaque_pointers=true) begin
         for T in TYPES
             ref, boxed = cpp_lowering(T)
@@ -372,7 +373,7 @@ end
 
 # The lowering of Julia's own LLVM, carried in bitcode into another context, is the same
 # as the port's in that context. (Across LLVM libraries once LLVM.jl supports them.)
-@testset "bitcode carrier" begin
+julia_llvm_in_use() && @testset "bitcode carrier" begin
     types = filter(TYPES) do T
         @dispose ctx=Context(; opaque_pointers=true) begin
             !(JuliaIR.julia_type(T; allow_boxed=true) isa LLVM.VoidType)

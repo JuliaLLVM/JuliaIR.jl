@@ -426,31 +426,34 @@ mktempdir() do dir
     @test occursin("2 of 2 fixtures passed", out)
     @test occursin("not run: excluded.ll: not ported", out)
 
-    # proof that the port ran
-    code, out = harness(write_manifest(good * cpp * override))
-    @test code == 1
-    @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
-    @test !occursin("RUN line 1 ", out)
+    # Julia's C++ passes, as the counterpart of the ports, only exist in Julia's LLVM
+    if julia_llvm_in_use()
+        # proof that the port ran
+        code, out = harness(write_manifest(good * cpp * override))
+        @test code == 1
+        @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
+        @test !occursin("RUN line 1 ", out)
 
-    # ledgers of a previous run in the same work directory don't count
-    workdir = joinpath(dir, "work")
-    code, _ = harness(write_manifest(good * override * excluded_cpp), "--workdir", workdir)
-    @test code == 0
-    code, out = harness(write_manifest(good * cpp * override), "--workdir", workdir)
-    @test code == 1
-    @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
+        # ledgers of a previous run in the same work directory don't count
+        workdir = joinpath(dir, "work")
+        code, _ = harness(write_manifest(good * override * excluded_cpp), "--workdir", workdir)
+        @test code == 0
+        code, out = harness(write_manifest(good * cpp * override), "--workdir", workdir)
+        @test code == 1
+        @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
 
-    # with Julia's passes, the ports must not run
-    code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "cpp|good")
-    @test code == 0
-    @test occursin("2 of 2 fixtures passed", out)
-    # the overrides describe the ports: Julia's passes run the pristine fixtures
-    code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "override")
-    @test code == 1
-    @test occursin("override.ll: FAIL", out)
-    code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "forced")
-    @test code == 1
-    @test occursin("forced.ll: ports ran although Julia's passes were requested", out)
+        # with Julia's passes, the ports must not run
+        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "cpp|good")
+        @test code == 0
+        @test occursin("2 of 2 fixtures passed", out)
+        # the overrides describe the ports: Julia's passes run the pristine fixtures
+        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "override")
+        @test code == 1
+        @test occursin("override.ll: FAIL", out)
+        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "forced")
+        @test code == 1
+        @test occursin("forced.ll: ports ran although Julia's passes were requested", out)
+    end
 
     # a stale override
     stale = replace(override, "override.ll.patch" => "stale.ll.patch", "override.ll\"]" => "good.ll\"]")
@@ -534,7 +537,7 @@ mktempdir() do dir
     # without a layer, as mode A
     code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
     @test code == 0
-    @test occursin("mode B on Julia's own LLVM", out)
+    @test occursin("mode B on $(julia_llvm_in_use() ? "Julia's own" : "a standalone") LLVM", out)
     @test occursin("2 of 2 fixtures passed", out)
 
     # a layer patch makes a fixture pass, and must be needed
@@ -590,7 +593,7 @@ mktempdir() do dir
 
     # The upgrade oracle: Julia's passes, their output re-printed by another LLVM's opt
     # (here, the same LLVM's), checked against the fixtures with that LLVM's layer
-    if !Sys.iswindows()
+    if !Sys.iswindows() && julia_llvm_in_use()
         tools = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools")
         newer = mkpath(joinpath(dir, "newer"))
         libpath = "$(lit_params(; exec_root=dir, bindir=dir)["libpath_env"])=" *
@@ -613,9 +616,9 @@ mktempdir() do dir
             @test code == 1
             @test occursin("good.ll: the mode-B patch is stale", out)
         end
-        @test_throws "--reprint requires --cpp" harness(write_manifest(good * override * excluded_cpp), reprint[2:3]...)
-        @test_throws "mode B doesn't have" harness(write_manifest(good * override * excluded_cpp), "--cpp", "--mode", "B")
     end
+    @test_throws "--reprint requires --cpp" harness(write_manifest(good * override * excluded_cpp), "--reprint", "opt")
+    @test_throws "mode B doesn't have" harness(write_manifest(good * override * excluded_cpp), "--cpp", "--mode", "B")
 end
 end
 
