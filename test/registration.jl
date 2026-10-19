@@ -255,6 +255,61 @@ end
                      "JULIAIR_LEDGER" => path)
         @test read(cmd, String) == path
     end
+
+    # processes appending concurrently neither lose nor garble lines
+    mktempdir() do dir
+        path = joinpath(dir, "ledger.tsv")
+        go = joinpath(dir, "go")
+        nprocs, nlines = 4, 2000
+        # each process signals that it loaded the package, then waits for the others
+        script = """
+            using JuliaIR
+            touch(joinpath($(repr(dir)), "ready-\$(getpid())"))
+            while !isfile($(repr(go)))
+                sleep(0.01)
+            end
+            for i in 1:$nlines
+                JuliaIR.ledger_write("pass", "jl-test", i, "x"^(i % 100))
+            end
+            """
+        cmd = addenv(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`,
+                     "JULIAIR_LEDGER" => path)
+        procs = Base.Process[]
+        try
+            for _ in 1:nprocs
+                push!(procs, run(cmd; wait=false))
+            end
+            deadline = time() + 600
+            while count(startswith("ready-"), readdir(dir)) < nprocs &&
+                  !any(process_exited, procs) && time() < deadline
+                sleep(0.01)
+            end
+            touch(go)
+            while !all(process_exited, procs) && time() < deadline
+                sleep(0.01)
+            end
+        finally
+            foreach(kill, filter(process_running, procs))
+            foreach(wait, procs)
+        end
+        @test all(success, procs)
+
+        lines = readlines(path)
+        @test length(lines) == nprocs * nlines
+        seen = Dict{Int,Vector{Int}}()
+        garbled = String[]
+        for line in lines
+            m = match(r"^(\d+)\tpass\tjl-test\t(\d+)\t(x*)$", line)
+            if m === nothing || length(m[3]) != parse(Int, m[2]) % 100
+                push!(garbled, line)
+            else
+                push!(get!(seen, parse(Int, m[1]), Int[]), parse(Int, m[2]))
+            end
+        end
+        @test isempty(garbled)
+        @test length(seen) == nprocs
+        @test all(==(1:nlines), values(seen))
+    end
 end
 
 @testset "pass registry" begin
