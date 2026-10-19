@@ -11,8 +11,9 @@ differential test against Julia's C++ passes, which is not part of `Pkg.test()`.
   `jlopt` driver, and the passes' Julia-level behaviour;
 - a [lit](https://llvm.org/docs/CommandGuide/lit.html) suite in `test/lit`: `.ll` files
   with `RUN:` lines in the format of LLVM's and Julia's own tests, in which `opt` is
-  `bin/jlopt`. lit, `FileCheck` and LLVM's other test tools come from
-  `LLVM_utils_unified_jll`; `python3` must be available;
+  `bin/jlopt`. lit comes from `LLVM_utils_unified_jll`, and so do `FileCheck` and LLVM's
+  other test tools when the passes run on Julia's LLVM (with another library, see below);
+  `python3` must be available;
 - tests of the harness for Julia's own pass tests (below), on a synthetic checkout.
 
 The passes process the IR of the running Julia, so each Julia version tests its own
@@ -139,6 +140,25 @@ library LLVM.jl has loaded.
 ```
 julia +1.12 --project=test test/upstream/run.jl julia-src --mode B
 ```
+
+The library is selected with LLVM.jl's `libLLVM` preference, in the `LocalPreferences.toml`
+of every environment that loads LLVM.jl (the package's for `Pkg.test()`, `test/` for the
+harness): a standalone library built by LLVM.jl's `deps/build_standalone.jl`:
+
+```toml
+[LLVM]
+libLLVM = "/path/to/libLLVM-standalone-23.so"
+```
+
+The lit tests then need the LLVM tools (`FileCheck`, `llvm-dis`, ...) of that library's
+version, as those of Julia's LLVM can't read the bitcode that a newer one writes:
+`JULIAIR_LLVM_TOOLS` names their directory, e.g. the `tools` directory of the
+LLVM_full_jll artifact that the library was built from. Without the preference, the
+command above is a dry run on Julia's own LLVM; the harness's report names the library.
+The package tests run under the preference too (`Pkg.test()`, with the same
+`JULIAIR_LLVM_TOOLS`); the tests that compare with Julia's C++ passes or its type
+lowering, which only exist in Julia's LLVM, are skipped there (`julia_llvm_in_use()` in
+the testsets, the lit feature `julia-llvm` in RUN lines).
 
 Two things differ from mode A, the default run of the previous section:
 
