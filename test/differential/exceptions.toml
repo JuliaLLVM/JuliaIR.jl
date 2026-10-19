@@ -3,7 +3,8 @@
 #
 #   [[Pass]]
 #   input = "llvmpasses/*.ll"   # glob over input names (default: every input)
-#   julia = ["1.10", "1.11"]    # Julia versions it applies to (default: all)
+#   julia = ["1.10", "1.11"]    # dialects it applies to (default: all); a Julia newer
+#                               # than the known versions has the newest one's
 #   prefix = "raw"              # the prefix pipeline it applies to (default: all)
 #   side = "cpp"                # whose output it rewrites: "cpp", "port" or "both"
 #   lines = '...'               # a regex over the lines of that output

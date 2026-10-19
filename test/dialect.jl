@@ -21,9 +21,9 @@ using JuliaIR: Dialect
     @test_throws "not supported" Dialect(v"1.9.4")
     @test Dialect(v"1.10.0-DEV.100").minor == v"1.10"
 
-    # newer versions get the development dialect
-    @test Dialect(v"1.15.0-DEV.1") == Dialect(v"1.14.0-DEV")
-    @test Dialect(v"1.15.0-DEV.1").julia == v"1.15.0-DEV.1"
+    # newer versions, Julia master among them, get the newest known dialect
+    @test Dialect(v"1.15.0-DEV.14") == Dialect(v"1.14.0-DEV")
+    @test Dialect(v"1.15.0-DEV.14").julia == v"1.15.0-DEV.14"
     @test Dialect(v"2.0").minor == v"1.14"
 end
 

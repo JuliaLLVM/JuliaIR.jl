@@ -1,10 +1,11 @@
 # The IR dialect of a Julia version: everything about Julia's LLVM IR that the passes
 # depend on and that changed between Julia versions.
 
-# Julia minor versions whose dialect is known. The last one is the development version,
-# whose dialect is the one of current Julia master (as tested with the nightly build).
+# Julia minor versions whose dialect is known. Newer versions, current Julia master (as
+# tested with the nightly build) among them, have the newest one's dialect until their IR
+# diverges from it; only then does their minor version need to be added.
 const KNOWN_MINORS = (v"1.10", v"1.11", v"1.12", v"1.13", v"1.14")
-const DEVELOPMENT_MINOR = last(KNOWN_MINORS)
+const NEWEST_MINOR = last(KNOWN_MINORS)
 
 # GC write-barrier build configurations (`GC_BARRIER_SNAPSHOT`, `GC_BARRIER_FIELD_PRECISE`
 # in Julia's `src/options.h`); stock Julia builds use neither.
@@ -21,11 +22,11 @@ The IR dialect emitted by Julia version `julia`. The passes process the IR of th
 Julia, so they use `Dialect(VERSION)`, with the policies of their options; constructing
 the dialect of another version is useful to inspect how the versions differ.
 
-Every Julia version from 1.10 up to the development version this package knows about has
-a dialect; a prerelease like `v"1.13.0-DEV.123"` has the dialect of the release it
-precedes, and the development version has the dialect of current Julia master. Newer
-versions get the development version's dialect: a new minor version starts out emitting
-the same IR as its predecessor, and only diverges as changes land on master.
+Every Julia version from 1.10 up to the newest version this package knows about has a
+dialect; a prerelease like `v"1.13.0-DEV.123"` has the dialect of the release it
+precedes. Newer versions, including the development version (Julia master), get the
+newest known version's dialect: a new minor version starts out emitting the same IR as
+its predecessor, and only diverges as changes land on master.
 
 The dialect only describes Julia's IR. What depends on the version of LLVM (e.g., the
 signature of the lifetime intrinsics) is determined by the library the passes run on,
@@ -69,7 +70,7 @@ struct Dialect
     "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
     has_combine_muladd::Bool
     "Whether the code generator emits `julia.cancellation_point` calls, lowered by
-    CancellationLowering (Julia master)."
+    CancellationLowering (Julia 1.14 and later)."
     has_cancellation_lowering::Bool
 
     # allocations
@@ -167,7 +168,8 @@ struct Dialect
     "How LateLowerGCFrame lowers write barriers: `:unnamed` (Julia 1.10), `:debug_named`
     (values named at debug level 2; 1.11), `:named` (1.12), `:image` (also queueing
     parents in the system image that are not yet in its remembered set; 1.13), or
-    `:deferred` (only elided when unnecessary, and lowered by FinalLowerGC; master)."
+    `:deferred` (only elided when unnecessary, and lowered by FinalLowerGC; 1.14 and
+    later)."
     gc_barrier_lowering::Symbol
     "How calls with a `gc-transition` operand bundle are lowered: `:none` (the bundle is
     dropped; Julia 1.11 and older), `:pgcstack` (the GC state is switched through the
@@ -176,7 +178,7 @@ struct Dialect
     gc_transition_lowering::Symbol
     "How the safepoint page is loaded at GC state transitions: `:plain` (Julia 1.12),
     `:monotonic` (an atomic load; 1.13), `:monotonic_named` (with a named address;
-    master)."
+    1.14 and later)."
     gc_safepoint_load::Symbol
     "Whether every function processed gets a declaration of `ijl_gc_small_alloc`
     (Julia 1.12 and later)."
@@ -191,9 +193,9 @@ struct Dialect
     supertype `Type{Union{}}`; 1.12 and 1.13) or `:some_type` (`typeof(Union{})` and
     `Type{Union{}}`, which is a `Core.TypeEq`)."
     bottom_aliases::Symbol
-    "Whether values of the kinds (`DataType`, `Union`, `UnionAll`, `typeof(Union{})` and
-    master's `Core.TypeEq`/`Core.TypeEgal`) are always boxed, instead of being lowered
-    like other immutable structs."
+    "Whether values of the kinds (`DataType`, `Union`, `UnionAll`, `typeof(Union{})` and,
+    from Julia 1.14 on, `Core.TypeEq`/`Core.TypeEgal`) are always boxed, instead of being
+    lowered like other immutable structs."
     boxes_kinds::Bool
 
     # policies
@@ -214,9 +216,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
     gc_barrier in GC_BARRIER_CONFIGS ||
         throw(ArgumentError("invalid GC barrier configuration :$gc_barrier; expected one of $(join(GC_BARRIER_CONFIGS, ", "))"))
 
-    development = minor == DEVELOPMENT_MINOR
-    barrier_flavour = development ? :object_field : :write_barrier
-    write_barriers = development ?
+    barrier_flavour = minor >= v"1.14" ? :object_field : :write_barrier
+    write_barriers = minor >= v"1.14" ?
         ["julia.object_write_barrier", "julia.field_write_barrier.p11",
          "julia.field_write_barrier.p13"] :
         ["julia.write_barrier"]
@@ -225,7 +226,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
     # of jtbaa_memoryown that never matches, so it is left out here.
     tbaa_downgrade = if minor == v"1.10"
         ["jtbaa_const"]
-    elseif development
+    elseif minor >= v"1.14"
         ["jtbaa_const", "jtbaa_memory"]
     else
         ["jtbaa_const", "jtbaa_memoryptr", "jtbaa_memorylen"]
@@ -253,23 +254,23 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor == v"1.11" ? :task :
                    minor == v"1.12" ? :task_buffer : :none, # except_enter
                    minor <= v"1.11",                      # has_combine_muladd
-                   development,                           # has_cancellation_lowering
+                   minor >= v"1.14",                      # has_cancellation_lowering
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
                    minor == v"1.11" ? :store : :memset,   # alloc_initialization
                    minor <= v"1.11" ? :legacy : :chunked, # alloc_layout
-                   development,                           # alloc_bundles
+                   minor >= v"1.14",                      # alloc_bundles
                    minor >= v"1.12",                      # has_gc_transition_bundle
-                   development,                           # has_zeroinit_indirect_bundle
+                   minor >= v"1.14",                      # has_zeroinit_indirect_bundle
                    tbaa_downgrade,
                    minor >= v"1.12",                      # simdloop_check_combine
                    minor >= v"1.12",                      # verifier_vector_pointers
                    fp16_rule,
-                   development ? :regions : :tbaa,        # gc_rooted_loads
+                   minor >= v"1.14" ? :regions : :tbaa,  # gc_rooted_loads
                    gc_immutable_tbaa,
                    minor <= v"1.12",                      # gc_frame_ref_refinement
                    minor >= v"1.13",                      # gc_frame_elision
-                   development ? :attribute : :sret,      # gc_return_roots
+                   minor >= v"1.14" ? :attribute : :sret, # gc_return_roots
                    minor >= v"1.12",                      # gc_slot_resets
                    minor >= v"1.12",                      # gc_prologue_store_elision
                    minor <= v"1.11",                      # gc_root_allocas_first
@@ -281,13 +282,13 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor <= v"1.11" ? :pointer : :byte,   # gc_ptls_gep
                    gc_barrier_lowering,
                    gc_transition_lowering,
-                   development ? :monotonic_named :
+                   minor >= v"1.14" ? :monotonic_named :
                    minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
                    minor >= v"1.12",                      # gc_declare_small_alloc
                    minor <= v"1.11" ? :integer : :pointer, # cpointer_type
                    minor <= v"1.11" ? :bottom :
-                   development ? :some_type : :typeofbottom_super, # bottom_aliases
-                   development,                           # boxes_kinds
+                   minor >= v"1.14" ? :some_type : :typeofbottom_super, # bottom_aliases
+                   minor >= v"1.14",                      # boxes_kinds
                    fp16, bf16, gc_barrier)
 end
 
@@ -296,7 +297,7 @@ function dialect_minor(julia::VersionNumber)
     minor = VersionNumber(julia.major, julia.minor)
     minor < first(KNOWN_MINORS) &&
         throw(ArgumentError("Julia $julia is not supported; the oldest supported dialect is Julia $(first(KNOWN_MINORS))"))
-    return min(minor, DEVELOPMENT_MINOR)
+    return min(minor, NEWEST_MINOR)
 end
 
 # dialects are compared by what they describe, not by the version they were requested with
