@@ -23,6 +23,8 @@ const RUNTIME_FACTS = (
     reset_ctx_mctx = "the offset of `mctx` in `jl_reset_ctx_t`",
     tls_elf_support = "whether the runtime accesses thread-local storage with ELF TLS (`jl_tls_elf_support`)",
     tp_asm = "the inline assembly that reads the thread pointer",
+    smalltag_shift = "the position of `smalltag` in the `flags` of a `jl_datatype_t`",
+    max_small_tag = "the number of small type tags (`jl_max_tags`)",
 )
 
 # the option that gives a fact explicitly, with the value that means "not given"
@@ -113,7 +115,10 @@ The facts about the runtime of Julia `dialect` that passes processing `mod` need
 - exception handlers: `handler_size` and `handler_align` (of `jl_handler_t`) and the name
   of the runtime's `setjmp`; from Julia 1.14 on, the reset context (`reset_ctx_size`,
   `reset_ctx_align` and the offsets `reset_ctx_gcstack`, `reset_ctx_eh`, `reset_ctx_mctx`);
-- thread-local storage: `tls_elf_support` and the thread-pointer assembly `tp_asm`.
+- thread-local storage: `tls_elf_support` and the thread-pointer assembly `tp_asm`;
+- small type tags, which objects of the runtime's builtin types carry in their header
+  instead of the address of their type (`smalltag << 4`): where a `DataType`'s `flags`
+  hold its tag (`smalltag_shift`), and how many tags there are (`max_small_tag`).
 
 A fact is resolved when it is read, in order: from the keyword argument (pass option) of
 the same name, which gives it explicitly; from the running Julia, if `dialect` is its
@@ -156,6 +161,7 @@ const FACT_PROBES = (
     reset_ctx_size = :cancel, reset_ctx_align = :cancel,
     reset_ctx_gcstack = :cancel, reset_ctx_eh = :cancel, reset_ctx_mctx = :cancel,
     tls_elf_support = :tls, tp_asm = :safepoint,
+    smalltag_shift = :smalltag, max_small_tag = :smalltag,
 )
 
 # probe => its facts (a NamedTuple, `nothing` for facts the running Julia doesn't have)
@@ -249,9 +255,53 @@ function run_probe(::Val{:tls})
     return (; tls_elf_support=unsafe_load(cglobal(:jl_tls_elf_support, Cint)) != 0)
 end
 
+# The small type tag of `Int64`, read from the header of a boxed `Int64`, is the field of
+# `Int64.flags` that `smalltag_shift` locates. How many tags there are comes from the code
+# Julia generates for `typeof` of an object of unknown type: a tag below `max_small_tag
+# << 4` indexes `jl_small_typeof`.
+function run_probe(::Val{:smalltag})
+    box = Any[Int64(1)]
+    header = GC.@preserve box begin
+        obj = unsafe_load(Ptr{Ptr{UInt}}(pointer(box)))
+        unsafe_load(obj - sizeof(UInt))
+    end
+    tag = Int(header >> 4)      # the low 4 bits are the GC's
+    flags = Int(Int64.flags)
+    shifts = [s for s in 0:(8 * sizeof(Int64.flags) - 1) if flags >> s == tag]
+    (tag != 0 && length(shifts) == 1) ||
+        throw(RuntimeError("the small type tag of `Int64` ($tag) is not a field of its `flags` ($flags)"))
+    max_small_tag = with_probe_ir(probe_typeof, Tuple{Any}, "`typeof`") do mod
+        bounds = Set{Int}()
+        indexes = false
+        for inst in instructions(mod)
+            if inst isa LLVM.GetElementPtrInst
+                base = inst.operands[1]
+                base isa LLVM.GlobalVariable && endswith(base.name, "jl_small_typeof") &&
+                    (indexes = true)
+            elseif inst isa LLVM.ICmpInst && LLVM.predicate(inst) == LLVM.API.LLVMIntULT
+                bound = constant_integer(inst.operands[2])
+                bound === nothing || push!(bounds, bound)
+            end
+        end
+        (indexes && length(bounds) == 1) || return nothing
+        return only(bounds) >> 4
+    end
+    return (; smalltag_shift=only(shifts), max_small_tag)
+end
+
+# the value of an integer constant, also one converted to a pointer (`inttoptr`)
+function constant_integer(v::LLVM.Value)
+    v isa LLVM.ConstantInt && return convert(Int, v)
+    if v isa LLVM.ConstantExpr && LLVM.API.LLVMGetConstOpcode(v) == LLVM.API.LLVMIntToPtr
+        return constant_integer(LLVM.operands(v)[1])
+    end
+    return nothing
+end
+
 # The probes of generated code. The code is parsed into a context of the library LLVM.jl
 # uses, which may be newer than Julia's LLVM.
 probe_safepoint() = (GC.safepoint(); nothing)
+probe_typeof(@nospecialize(x)) = typeof(x)
 
 function probe_handler(x::Int)
     try

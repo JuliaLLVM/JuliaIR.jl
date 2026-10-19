@@ -49,6 +49,8 @@ read the first time a pass needs it, once per process:
 | `task_ptls`, `tls_safepoint`, `tp_asm` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it; the inline assembly that reads the thread pointer, where Julia's JIT uses one (not on macOS or Windows) |
 | `handler_size`, `handler_align`, `setjmp` | the code Julia generates for a `try`: the stack buffer that `setjmp` is called on (lowered by Julia's LowerExcHandlers up to Julia 1.12, emitted by its code generator later) |
 | `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.14 and later) |
+| `smalltag_shift` | the header of a boxed `Int64`, whose small type tag is a field of `Int64.flags` |
+| `max_small_tag` | the code Julia generates for `typeof` of an object of unknown type: the bound below which a tag indexes `jl_small_typeof` |
 
 The generated code is the text that `code_llvm` prints for a small function, parsed
 into a context of the LLVM library that LLVM.jl uses, which may be newer than Julia's
