@@ -289,6 +289,16 @@ struct Dialect
     gc_barrier::Symbol
 end
 
+# every field by name, so that a value can't end up in another field's slot
+function Dialect(; fields...)
+    names = fieldnames(Dialect)
+    missing_fields = setdiff(names, keys(fields))
+    unknown_fields = setdiff(keys(fields), names)
+    isempty(missing_fields) && isempty(unknown_fields) ||
+        throw(ArgumentError("Dialect fields missing: $(join(missing_fields, ", ")); unknown: $(join(unknown_fields, ", "))"))
+    return Dialect((fields[name] for name in names)...)
+end
+
 function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                  gc_barrier::Symbol=:stock)
     minor = dialect_minor(julia)
@@ -329,73 +339,78 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
     fp16_rule = minor == v"1.10" ? :target_features :
                 minor == v"1.11" ? :target_features_bf16 : :attributes
 
-    return Dialect(julia, minor,
-                   barrier_flavour, write_barriers,
-                   minor >= v"1.11",                      # has_call3
-                   minor >= v"1.11",                      # has_gc_loaded
-                   minor >= v"1.13",                      # has_atomicmodify
-                   minor == v"1.10" ? :no_task :
-                   minor == v"1.11" ? :task :
-                   minor == v"1.12" ? :task_buffer : :none, # except_enter
-                   minor <= v"1.11",                      # has_combine_muladd
-                   minor >= v"1.14",                      # has_cancellation_lowering
-                   minor >= v"1.14" ? :subtarget : :tokens, # cpu_features_rule
-                   minor >= v"1.14",                      # has_cpu_supports
-                   minor >= v"1.14" ? :packed : :target,  # mv_spec_flags
-                   minor >= v"1.11",                      # mv_bf16
-                   minor == v"1.10" ? :offsets : :pointers, # mv_tables
-                   minor >= v"1.12",                      # mv_autoinit
-                   minor >= v"1.11",                      # alloc_callsite_attrs
-                   minor == v"1.10" ? :none :
-                   minor == v"1.11" ? :store : :memset,   # alloc_initialization
-                   minor <= v"1.11" ? :legacy : :chunked, # alloc_layout
-                   minor >= v"1.14",                      # alloc_bundles
-                   minor >= v"1.12",                      # has_gc_transition_bundle
-                   minor >= v"1.14",                      # has_zeroinit_indirect_bundle
-                   tbaa_downgrade,
-                   minor >= v"1.12",                      # simdloop_check_combine
-                   minor >= v"1.12",                      # verifier_vector_pointers
-                   fp16_rule,
-                   minor >= v"1.14" ? :regions : :tbaa,  # gc_rooted_loads
-                   gc_immutable_tbaa,
-                   minor <= v"1.12",                      # gc_frame_ref_refinement
-                   minor >= v"1.13",                      # gc_frame_elision
-                   minor >= v"1.14" ? :attribute : :sret, # gc_return_roots
-                   minor >= v"1.12",                      # gc_slot_resets
-                   minor >= v"1.12",                      # gc_prologue_store_elision
-                   minor <= v"1.11",                      # gc_root_allocas_first
-                   minor >= v"1.13",                      # gc_stack_argument
-                   minor >= v"1.11",                      # gc_names
-                   minor >= v"1.11",                      # gc_tag_load_volatile
-                   minor >= v"1.11",                      # gc_alloc_bytes_tag
-                   minor >= v"1.12",                      # gc_extract_simplify
-                   minor <= v"1.11" ? :pointer : :byte,   # gc_ptls_gep
-                   gc_barrier_lowering,
-                   gc_transition_lowering,
-                   minor >= v"1.14" ? :monotonic_named :
-                   minor == v"1.13" ? :monotonic : :plain, # gc_safepoint_load
-                   minor >= v"1.12",                      # gc_declare_small_alloc
-                   gc_state_condition,
-                   minor >= v"1.13" ? :gcstack : :swiftself, # ptls_stack_argument
-                   minor >= v"1.11",                      # ptls_argument_takes_name
-                   minor >= v"1.12" ? "ijl_autoinit_and_adopt_thread" :
-                                      "ijl_adopt_thread", # ptls_adopt_thread
-                   minor >= v"1.14" ? "jl_image_tls_offset" :
-                                      "jl_tls_offset",    # ptls_image_offset_slot
-                   minor >= v"1.14" ? :resolved : :address, # ptls_jit_getter
-                   minor >= v"1.12",                      # ptls_tp_inbounds
-                   minor >= v"1.12",                      # ptls_exit_safepoint
-                   minor <= v"1.11" ? :integer : :pointer, # cpointer_type
-                   minor <= v"1.11" ? :bottom :
-                   minor >= v"1.14" ? :some_type : :typeofbottom_super, # bottom_aliases
-                   minor >= v"1.14",                      # boxes_kinds
-                   minor == v"1.10",                      # gc_final_module
-                   minor >= v"1.13",                      # gc_final_skip_unused
-                   minor == v"1.10",                      # gc_final_debugloc_next
-                   minor == v"1.10" ? :pool :
-                   minor == v"1.11" ? :pool_instrumented : :small, # gc_alloc_entry_points
-                   minor >= v"1.14",                      # gc_alloc_reset_safe
-                   fp16, bf16, gc_barrier)
+    return Dialect(;
+        julia,
+        minor,
+        barrier_flavour,
+        write_barriers,
+        has_call3 = minor >= v"1.11",
+        has_gc_loaded = minor >= v"1.11",
+        has_atomicmodify = minor >= v"1.13",
+        except_enter = minor == v"1.10" ? :no_task :
+                       minor == v"1.11" ? :task :
+                       minor == v"1.12" ? :task_buffer : :none,
+        has_combine_muladd = minor <= v"1.11",
+        has_cancellation_lowering = minor >= v"1.14",
+        cpu_features_rule = minor >= v"1.14" ? :subtarget : :tokens,
+        has_cpu_supports = minor >= v"1.14",
+        mv_spec_flags = minor >= v"1.14" ? :packed : :target,
+        mv_bf16 = minor >= v"1.11",
+        mv_tables = minor == v"1.10" ? :offsets : :pointers,
+        mv_autoinit = minor >= v"1.12",
+        alloc_callsite_attrs = minor >= v"1.11",
+        alloc_initialization = minor == v"1.10" ? :none :
+                               minor == v"1.11" ? :store : :memset,
+        alloc_layout = minor <= v"1.11" ? :legacy : :chunked,
+        alloc_bundles = minor >= v"1.14",
+        has_gc_transition_bundle = minor >= v"1.12",
+        has_zeroinit_indirect_bundle = minor >= v"1.14",
+        tbaa_downgrade,
+        simdloop_check_combine = minor >= v"1.12",
+        verifier_vector_pointers = minor >= v"1.12",
+        fp16_rule,
+        gc_rooted_loads = minor >= v"1.14" ? :regions : :tbaa,
+        gc_immutable_tbaa,
+        gc_frame_ref_refinement = minor <= v"1.12",
+        gc_frame_elision = minor >= v"1.13",
+        gc_return_roots = minor >= v"1.14" ? :attribute : :sret,
+        gc_slot_resets = minor >= v"1.12",
+        gc_prologue_store_elision = minor >= v"1.12",
+        gc_root_allocas_first = minor <= v"1.11",
+        gc_stack_argument = minor >= v"1.13",
+        gc_names = minor >= v"1.11",
+        gc_tag_load_volatile = minor >= v"1.11",
+        gc_alloc_bytes_tag = minor >= v"1.11",
+        gc_extract_simplify = minor >= v"1.12",
+        gc_ptls_gep = minor <= v"1.11" ? :pointer : :byte,
+        gc_barrier_lowering,
+        gc_transition_lowering,
+        gc_safepoint_load = minor >= v"1.14" ? :monotonic_named :
+                            minor == v"1.13" ? :monotonic : :plain,
+        gc_declare_small_alloc = minor >= v"1.12",
+        gc_state_condition,
+        ptls_stack_argument = minor >= v"1.13" ? :gcstack : :swiftself,
+        ptls_argument_takes_name = minor >= v"1.11",
+        ptls_adopt_thread = minor >= v"1.12" ? "ijl_autoinit_and_adopt_thread" :
+                            "ijl_adopt_thread",
+        ptls_image_offset_slot = minor >= v"1.14" ? "jl_image_tls_offset" :
+                                 "jl_tls_offset",
+        ptls_jit_getter = minor >= v"1.14" ? :resolved : :address,
+        ptls_tp_inbounds = minor >= v"1.12",
+        ptls_exit_safepoint = minor >= v"1.12",
+        cpointer_type = minor <= v"1.11" ? :integer : :pointer,
+        bottom_aliases = minor <= v"1.11" ? :bottom :
+                         minor >= v"1.14" ? :some_type : :typeofbottom_super,
+        boxes_kinds = minor >= v"1.14",
+        gc_final_module = minor == v"1.10",
+        gc_final_skip_unused = minor >= v"1.13",
+        gc_final_debugloc_next = minor == v"1.10",
+        gc_alloc_entry_points = minor == v"1.10" ? :pool :
+                                minor == v"1.11" ? :pool_instrumented : :small,
+        gc_alloc_reset_safe = minor >= v"1.14",
+        fp16,
+        bf16,
+        gc_barrier)
 end
 
 # the known minor version whose dialect a Julia version has
