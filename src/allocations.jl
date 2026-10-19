@@ -284,13 +284,11 @@ end
 const UNKNOWN_OFFSET = typemax(UInt32)
 
 const MEMSET = Intrinsic("llvm.memset")
-const LIFETIME_START = Intrinsic("llvm.lifetime.start")
-const LIFETIME_END = Intrinsic("llvm.lifetime.end")
 
 is_lifetime(f::LLVM.Function) =
     LLVM.isintrinsic(f, LIFETIME_START) || LLVM.isintrinsic(f, LIFETIME_END)
 # lifetime markers and debug intrinsics (`DbgInfoIntrinsic`)
-is_lifetime_or_debug(f::LLVM.Function) = is_lifetime(f) || startswith(f.name, "llvm.dbg.")
+is_lifetime_or_debug(f::LLVM.Function) = is_lifetime(f) || is_debug_intrinsic(f)
 
 # the `allockind` of a call, from its attributes or those of the called function
 function alloc_kind(@nospecialize(call::Instruction))::UInt64

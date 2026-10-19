@@ -350,7 +350,7 @@ function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_
                 callee = called_function(inst)
                 id = callee === nothing ? nothing : intrinsic_id(callee)
                 id !== nothing && (LLVM.name(callee) in DBG_INFO_INTRINSICS ||
-                                   id == LIFETIME_START_INTR || id == LIFETIME_END_INTR) &&
+                                   id == LIFETIME_START || id == LIFETIME_END) &&
                     continue
                 if !has_reset_safe_md(inst) || is_implicit_runtime_call(p, inst)
                     is_exempt_call(p, inst) || push!(unsafe, inst)

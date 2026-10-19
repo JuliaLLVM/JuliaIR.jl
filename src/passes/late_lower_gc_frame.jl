@@ -1525,17 +1525,13 @@ function is_non_safepoint_callee(p::LateLowerGCFrame, callee::LLVM.Function)
     return LLVM.name(callee) in NON_SAFEPOINT_RUNTIME_CALLS
 end
 
-const DBG_INTRINSIC_PREFIX = "llvm.dbg."
-const LIFETIME_START_INTR = Intrinsic("llvm.lifetime.start")
-const LIFETIME_END_INTR = Intrinsic("llvm.lifetime.end")
-
 function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction)
     if is_intrinsic_call(ci)
         # Most intrinsics are not GC uses or defs, but some have memory operands. Only
         # skip those that are emitted often and cannot be GC uses.
         callee = called_function(ci)
-        if startswith(LLVM.name(callee), DBG_INTRINSIC_PREFIX) ||
-           intrinsic_is(ci, LIFETIME_START_INTR) || intrinsic_is(ci, LIFETIME_END_INTR)
+        if is_debug_intrinsic(callee) ||
+           intrinsic_is(ci, LIFETIME_START) || intrinsic_is(ci, LIFETIME_END)
             return
         end
         if intrinsic_is(ci, MASKED_LOAD) || intrinsic_is(ci, MASKED_GATHER)
@@ -2166,7 +2162,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
         # lifetime intrinsics no longer apply
         to_delete = Instruction[]
         recursively_visit_intrinsics(ai) do ii
-            (intrinsic_is(ii, LIFETIME_START_INTR) || intrinsic_is(ii, LIFETIME_END_INTR)) &&
+            (intrinsic_is(ii, LIFETIME_START) || intrinsic_is(ii, LIFETIME_END)) &&
                 push!(to_delete, ii)
         end
         foreach(erase!, to_delete)

@@ -273,18 +273,16 @@ function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_con
     return inst
 end
 
-value_name(@nospecialize(v::Value)) = LLVM.name(v)
-
 # the address of the type tag of an object: the word before it (`EmitTagPtr`)
 function emit_tag_ptr!(p::GCLowering, t::LLVMType, @nospecialize(v::Value))
-    name = p.dialect.gc_names ? value_name(v) * ".tag_addr" : ""
+    name = p.dialect.gc_names ? LLVM.name(v) * ".tag_addr" : ""
     return inbounds_gep!(p.builder, t, v, [ConstantInt(p.T_size, -1)], name)
 end
 
 # a load of the type tag of an object (`EmitLoadTag`)
 function emit_load_tag!(p::GCLowering, @nospecialize(v::Value))
     addr = emit_tag_ptr!(p, p.T_size, v)
-    name = p.dialect.gc_names ? value_name(v) * ".tag" : ""
+    name = p.dialect.gc_names ? LLVM.name(v) * ".tag" : ""
     load = load!(p.builder, p.T_size, addr, name; align=pointer_align(p),
                  ordering=LLVM.API.LLVMAtomicOrderingUnordered,
                  volatile=p.dialect.gc_tag_load_volatile)

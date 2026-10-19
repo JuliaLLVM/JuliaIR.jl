@@ -74,6 +74,12 @@ end
 # the type of a value, by its reference
 typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
 
+const LIFETIME_START = Intrinsic("llvm.lifetime.start")
+const LIFETIME_END = Intrinsic("llvm.lifetime.end")
+
+# whether a function is one of the intrinsics of debug records (`llvm.dbg.*`)
+is_debug_intrinsic(f::LLVM.Function) = startswith(LLVM.name(f), "llvm.dbg.")
+
 # whether `callee` is the function `f`, which may be absent (`nothing`)
 is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
 

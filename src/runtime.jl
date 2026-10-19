@@ -425,12 +425,6 @@ function base_offset(ptr::LLVM.Value, dl::DataLayout)
     end
 end
 
-function returns_twice(call::LLVM.CallInst)
-    haskey(call.function_attributes, :returns_twice) && return true
-    callee = call.called_function
-    return callee !== nothing && haskey(callee.function_attributes, :returns_twice)
-end
-
 # A safepoint is a volatile load from the page that the thread-local state's `safepoint`
 # points to, and the thread-local state is loaded from the task's `ptls`, at an offset
 # from the task's `pgcstack`.
@@ -462,7 +456,7 @@ function run_probe(::Val{:handler})
     with_probe_ir(probe_handler, Tuple{Int}, "a `try`") do mod
         dl = mod.datalayout
         calls = [inst for inst in instructions(mod)
-                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                 if inst isa LLVM.CallInst && can_return_twice(inst) &&
                     !isempty(inst.arguments)]
         length(calls) == 1 || return nothing
         call = only(calls)
@@ -487,7 +481,7 @@ function run_probe(::Val{:cancel})
     with_probe_ir(probe_cancel, Tuple{}, "`Base.@cancel_check`") do mod
         dl = mod.datalayout
         calls = [inst for inst in instructions(mod)
-                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                 if inst isa LLVM.CallInst && can_return_twice(inst) &&
                     !isempty(inst.arguments)]
         isempty(calls) && return nothing
         buff, mctx = base_offset(first(calls).arguments[1], dl)

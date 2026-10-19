@@ -119,17 +119,15 @@ should_run_final_gc(p::FinalLowerGC) =
 
 ## positions
 
-const DBG_PREFIX = "llvm.dbg."
-
-is_debug_intrinsic(inst::Instruction) =
+is_debug_intrinsic_call(inst::Instruction) =
     inst isa LLVM.CallInst && (callee = called_function(inst)) !== nothing &&
-    startswith(LLVM.name(callee), DBG_PREFIX)
+    is_debug_intrinsic(callee)
 
 # the debug location that C++'s `IRBuilder` takes from the instruction it is positioned
 # at (`getStableDebugLoc` from LLVM 18 on: the next instruction's for a debug intrinsic)
 function stable_debug_location(inst::Instruction)
     if LLVM.version() >= v"18"
-        while is_debug_intrinsic(inst) && inst.next !== nothing
+        while is_debug_intrinsic_call(inst) && inst.next !== nothing
             inst = inst.next
         end
     end
