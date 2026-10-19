@@ -25,12 +25,15 @@ const RUNTIME_FACTS = (
     tp_asm = "the inline assembly that reads the thread pointer",
     smalltag_shift = "the position of `smalltag` in the `flags` of a `jl_datatype_t`",
     max_small_tag = "the number of small type tags (`jl_max_tags`)",
+    task_world_age = "the offset of `world_age` in `jl_task_t`",
+    cfunction_cache = "where the call site of a `@cfunction` caches its entry point and world (`:arguments` or `:cfuncdata`)",
+    cfuncdata_size = "the size of the call-site data of a `@cfunction` (`cfuncdata_t`)",
 )
 
 # the option that gives a fact explicitly, with the value that means "not given"
 function fact_option_default(name::Symbol)
     name in (:setjmp, :tp_asm) && return ""
-    name === :tls_elf_support && return :auto
+    name in (:tls_elf_support, :cfunction_cache) && return :auto
     return 0
 end
 
@@ -89,6 +92,9 @@ function runtime_fact(rt::RuntimeFacts, name::Symbol)
             given === :yes && return true
             given === :no && return false
             throw(ArgumentError("invalid option $(option_key(name))=$given; expected yes or no"))
+        elseif name === :cfunction_cache
+            given in (:arguments, :cfuncdata) ||
+                throw(ArgumentError("invalid option $(option_key(name))=$given; expected arguments or cfuncdata"))
         end
         return given
     end
@@ -118,7 +124,14 @@ The facts about the runtime of Julia `dialect` that passes processing `mod` need
 - thread-local storage: `tls_elf_support` and the thread-pointer assembly `tp_asm`;
 - small type tags, which objects of the runtime's builtin types carry in their header
   instead of the address of their type (`smalltag << 4`): where a `DataType`'s `flags`
-  hold its tag (`smalltag_shift`), and how many tags there are (`max_small_tag`).
+  hold its tag (`smalltag_shift`), and how many tags there are (`max_small_tag`);
+- the world age of a task (`task_world_age`, a byte offset), which a C-callable wrapper
+  (`@cfunction`) sets to the latest world while it runs;
+- from Julia 1.12 on, the data at the call site of a `@cfunction` that the runtime's
+  `jl_get_abi_converter` resolves its entry point with: its size (`cfuncdata_size`, of
+  `cfuncdata_t`), and where the entry point and the world it is valid in are cached
+  (`cfunction_cache`): in two separate words passed with it (`:arguments`, Julia 1.12),
+  or in its first two fields (`:cfuncdata`).
 
 A fact is resolved when it is read, in order: from the keyword argument (pass option) of
 the same name, which gives it explicitly; from the running Julia, if `dialect` is its
@@ -162,6 +175,7 @@ const FACT_PROBES = (
     reset_ctx_gcstack = :cancel, reset_ctx_eh = :cancel, reset_ctx_mctx = :cancel,
     tls_elf_support = :tls, tp_asm = :safepoint,
     smalltag_shift = :smalltag, max_small_tag = :smalltag,
+    task_world_age = :world_age, cfunction_cache = :cfunction, cfuncdata_size = :cfunction,
 )
 
 # probe => its facts (a NamedTuple, `nothing` for facts the running Julia doesn't have)
@@ -287,6 +301,47 @@ function run_probe(::Val{:smalltag})
         return only(bounds) >> 4
     end
     return (; smalltag_shift=only(shifts), max_small_tag)
+end
+
+# The word of the current task that the builtin `Core._call_in_world` sets to the world it
+# calls in (world 1, in which the intrinsic it calls, a builtin, reads the word).
+function run_probe(::Val{:world_age})
+    task = current_task()
+    W = sizeof(Ptr{Cvoid})
+    gcstack = native_probe(:task).task_gcstack
+    offsets = GC.@preserve task begin
+        base = Ptr{UInt}(pointer_from_objref(task))
+        [off for off in 0:W:(gcstack + 8W)
+         if unsafe_load(base + off) != 1 &&
+            Core._call_in_world(UInt(1), Core.Intrinsics.pointerref, base + off, 1, 1) == 1]
+    end
+    length(offsets) == 1 ||
+        throw(RuntimeError("calling in another world doesn't change exactly one field of the current task to it"))
+    return (; task_world_age=only(offsets))
+end
+
+# The call of `jl_get_abi_converter` in the code Julia generates for a `@cfunction`: its
+# last argument is the call site's `cfuncdata_t`, after the cached entry point and world
+# when they are separate (Julia 1.12).
+probe_cfunction_target(x::Float64) = x
+probe_cfunction() = @cfunction(probe_cfunction_target, Float64, (Float64,))
+
+function run_probe(::Val{:cfunction})
+    dialect_minor(VERSION) >= v"1.12" ||
+        return (; cfunction_cache=nothing, cfuncdata_size=nothing)
+    with_probe_ir(probe_cfunction, Tuple{}, "a `@cfunction`") do mod
+        calls = [inst for inst in instructions(mod)
+                 if inst isa LLVM.CallInst && inst.called_operand isa LLVM.Function &&
+                    LLVM.name(inst.called_operand) == "jl_get_abi_converter"]
+        length(calls) == 1 || return nothing
+        args = only(calls).arguments
+        length(args) in (2, 4) || return nothing
+        data = args[end]
+        data isa LLVM.GlobalVariable || return nothing
+        size = Int(abi_size(mod.datalayout, LLVM.global_value_type(data)))
+        return (; cfunction_cache=length(args) == 4 ? :arguments : :cfuncdata,
+                cfuncdata_size=size)
+    end
 end
 
 # the value of an integer constant, also one converted to a pointer (`inttoptr`)
