@@ -62,9 +62,9 @@ manager.
   the debug info of global variables first, which duplicates the variable and its
   compile unit: the global variable then refers to a compile unit that isn't in
   `!llvm.dbg.cu`, while the listed one describes a variable that no longer exists.
-- The metadata of global variable declarations is kept; Julia's pass drops it. Julia
-  master's code generator attaches `!julia.constgv` to declarations of global variables,
-  so this is the one difference for the IR it emits.
+- The metadata of global variable declarations is kept; Julia's pass drops it. The code
+  generator of Julia 1.14 and later attaches `!julia.constgv` to declarations of global
+  variables, so this is the one difference for the IR it emits.
 - The types of all type attributes of functions are mapped: Julia's pass only maps the
   first of `byval`, `sret` and `byref`, leaving `inalloca` and `preallocated` with the
   old struct.
@@ -77,7 +77,7 @@ manager.
 - Indirect functions (`ifunc`) are recreated with the mapped type and resolver, like
   aliases. Julia's pass leaves them referring to the resolver it deletes.
 
-Apart from the metadata of declarations on Julia master, the IR that Julia's code
+Apart from the metadata of declarations from Julia 1.14 on, the IR that Julia's code
 generator emits has none of these constructs (except compile units, which the ports keep
 like Julia 1.13), so for it the ports give the same result as the C++ passes.
 
