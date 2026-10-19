@@ -458,15 +458,19 @@ once the data layout is restored, and that without restoring it, x86 IR of LLVM 
 LLVM ≥ 18 gets `i128:128` and the wrong layout of `{i8, i128}` (16/32 instead of 8/24).
 CI (`.github/workflows/CI.yml`): `standalone-llvm` builds a standalone LLVM 23 with the
 `deps/build_standalone.jl` of the LLVM.jl release the package resolves to (LLVM_full_jll
-23.1.4, cached on that release's version, a recipe revision and the runner image) and tars it with LLVM 23's opt/FileCheck/not/count/llvm-dis/
-llvm-as and `libLLVM.so.23.1jl` (`tools/` + `lib/`, the tools' RPATH is `$ORIGIN/../lib`);
-`mode-b` (five pins) sets the `libLLVM` preference and `JULIAIR_LLVM_TOOLS`, checks LLVM.jl
-loaded it, runs Pkg.test and `run.jl --mode B`; `oracle` (five pins, only when
-test/upstream, litsetup.jl, bin/jlopt or the workflow change, or on workflow_dispatch) runs
-`--cpp --reprint` with that opt. Mode-b develops the package into test/ only after Pkg.test:
-on 1.10, Pkg.test fails ("can not merge projects") once it is. Not yet run on GitHub. Locally (CI steps
-simulated, LLVM 23.1.4): Pkg.test 1.10 887, 1.11 923, 1.12 923, 1.13 891, nightly 917;
-mode B 14/14, 15/15, 15/15, 16/16, 20/20; oracle 28/28, 32/32, 33/33, 35/35, 40/42.
+23.1.4, cached on that release's version, a recipe revision and the runner image) and tars
+it with LLVM 23's opt/FileCheck/not/count/llvm-dis/llvm-as and `libLLVM.so.23.1jl`
+(`tools/` + `lib/`, the tools' RPATH is `$ORIGIN/../lib`);
+`mode-b` (the six pins of `upstream`) sets the `libLLVM` preference and
+`JULIAIR_LLVM_TOOLS`, checks LLVM.jl loaded it, runs Pkg.test and `run.jl --mode B`;
+`oracle` (same pins, only when test/upstream, litsetup.jl, bin/jlopt or the workflow
+change, or on workflow_dispatch) runs `--cpp --reprint` with that opt. Mode-b develops the
+package into test/ only after Pkg.test: on 1.10, Pkg.test fails ("can not merge projects")
+once it is. Not yet run on GitHub. Locally (CI steps simulated, LLVM 23.1.4, with
+S7/S15/S16/S20/S21/S9's ports in mode B too): mode B 1.10 31/31, 1.11 32/32, 1.12 33/33,
+1.13 35/35, 1.14 40/42 (2 unsupported on x86); Pkg.test 1.12 1467, 1.14 1470; oracle at
+every pin as `--cpp`. The only finding on LLVM 23 was a lit input that LLVM 22's verifier
+rejects (`cpu-features-tokens.ll`'s untrimmed `"+sse2, +fma"`), now run before LLVM 22 only.
 
 ## Layout
 
