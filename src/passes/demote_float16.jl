@@ -12,10 +12,8 @@ const DEMOTED_OPCODES = (API.LLVMFNeg, API.LLVMFAdd, API.LLVMFSub, API.LLVMFMul,
                          API.LLVMFDiv, API.LLVMFRem, API.LLVMFCmp)
 
 function string_attribute(f::LLVM.Function, kind::String)
-    for attr in f.function_attributes
-        attr isa StringAttribute && LLVM.kind(attr) == kind && return LLVM.value(attr)
-    end
-    return nothing
+    attr = get(f.function_attributes, kind, nothing)
+    return attr === nothing ? nothing : LLVM.value(attr)
 end
 
 # whether a type is kept (`true`) or demoted, according to the policy or to the rule of

@@ -25,7 +25,7 @@ const GC_FRAME_HEADER_SLOTS = 2
 
 # A pass that uses these helpers has the fields `dialect`, `mod`, `builder`, `dl`
 # (the module's data layout), `T_prjlvalue` (a tracked pointer) and `T_size` (the
-# integer of a pointer's size).
+# integer of a pointer's size), and a method of `tbaa_tags` that returns its `TBAATags`.
 abstract type GCLowering end
 
 pointer_size(p::GCLowering) = storage_size(p.dl, LLVM.PointerType(AS_GENERIC))
@@ -46,7 +46,7 @@ function get_pgcstack(dialect::Dialect, f::LLVM.Function, getter, adopt)
     end
     if dialect.gc_stack_argument
         for (i, arg) in enumerate(f.parameters)
-            has_string_attribute(f.parameter_attributes[i], "gcstack") && return arg
+            haskey(f.parameter_attributes[i], "gcstack") && return arg
         end
     end
     return nothing
@@ -141,9 +141,42 @@ function gc_alloc_function_name(dialect::Dialect, which::Symbol)
     end
 end
 
-# the name and type of a GC intrinsic (`jl_intrinsics`) or runtime function
-# (`jl_well_known`)
-function gc_declaration(p::GCLowering, which::Symbol)
+# the name of a GC intrinsic (`jl_intrinsics`) or runtime function (`jl_well_known`)
+function gc_declaration_name(dialect::Dialect, which::Symbol)
+    return if which === :get_gc_frame_slot
+        "julia.get_gc_frame_slot"
+    elseif which === :gc_alloc_bytes
+        "julia.gc_alloc_bytes"
+    elseif which === :new_gc_frame
+        "julia.new_gc_frame"
+    elseif which === :push_gc_frame
+        "julia.push_gc_frame"
+    elseif which === :pop_gc_frame
+        "julia.pop_gc_frame"
+    elseif which === :queue_gc_root
+        "julia.queue_gc_root"
+    elseif which === :gc_queue_root
+        "ijl_gc_queue_root"
+    elseif which === :gc_queue_root_reset_safe
+        "ijl_gc_queue_root_reset_safe"
+    elseif which in (:gc_small_alloc, :gc_big_alloc)
+        gc_alloc_function_name(dialect, which)
+    elseif which === :gc_small_alloc_reset_safe
+        "ijl_gc_small_alloc_reset_safe"
+    elseif which === :gc_big_alloc_reset_safe
+        "ijl_gc_big_alloc_reset_safe"
+    elseif which === :gc_alloc_typed
+        "ijl_gc_alloc_typed"
+    elseif which === :gc_alloc_typed_reset_safe
+        "ijl_gc_alloc_typed_reset_safe"
+    else
+        error("unknown GC intrinsic $which")
+    end
+end
+
+# the type of a GC intrinsic or runtime function, built apart from its name so that one
+# that is already declared is found without building it
+function gc_declaration_type(p::GCLowering, which::Symbol)
     T_ptr = LLVM.PointerType(AS_GENERIC)
     T_int32 = LLVM.Int32Type()
     T_void = LLVM.VoidType()
@@ -151,36 +184,32 @@ function gc_declaration(p::GCLowering, which::Symbol)
     # from Julia 1.11 on, the allocation functions take the type tag as an integer
     tag = p.dialect.gc_alloc_bytes_tag ? LLVMType[T_size] : LLVMType[]
     return if which === :get_gc_frame_slot
-        "julia.get_gc_frame_slot", LLVM.FunctionType(T_ptr, [T_ptr, T_int32])
+        LLVM.FunctionType(T_ptr, [T_ptr, T_int32])
     elseif which === :gc_alloc_bytes
-        "julia.gc_alloc_bytes", LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, tag...])
+        LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, tag...])
     elseif which === :new_gc_frame
-        "julia.new_gc_frame", LLVM.FunctionType(T_ptr, [T_int32])
+        LLVM.FunctionType(T_ptr, [T_int32])
     elseif which === :push_gc_frame
-        "julia.push_gc_frame", LLVM.FunctionType(T_void, [T_ptr, T_int32])
+        LLVM.FunctionType(T_void, [T_ptr, T_int32])
     elseif which === :pop_gc_frame
-        "julia.pop_gc_frame", LLVM.FunctionType(T_void, [T_ptr])
-    elseif which === :queue_gc_root
-        "julia.queue_gc_root", LLVM.FunctionType(T_void, [p.T_prjlvalue])
-    elseif which in (:gc_queue_root, :gc_queue_root_reset_safe)
-        which === :gc_queue_root ? "ijl_gc_queue_root" : "ijl_gc_queue_root_reset_safe",
+        LLVM.FunctionType(T_void, [T_ptr])
+    elseif which in (:queue_gc_root, :gc_queue_root, :gc_queue_root_reset_safe)
         LLVM.FunctionType(T_void, [p.T_prjlvalue])
     elseif which in (:gc_small_alloc, :gc_small_alloc_reset_safe)
-        which === :gc_small_alloc ? gc_alloc_function_name(p.dialect, which) :
-                                    "ijl_gc_small_alloc_reset_safe",
         LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_int32, T_int32, tag...])
     elseif which in (:gc_big_alloc, :gc_big_alloc_reset_safe)
-        which === :gc_big_alloc ? gc_alloc_function_name(p.dialect, which) :
-                                  "ijl_gc_big_alloc_reset_safe",
         LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, tag...])
     elseif which in (:gc_alloc_typed, :gc_alloc_typed_reset_safe)
         # Julia 1.10 passes a null pointer instead of the tag
-        which === :gc_alloc_typed ? "ijl_gc_alloc_typed" : "ijl_gc_alloc_typed_reset_safe",
         LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, isempty(tag) ? T_ptr : T_size])
     else
         error("unknown GC intrinsic $which")
     end
 end
+
+# the name and type of a GC intrinsic or runtime function
+gc_declaration(p::GCLowering, which::Symbol) =
+    gc_declaration_name(p.dialect, which), gc_declaration_type(p, which)
 
 """
     JuliaIR.DeclarationError
@@ -204,14 +233,17 @@ Base.showerror(io::IO, err::DeclarationError) =
 # (`JuliaPassContext::getOrDeclare`). An existing function is used whatever its type,
 # like the C++, unless `check`, which throws a `DeclarationError` for another type.
 function get_or_declare(p::GCLowering, which::Symbol; check::Bool=false)
-    name, ft = gc_declaration(p, which)
+    name = gc_declaration_name(p.dialect, which)
     existing = get(p.mod.functions, name, nothing)
     if existing !== nothing
-        check && existing.function_type != ft &&
-            throw(DeclarationError(name, string(ft), string(existing.function_type)))
+        if check
+            ft = gc_declaration_type(p, which)
+            existing.function_type != ft &&
+                throw(DeclarationError(name, string(ft), string(existing.function_type)))
+        end
         return existing
     end
-    f = LLVM.Function(p.mod, name, ft)
+    f = LLVM.Function(p.mod, name, gc_declaration_type(p, which))
     if which in (:gc_alloc_bytes, :gc_big_alloc, :gc_alloc_typed)
         push!(f.function_attributes, alloc_size_attr(1))
         add_gc_alloc_attributes!(p, f)
@@ -259,10 +291,21 @@ tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
 tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
 tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
 
-# set a TBAA tag, and mark loads of constant memory invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction)
+# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
+# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
+struct TBAATags
+    gcframe::MDNode
+    tag::MDNode
+    constant::MDNode
+end
+
+TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
+
+# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
+# invariant (`tbaa_decorate`)
+function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
     inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == tbaa_const()
+    if inst isa LLVM.LoadInst && md == constant
         inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
     end
     return inst
@@ -283,7 +326,7 @@ function emit_load_tag!(p::GCLowering, @nospecialize(v::Value))
     load = load!(p.builder, p.T_size, addr, name; align=pointer_align(p),
                  ordering=LLVM.API.LLVMAtomicOrderingUnordered,
                  volatile=p.dialect.gc_tag_load_volatile)
-    load.metadata[LLVM.MD_tbaa] = tbaa_tag()
+    load.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
     load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, TAG_ALIGNMENT),
                                            i64_metadata_of(p.T_size, 0)])

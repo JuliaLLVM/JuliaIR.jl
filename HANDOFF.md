@@ -36,6 +36,18 @@ read it first, including its Log). This file says where things are and how to co
 | S9 JuliaLICM (`jl-licm`) | done, branch `tb/s9-julia-licm` (on S21) | see `git log` |
 | S36 ledger appends with O_APPEND (concurrent processes garbled lines) | done, branch `tb/s36-ledger-append` (on S9) | see `git log` |
 | S11 steps 2–3, 6–7: tests on a standalone LLVM 23 (`julia_llvm_in_use()`, lit tools of the library, LowerExcHandlers lifetime fix), mode B at every pin, the IR-crossing test, CI jobs `standalone-llvm`/`mode-b`/`oracle` | done, branch `tb/s11-standalone` (on S36) | see `git log` |
+| S29a local performance fixes (TBAA, attributes, type stability, module facts) | done, branch `tb/s29-local-perf` (on S11) | see `git log` |
+
+S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
+LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks
+uses with a concretely typed stack, and keeps its data layout and types per run in
+`module_facts` (src/registration.jl); LateLowerGCFrame keeps its TBAA tags and the memos of
+`tbaa_derives_from`/the downgraded tags per run, FinalLowerGC and LowerPTLS keep their
+`TBAATags` (src/gc.jl) per function and per run, the shared `get_or_declare` looks GC
+intrinsics up by name before building their types, and attribute tests everywhere use
+`haskey`/`get` by kind (Symbol: enum or type attribute, String: string attribute). Warm on
+1.12, synthetic corpus, port/C++ ratios against S11 went from 5.3/4.1/4.7/5.8/3.1 to
+2.2/3.2/3.1/4.4/2.7.
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -557,6 +569,13 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
 
 ## Traps
 
+- `module_facts` lives as long as one occurrence of a pass in one run, across functions,
+  with other passes running in between (whole module passes under `repeat<n>`, LLVM 18
+  and older): only cache what no pass changes (data layout, types, uniqued metadata), never
+  functions or globals, nor the absence of a function (LateLowerGCFrame declares some of
+  LateGCCleanup's while a pipeline runs). `repeat<n>` itself is gone from LLVM 19.
+- `remark!` only builds a remark's message when a consumer is set (callback, `-pass-remarks`
+  options, remark file); unlike LLVM.jl's eager path it doesn't fall back to `@debug`.
 - The scratchpad directory is shared by all subagents: keep files in a subdirectory
   named after the item.
 - Julia's C++ LateLowerGCFrame orders the frame slots of allocas by their addresses

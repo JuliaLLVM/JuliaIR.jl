@@ -18,13 +18,20 @@ mutable struct FinalLowerGC <: GCLowering
     # the runtime functions the intrinsics are lowered to, once declared
     runtime::Dict{Symbol,LLVM.Function}
     cfg_modified::Bool
+    # built on first use (`tbaa_tags`)
+    tbaa::Union{Nothing,TBAATags}
 end
 
 function FinalLowerGC(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder)
     dl = mod.datalayout
     return FinalLowerGC(dialect, mod, builder, dl, LLVM.PointerType(AS_TRACKED),
                         LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                        nothing, Dict{Symbol,LLVM.Function}(), false)
+                        nothing, Dict{Symbol,LLVM.Function}(), false, nothing)
+end
+
+function tbaa_tags(p::FinalLowerGC)
+    p.tbaa === nothing && (p.tbaa = TBAATags())
+    return p.tbaa::TBAATags
 end
 
 # the runtime functions that FinalLowerGC declares, in the order the C++ declares them
@@ -161,7 +168,7 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     size = pointer_size(p) * (nroots + 2)
     memset = memset!(builder, gcframe, ConstantInt(LLVM.Int8Type(), 0),
                      ConstantInt(LLVM.Int64Type(), size), 16)
-    memset.metadata[LLVM.MD_tbaa] = tbaa_gcframe()
+    memset.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
     replace_uses!(target, gcframe)
     erase!(target)
 end
@@ -180,13 +187,13 @@ function lower_push_gc_frame!(p::FinalLowerGC, target::Instruction)
                                 names ? "frame.nroots" : "")
     # `JL_GC_ENCODE_PUSHARGS`
     store = store!(builder, ConstantInt(p.T_size, nroots << 2), nroots_addr; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_gcframe()
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
     # in the order of the C++ (whose compilers evaluate the store's operands right to left)
     prev_addr = inbounds_gep!(builder, p.T_prjlvalue, gcframe, [ConstantInt(T_int32, 1)],
                               names ? "frame.prev" : "")
     prev = load!(builder, T_ptr, p.pgcstack, names ? "task.gcstack" : ""; align)
     store = store!(builder, prev, prev_addr; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_gcframe()
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
     store!(builder, gcframe, p.pgcstack; align)
     erase!(target)
 end
@@ -201,9 +208,9 @@ function lower_pop_gc_frame!(p::FinalLowerGC, target::Instruction)
                               [ConstantInt(LLVM.Int32Type(), 1)])
     prev = load!(builder, p.T_prjlvalue, prev_addr, p.dialect.gc_names ? "frame.prev" : "";
                  align)
-    prev.metadata[LLVM.MD_tbaa] = tbaa_gcframe()
+    prev.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
     store = store!(builder, prev, p.pgcstack; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_gcframe()
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
     erase!(target)
 end
 

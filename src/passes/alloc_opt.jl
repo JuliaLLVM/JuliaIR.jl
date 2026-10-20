@@ -103,7 +103,7 @@ end
 ## allocations
 
 # the size of an allocation, or -1 if `inst` is not one of a known size
-function gc_alloc_size(opt::AllocOpt, inst::Instruction)
+function gc_alloc_size(opt::AllocOpt, @nospecialize(inst::Instruction))
     inst isa CallInst || return -1
     inst.called_operand == opt.fns.alloc_obj || return -1
     sz = inst.arguments[2]
@@ -114,7 +114,7 @@ function gc_alloc_size(opt::AllocOpt, inst::Instruction)
     return Int(n)
 end
 
-function push_instruction!(opt::AllocOpt, inst::Instruction)
+function push_instruction!(opt::AllocOpt, @nospecialize(inst::Instruction))
     sz = gc_alloc_size(opt, inst)
     if sz != -1 && !(inst in opt.inworklist)
         push!(opt.worklist, (inst, sz))
@@ -919,23 +919,51 @@ function finish_split!(opt::AllocOpt, slots)
     end
 end
 
+# What AllocOpt needs of a module, the same for each of its functions (part of
+# `AllocOpt::doInitialization` in C++, which runs for every function). Not the lifetime
+# intrinsics, whose declarations a later pass of the pipeline may remove (the pass can run
+# again on the module in `repeat<n>(...)`): only the pointer type and names they have.
+struct AllocOptModule
+    dl::DataLayout
+    layout::String
+    lifetime_size::Bool
+    T_alloca::LLVMType
+    lifetime_start_name::String
+    lifetime_end_name::String
+    T_prjlvalue::LLVMType
+    T_pjlvalue::LLVMType
+end
+
+function AllocOptModule(mod::LLVM.Module)
+    layout = unsafe_string(API.LLVMGetDataLayoutStr(mod))
+    ptr = LLVM.PointerType(alloca_addrspace(layout))
+    return AllocOptModule(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
+                          ptr, LLVM.overloaded_name(LIFETIME_START, LLVMType[ptr]),
+                          LLVM.overloaded_name(LIFETIME_END, LLVMType[ptr]),
+                          LLVM.PointerType(AS_TRACKED), LLVM.PointerType(AS_GENERIC))
+end
+
+# the declaration of an overload of an intrinsic, by its name, declared if needed
+function intrinsic_declaration(mod::LLVM.Module, intr::Intrinsic, name::String,
+                               types::Vector{LLVMType})
+    f = get(mod.functions, name, nothing)
+    return f === nothing ? LLVM.Function(mod, intr, types) : f
+end
+
 function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOptions)
     mod = f.parent
     dialect = opts.dialect
     fns = JuliaFunctions(mod, dialect)
     fns.alloc_obj === nothing && return PreservedAnalyses(AllAnalyses)
-
-    layout = unsafe_string(API.LLVMGetDataLayoutStr(mod))
-    facts = library_facts(context(f))
-    as = alloca_addrspace(layout)
-    ptr = LLVM.PointerType(as)
-    lifetime_start = LLVM.Function(mod, LIFETIME_START, LLVMType[ptr])
-    lifetime_end = LLVM.Function(mod, LIFETIME_END, LLVMType[ptr])
+    m = module_facts(() -> AllocOptModule(mod), opts, mod, AllocOptModule)
+    lifetime_start = intrinsic_declaration(mod, LIFETIME_START, m.lifetime_start_name,
+                                           LLVMType[m.T_alloca])
+    lifetime_end = intrinsic_declaration(mod, LIFETIME_END, m.lifetime_end_name,
+                                         LLVMType[m.T_alloca])
 
     @dispose builder=IRBuilder() begin
-        opt = AllocOpt(f, am, dialect, fns, mod.datalayout, layout, builder,
-                       facts.lifetime_size, lifetime_start, lifetime_end,
-                       LLVM.PointerType(AS_TRACKED), LLVM.PointerType(AS_GENERIC),
+        opt = AllocOpt(f, am, dialect, fns, m.dl, m.layout, builder, m.lifetime_size,
+                       lifetime_start, lifetime_end, m.T_prjlvalue, m.T_pjlvalue,
                        nothing, nothing, Tuple{Instruction,Int}[], Set{Instruction}(),
                        Instruction[], AllocUseInfo(),
                        Dict{BasicBlock,Union{Nothing,Instruction}}())

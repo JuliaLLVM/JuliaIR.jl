@@ -144,8 +144,6 @@ end
 
 is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
-attr_kind(a::Attribute) = string(LLVM.kind(a))
-
 # `ConstantData`: constants without operands
 is_constant_data(@nospecialize(v::Value)) =
     API.LLVMIsAConstantInt(v) != C_NULL || API.LLVMIsAConstantFP(v) != C_NULL ||
@@ -165,12 +163,11 @@ end
 function returned_argument(call::Instruction)
     callee = call.called_operand
     for i in 1:length(call.arguments)
-        attrs = collect(call.argument_attributes[i])
-        if callee isa LLVM.Function && i <= length(callee.parameters)
-            append!(attrs, collect(callee.parameter_attributes[i]))
-        end
-        any(a -> a isa EnumAttribute && attr_kind(a) == "returned", attrs) &&
+        if haskey(call.argument_attributes[i], :returned) ||
+           callee isa LLVM.Function && i <= length(callee.parameters) &&
+           haskey(callee.parameter_attributes[i], :returned)
             return call.arguments[i]
+        end
     end
     return nothing
 end
@@ -223,45 +220,33 @@ intrinsic_is(call::Instruction, intr::Intrinsic) =
         callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
     end
 
-has_string_fn_attr(attrs, name::String) =
-    any(a -> a isa StringAttribute && attr_kind(a) == name, attrs)
-has_enum_fn_attr(attrs, name::String) =
-    any(a -> a isa EnumAttribute && attr_kind(a) == name, attrs)
-
 # `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
-# function type differs from the function's (unlike `called_function`)
-function call_has_fn_attr(call::Instruction, name::String, string_attr::Bool)
-    has = string_attr ? has_string_fn_attr : has_enum_fn_attr
-    has(collect(call.function_attributes), name) && return true
+# function type differs from the function's (unlike `called_function`); `kind` is the
+# name of an LLVM attribute (a symbol) or of a string attribute
+function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
+    haskey(call.function_attributes, kind) && return true
     callee = call.called_operand
-    return callee isa LLVM.Function && has(collect(callee.function_attributes), name)
+    return callee isa LLVM.Function && haskey(callee.function_attributes, kind)
 end
 
-can_return_twice(call::Instruction) = call_has_fn_attr(call, "returns_twice", false)
+can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
 
 # the memory effects of the attributes of a function or call site: the `memory`
 # attribute, or the legacy ones before LLVM 16; unrestricted without them
 function attribute_memory_effects(attrs)
-    effects = MemoryEffects(:readwrite)
-    for a in collect(attrs)
-        a isa EnumAttribute || continue
-        k = attr_kind(a)
-        if k == "memory"
-            effects &= MemoryEffects(a)
-        elseif k == "readnone"
-            effects &= MemoryEffects(:none)
-        elseif k == "readonly"
-            effects &= MemoryEffects(:read)
-        elseif k == "writeonly"
-            effects &= MemoryEffects(:write)
-        elseif k == "argmemonly"
-            effects &= MemoryEffects(argmem=:readwrite)
-        elseif k == "inaccessiblememonly"
-            effects &= MemoryEffects(inaccessiblemem=:readwrite)
-        elseif k == "inaccessiblemem_or_argmemonly"
-            effects &= MemoryEffects(argmem=:readwrite, inaccessiblemem=:readwrite)
-        end
+    if LLVM.version() >= v"16"
+        memory = get(attrs, :memory, nothing)
+        return memory === nothing ? MemoryEffects(:readwrite) : MemoryEffects(memory)
     end
+    effects = MemoryEffects(:readwrite)
+    haskey(attrs, :readnone) && (effects &= MemoryEffects(:none))
+    haskey(attrs, :readonly) && (effects &= MemoryEffects(:read))
+    haskey(attrs, :writeonly) && (effects &= MemoryEffects(:write))
+    haskey(attrs, :argmemonly) && (effects &= MemoryEffects(argmem=:readwrite))
+    haskey(attrs, :inaccessiblememonly) &&
+        (effects &= MemoryEffects(inaccessiblemem=:readwrite))
+    haskey(attrs, :inaccessiblemem_or_argmemonly) &&
+        (effects &= MemoryEffects(argmem=:readwrite, inaccessiblemem=:readwrite))
     return effects
 end
 
@@ -569,6 +554,19 @@ is_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
 is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
     callee isa LLVM.Function && callee in fns.field_write_barriers
 
+# What the pass knows of TBAA metadata, which is uniqued in the context and whose operands
+# passes don't set, so the same for all functions of a module (`module_facts`), as is what
+# follows from the operands of a tag's ancestors: its own tags, built on first use
+# (`tbaa_tags`), and about the tags of the input, whether they derive from the dialect's
+# `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces them with.
+mutable struct TBAACache
+    tags::Union{Nothing,TBAATags}
+    immutable::Dict{MDNode,Bool}
+    downgraded::Dict{MDNode,MDNode}
+end
+
+TBAACache() = TBAACache(nothing, Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
+
 mutable struct LateLowerGCFrame <: GCLowering
     dialect::Dialect
     opts::PassOptions
@@ -586,11 +584,18 @@ mutable struct LateLowerGCFrame <: GCLowering
     # the facts about Julia's runtime (`RuntimeFacts`), read when needed
     layout::Any
     cfg_modified::Bool
+    tbaa::TBAACache
 end
 
 function dominator_tree(p::LateLowerGCFrame)
     p.domtree === nothing && (p.domtree = p.am[DomTree])
     return p.domtree::DomTree
+end
+
+function tbaa_tags(p::LateLowerGCFrame)
+    cache = p.tbaa
+    cache.tags === nothing && (cache.tags = TBAATags())
+    return cache.tags::TBAATags
 end
 
 function runtime_layout(p::LateLowerGCFrame)
@@ -1135,7 +1140,10 @@ function is_load_from_rooted_region(p::LateLowerGCFrame, li::Instruction)
     haskey(md, LLVM.MD_invariant_load) && return true
     if p.dialect.gc_rooted_loads === :tbaa
         tbaa = haskey(md, LLVM.MD_tbaa) ? md[LLVM.MD_tbaa] : nothing
-        return tbaa isa MDNode && tbaa_derives_from(tbaa, p.dialect.gc_immutable_tbaa)
+        tbaa isa MDNode || return false
+        return get!(p.tbaa.immutable, tbaa) do
+            tbaa_derives_from(tbaa, p.dialect.gc_immutable_tbaa)
+        end
     end
     haskey(md, LLVM.MD_alias_scope) || return false
     scopes = md[LLVM.MD_alias_scope]
@@ -1464,22 +1472,17 @@ const SRET_ERROR = "LateLowerGCFrame: expected an alloca as the destination of r
 # the type of an `sret` attribute of the first argument of a call, or nothing
 function sret_type(call::Instruction)
     length(call.arguments) >= 1 || return nothing
-    attrs = collect(call.argument_attributes[1])
+    sret = get(call.argument_attributes[1], :sret, nothing)
     callee = called_function(call)
-    if callee !== nothing && !isempty(callee.parameters)
-        append!(attrs, collect(callee.parameter_attributes[1]))
+    if sret === nothing && callee !== nothing && !isempty(callee.parameters)
+        sret = get(callee.parameter_attributes[1], :sret, nothing)
     end
-    for a in attrs
-        a isa TypeAttribute && attr_kind(a) == "sret" && return LLVM.value(a)
-    end
-    return nothing
+    return sret === nothing ? nothing : LLVM.value(sret)
 end
 
 function string_param_attr(call::Instruction, i::Int, name::String)
-    for a in collect(call.argument_attributes[i])
-        a isa StringAttribute && attr_kind(a) == name && return LLVM.value(a)
-    end
-    return nothing
+    attr = get(call.argument_attributes[i], name, nothing)
+    return attr === nothing ? nothing : LLVM.value(attr)
 end
 
 # the roots a call returns in memory (`julia.return_roots` from 1.14 on, `sret` before);
@@ -1539,7 +1542,7 @@ end
 
 argument_index(arg::LLVM.Argument) = findfirst(==(arg), collect(LLVM.parent(arg).parameters))
 argument_has_sret(arg::LLVM.Argument) =
-    any(a -> attr_kind(a) == "sret", collect(LLVM.parent(arg).parameter_attributes[argument_index(arg)]))
+    haskey(LLVM.parent(arg).parameter_attributes[argument_index(arg)], :sret)
 
 # calls emitted by codegen that are not safepoints
 const NON_SAFEPOINT_RUNTIME_CALLS = ("jl_egal__unboxed", "jl_lock_value", "jl_unlock_value",
@@ -1602,7 +1605,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
     note_operand_uses!(p, S, BBS, ci)
     # calls that codegen marks `julia.safepoint` had their memory effects narrowed from
     # inferred effects, but can still reach a safepoint
-    marked_safepoint = call_has_fn_attr(ci, "julia.safepoint", true)
+    marked_safepoint = call_has_fn_attr(ci, "julia.safepoint")
     returns_twice = can_return_twice(ci)
     if !returns_twice
         if callee !== nothing
@@ -1662,8 +1665,8 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
     return
 end
 
-function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState, inst::Instruction,
-                           phi_numbers::Vector{Int})
+function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState,
+                           @nospecialize(inst::Instruction), phi_numbers::Vector{Int})
     if inst isa LLVM.CallInst
         scan_call!(p, S, BBS, inst)
     elseif inst isa LLVM.LoadInst
@@ -2272,7 +2275,7 @@ function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value)
                       [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
     end
     ptls_load = load!(builder, T_ptr, pptls, "ptls_load"; align=pointer_align(p))
-    tbaa_decorate!(tbaa, ptls_load)
+    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(p).constant)
     return ptls_load
 end
 
@@ -2316,7 +2319,7 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
         task = inbounds_gep!(builder, LLVM.Int8Type(), pgcstack,
                              [ConstantInt(LLVM.Int32Type(), -runtime_layout(p).task_gcstack)],
                              "current_task")
-        ptls = current_ptls_from_task!(p, task, tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, task, tbaa_tags(p).gcframe)
     else
         position_before!(builder, call; debug=true)
         ptls = first(LLVM.inputs(bundle))
@@ -2331,7 +2334,7 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
                           ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
-    tbaa = tbaa_const()
+    tbaa = tbaa_tags(p).constant
     emit_gc_safepoint!(p, ptls, tbaa)
     next = call.next
     position_before!(builder, next; debug=true)
@@ -2371,7 +2374,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     new_call = nothing
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
@@ -2404,7 +2407,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # `julia.gc_alloc_bytes` specializes on the size of the object, and doesn't set
         # its tag
         alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_gcframe())
+        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
@@ -2420,7 +2423,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     # set the tag in IR, rather than in the allocation function
     store = store!(builder, tag, emit_tag_ptr!(p, tag_type, new_call);
                    align=pointer_align(p), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tag()
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
     # sees valid pointers before the object is initialized
@@ -2451,10 +2454,8 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
 end
 
 function return_dereferenceable_bytes(call::Instruction)
-    for a in collect(call.return_attributes)
-        a isa EnumAttribute && attr_kind(a) == "dereferenceable" && return Int(LLVM.value(a))
-    end
-    return 0
+    attr = get(call.return_attributes, :dereferenceable, nothing)
+    return attr === nothing ? 0 : Int(LLVM.value(attr))
 end
 
 # `Value::getPointerAlignment`, for the values that type tags are
@@ -2472,25 +2473,19 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
     elseif v isa LLVM.AllocaInst
         return LLVM.alignment(v)
     elseif v isa LLVM.CallBase
-        for a in collect(v.return_attributes)
-            a isa EnumAttribute && attr_kind(a) == "align" && return Int(LLVM.value(a))
-        end
+        align = get(v.return_attributes, :align, nothing)
         callee = called_function(v)
-        if callee !== nothing
-            for a in collect(callee.return_attributes)
-                a isa EnumAttribute && attr_kind(a) == "align" && return Int(LLVM.value(a))
-            end
+        if align === nothing && callee !== nothing
+            align = get(callee.return_attributes, :align, nothing)
         end
-        return 1
+        return align === nothing ? 1 : Int(LLVM.value(align))
     elseif v isa LLVM.LoadInst
         md = v.metadata
         haskey(md, LLVM.MD_align) && return get_load_value_align(v)
     elseif v isa LLVM.Argument
         f = LLVM.parent(v)
-        for a in collect(f.parameter_attributes[argument_index(v)])
-            a isa EnumAttribute && attr_kind(a) == "align" && return Int(LLVM.value(a))
-        end
-        return 1
+        align = get(f.parameter_attributes[argument_index(v)], :align, nothing)
+        return align === nothing ? 1 : Int(LLVM.value(align))
     elseif v isa LLVM.Constant
         # constant addresses: their trailing zeros, up to LLVM's maximum alignment
         c = strip_pointer_casts(v)
@@ -2684,6 +2679,14 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
     return true
 end
 
+# the TBAA tag that an access tagged `tag` gets: the tag without its immutability flag if
+# it derives from one of the dialect's `tbaa_downgrade` types
+downgraded_tbaa_tag(p::LateLowerGCFrame, tag::MDNode) =
+    get!(p.tbaa.downgraded, tag) do
+        length(tag.operands) == 4 && tbaa_derives_from(tag, p.dialect.tbaa_downgrade) ?
+            mutable_tbaa_tag(tag) : tag
+    end
+
 # returns the instruction to visit next: the one after `inst` once it is lowered, which
 # may be one that the lowering inserted (and that is cleaned up too, as in the C++)
 function cleanup_instruction!(p::LateLowerGCFrame, inst::Instruction, S, frame::Instruction,
@@ -2696,10 +2699,9 @@ function cleanup_instruction!(p::LateLowerGCFrame, inst::Instruction, S, frame::
     end
     md = inst.metadata
     tag = haskey(md, LLVM.MD_tbaa) ? md[LLVM.MD_tbaa] : nothing
-    if tag isa MDNode && length(tag.operands) == 4 &&
-       tbaa_derives_from(tag, p.dialect.tbaa_downgrade)
-        mutable = mutable_tbaa_tag(tag)
-        mutable != tag && (inst.metadata[LLVM.MD_tbaa] = mutable)
+    if tag isa MDNode
+        new_tag = downgraded_tbaa_tag(p, tag)
+        new_tag != tag && (inst.metadata[LLVM.MD_tbaa] = new_tag)
     end
     # FCA chains created by SROA start with an undef value; with tracked pointers that
     # can lead to partial initialization, and this pass might have extracted an undef
@@ -2794,9 +2796,6 @@ function drop_memory_effects!(attrs)
     end
 end
 
-has_gcstack_attribute(attrs) =
-    any(a -> a isa StringAttribute && attr_kind(a) == "gcstack", collect(attrs))
-
 # Drop the optimistic memory effects that codegen puts on calls marked `julia.safepoint`:
 # they were only valid while the GC frame was implicit, and would let DSE or GVN remove
 # or forward the frame stores (Julia 1.14). LLVM intersects a call's effects with its
@@ -2804,12 +2803,12 @@ has_gcstack_attribute(attrs) =
 function drop_safepoint_memory_effects!(f::LLVM.Function)
     for bb in f.blocks, inst in bb.instructions
         inst isa LLVM.CallInst || continue
-        call_has_fn_attr(inst, "julia.safepoint", true) || continue
+        call_has_fn_attr(inst, "julia.safepoint") || continue
         drop_memory_effects!(inst.function_attributes)
         callee = called_function(inst)
         callee === nothing || drop_memory_effects!(callee.function_attributes)
         for i in 1:length(inst.arguments)
-            has_gcstack_attribute(inst.argument_attributes[i]) || continue
+            haskey(inst.argument_attributes[i], "gcstack") || continue
             delete!(inst.argument_attributes[i], :readnone)
             if callee !== nothing && i <= length(callee.parameters)
                 delete!(callee.parameter_attributes[i], :readnone)
@@ -2824,7 +2823,7 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
                               declare_small_alloc::Bool=opts.dialect.gc_declare_small_alloc)
     dialect = opts.dialect
     # thunks are not lowered (Julia 1.14; adopted for every dialect)
-    has_string_attribute(f.function_attributes, "thunk") &&
+    haskey(f.function_attributes, "thunk") &&
         return PreservedAnalyses(AllAnalyses)
     mod = LLVM.parent(f)
     @dispose builder=IRBuilder() begin
@@ -2832,7 +2831,8 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder, dl,
                              LLVM.PointerType(AS_TRACKED),
                              LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                             nothing, nothing, nothing, false)
+                             nothing, nothing, nothing, false,
+                             module_facts(TBAACache, opts, mod, TBAACache))
         declare_small_alloc && get_or_declare(p, :gc_small_alloc)
         p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing

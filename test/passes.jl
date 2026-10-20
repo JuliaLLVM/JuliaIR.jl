@@ -205,6 +205,31 @@ end
         @test !occursin("julia.gc_alloc_obj(", string(mod.functions["alloc"]))
     end
 
+    # a function that passes its own `sret` argument on to a call returning roots in memory
+    # leaves them to its caller, which allocated it; an argument with a string attribute of
+    # that name is no such argument
+    if dialect.gc_return_roots === :sret
+        for (attr, ok) in (("sret({ ptr addrspace(10) })", true), ("\"sret\"", false))
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                    declare ptr @julia.get_pgcstack()
+                    declare void @callee(ptr sret({ ptr addrspace(10) }))
+                    define void @forward(ptr $attr %out) {
+                      %pgcstack = call ptr @julia.get_pgcstack()
+                      call void @callee(ptr sret({ ptr addrspace(10) }) %out)
+                      ret void
+                    }""") begin
+                err = try
+                    run!(JuliaIR.LateLowerGCFramePass(), mod)
+                    nothing
+                catch err
+                    err
+                end
+                @test ok ? err === nothing :
+                           err isa PassException && occursin("expected an alloca", sprint(showerror, err))
+            end
+        end
+    end
+
     ir = """
         declare ptr addrspace(10) @julia.typeof(ptr addrspace(10))
         declare ptr @julia.pointer_from_objref(ptr addrspace(10))
@@ -232,6 +257,29 @@ end
         @test startswith(sprint(showerror, err.ex),
                          "UnsupportedInputError: function f contains constructs")
         @test string(mod) == before
+    end
+
+    # constructs that an earlier pass in the same pipeline introduces in a later function
+    @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() mod=parse(LLVM.Module, """
+            declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+
+            define void @trivial() {
+              ret void
+            }
+
+            define ptr addrspace(10) @alloc(ptr %task) {
+              %a = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) null)
+              ret ptr addrspace(10) %a
+            }""") begin
+        JuliaIR.register!(pb)
+        add!(pb, "function(jl-late-lower-gc-frame<task-ptls=8>,jl-late-gc-cleanup)")
+        err = try
+            run!(pb, mod)
+            nothing
+        catch err
+            err
+        end
+        @test err isa PassException && err.ex isa JuliaIR.UnsupportedInputError
     end
 
     # TBAA tags in the format Julia emits (old: access types named by a string) and in
@@ -344,6 +392,35 @@ end
 
             # the end of an access must fit in 32 bits
             @test !JuliaIR.add_memop!(info, a, 1, typemax(UInt32) - UInt32(4), i64, true, false, dl)
+        end
+    end
+
+    # the pass runs again on a module whose unused lifetime declarations were removed
+    # (`repeat<n>` is gone from LLVM 19 on)
+    LLVM.version() < v"19" && @testset "repeated" begin
+        @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
+            mod = parse(LLVM.Module, """
+                declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+
+                define internal i8 @useobj(ptr addrspace(10) %p) alwaysinline {
+                  store i8 7, ptr addrspace(10) %p
+                  %v = load i8, ptr addrspace(10) %p
+                  ret i8 %v
+                }
+
+                define i8 @f(ptr %task) {
+                  %a = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 16, ptr addrspace(10) null)
+                  %v = call i8 @useobj(ptr addrspace(10) %a)
+                  ret i8 %v
+                }""")
+            JuliaIR.register!(pb)
+            add!(pb, "repeat<2>(function(jl-alloc-opt),always-inline,strip-dead-prototypes)")
+            run!(pb, mod)
+            str = string(mod.functions["f"])
+            @test !occursin("julia.gc_alloc_obj", str)
+            @test occursin("llvm.lifetime.start", str)
+            @test verify(mod) === nothing
+            dispose(mod)
         end
     end
 
