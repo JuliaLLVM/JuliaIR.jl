@@ -297,15 +297,12 @@ every difference, excepted or not, and their diff are in `results/diffs` (the re
 shows what remains of an unexplained one after the exceptions' rewrites); `run.jl
 --report --out results ...` reports an earlier run again, e.g. after editing
 `exceptions.toml`. On Julia 1.10 and 1.11, which have no workspaces, develop the package
-into the environment first (`Pkg.develop(path=".")`, and LLVM.jl from the package's
-`[sources]`).
+into the environment first (`Pkg.develop(path=".")`).
 
 `test/differential/all.sh WORKDIR` does all of this for every Julia version (juliaup
 channels 1.10 to 1.13, 1.14-nightly and nightly, or those given): it checks out the
 fixtures, sets up the environments, generates the corpora and runs the comparison, one
-version at a time, and summarizes the counts in `WORKDIR/summary.txt`. While JuliaIR needs an unreleased
-LLVM.jl, `LLVMEXTRA_BUILDS` names a directory of `libLLVMExtra` builds per LLVM version,
-which it sets as the preference for each run.
+version at a time, and summarizes the counts in `WORKDIR/summary.txt`.
 
 CI runs the comparison on Julia 1.12, 1.14-nightly and nightly, in the `upstream` job: on the
 fixtures that job checks out, a fresh `code_llvm` corpus and `test/differential/inputs`,
