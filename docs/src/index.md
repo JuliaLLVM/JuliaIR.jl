@@ -41,6 +41,7 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-remove-addrspaces` | `RemoveJuliaAddrspaces` | yes |
 | `jl-remove-all-addrspaces` | `RemoveAddrspaces` | yes |
 | `jl-cpu-features` | `CPUFeatures` | yes |
+| `jl-multiversioning` | `JuliaMultiVersioning` (a module pass, see [JuliaMultiVersioning](multiversioning.md)) | yes |
 
 ## Passes that exist in some Julia versions only
 

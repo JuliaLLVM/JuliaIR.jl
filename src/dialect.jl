@@ -84,6 +84,25 @@ struct Dialect
     CPUFeatures; Julia 1.14 and later)."
     has_cpu_supports::Bool
 
+    # multiversioning
+    "How the flags of the targets in the `julia.mv.specs` module flag are encoded:
+    `:target` (the `JL_TARGET_*` bits of Julia's `processor.h`, among which the categories
+    of functions to clone; Julia 1.13 and older) or `:packed` (`clone_all`, `opt_size`,
+    `min_size`, and what a target adds over its base, which determines the categories;
+    loops and CPU feature queries are always cloned)."
+    mv_spec_flags::Symbol
+    "Whether MultiVersioning clones functions that use `bfloat` for the targets that ask
+    for it (Julia 1.11 and later)."
+    mv_bf16::Bool
+    "The dispatch tables that MultiVersioning emits: `:offsets` (32-bit offsets from
+    `jl_fvar_base` and `jl_gvar_base`, which also consumes `jl_gvars`; Julia 1.10) or
+    `:pointers` (tables of pointers)."
+    mv_tables::Symbol
+    "Whether the relocation slots of functions start out pointing to a trampoline that
+    initializes the runtime before calling the function (Julia 1.12 and later), rather than
+    null."
+    mv_autoinit::Bool
+
     # allocations
     "Whether `julia.gc_alloc_obj` calls carry `allockind` and return alignment
     attributes at the call site (instead of only on the declaration)."
@@ -322,6 +341,10 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor >= v"1.14",                      # has_cancellation_lowering
                    minor >= v"1.14" ? :subtarget : :tokens, # cpu_features_rule
                    minor >= v"1.14",                      # has_cpu_supports
+                   minor >= v"1.14" ? :packed : :target,  # mv_spec_flags
+                   minor >= v"1.11",                      # mv_bf16
+                   minor == v"1.10" ? :offsets : :pointers, # mv_tables
+                   minor >= v"1.12",                      # mv_autoinit
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
                    minor == v"1.11" ? :store : :memset,   # alloc_initialization

@@ -56,7 +56,7 @@ end
     @test st == :skip && occursin("typed pointers", why)
 
     st, _, pipelines = classify_run(run("opt --load-pass-plugin=libjulia-codegen%shlibext -passes='module(RemoveNI,FinalLowerGC,JuliaMultiVersioning)' -S %s | FileCheck %s"))
-    @test st == :run && pipelines == ["module(jl-remove-ni,jl-final-lower-gc,JuliaMultiVersioning)"]
+    @test st == :run && pipelines == ["module(jl-remove-ni,jl-final-lower-gc,jl-multiversioning)"]
     _, _, pipelines = classify_run(run("opt -passes=RemoveNI -S %s"); map_passes=false)
     @test pipelines == ["RemoveNI"]
 

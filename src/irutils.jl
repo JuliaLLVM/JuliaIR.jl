@@ -117,3 +117,119 @@ function opcode_name(inst::Instruction)
     # `LLVM.Opcode.FAdd`, or `LLVMFAdd` with older LLVM.jl
     return lowercase(chopprefix(last(split(string(opcode), '.')), "LLVM"))
 end
+
+
+## uses through constants
+
+# A walk over the uses of a constant by instructions or by global values, also through the
+# constant expressions and aggregates that use it, like Julia's `ConstantUses`
+# (`llvm-codegen-shared.h`). Each step of the walk is a use whose user is of the requested
+# kind; the stack of frames leading to it says how the constant gets there. A frame records
+# a constant (the root, then the expressions and aggregates on the way), the use by which
+# it uses the previous frame's constant (none for the root), and, while the constant's bits
+# appear unchanged in it (`samebits`: aggregates, and pointer and bit casts that keep the
+# size), at which byte
+# offset. The next use of every frame is read before the current one is handed out, so the
+# user may change or drop the current use before the walk continues.
+struct UseFrame
+    use::API.LLVMUseRef
+    val::API.LLVMValueRef
+    offset::Int
+    samebits::Bool
+    cur::API.LLVMUseRef
+    next::API.LLVMUseRef
+end
+
+function UseFrame(use::API.LLVMUseRef, val::API.LLVMValueRef, offset::Integer, samebits::Bool)
+    cur = API.LLVMGetFirstUse(val)
+    next = cur == C_NULL ? cur : API.LLVMGetNextUse(cur)
+    return UseFrame(use, val, offset, samebits, cur, next)
+end
+
+function advance(f::UseFrame)
+    cur = f.next
+    next = cur == C_NULL ? cur : API.LLVMGetNextUse(cur)
+    return UseFrame(f.use, f.val, f.offset, f.samebits, cur, next)
+end
+
+mutable struct ConstantUses
+    stack::Vector{UseFrame}
+    datalayout::API.LLVMTargetDataRef
+    # whether the walk stops at instructions, or at global values
+    instructions::Bool
+end
+
+# Walk the uses of the constant `c` of module `mod` by instructions or by global values:
+# `for walk = constant_uses(c, mod, T); !isdone(walk); next!(walk) ... use_info(walk) ... end`
+function constant_uses(@nospecialize(c::Constant), mod::LLVM.Module, ::Type{T}) where {T}
+    T === Instruction || T === GlobalValue || throw(ArgumentError("unsupported user type $T"))
+    walk = ConstantUses([UseFrame(API.LLVMUseRef(C_NULL), c.ref, 0, true)],
+                        API.LLVMGetModuleDataLayout(mod), T === Instruction)
+    forward!(walk)
+    return walk
+end
+
+isdone(walk::ConstantUses) = isempty(walk.stack)
+
+# the current use, its user, and where the constant is in it (`get_info`)
+function use_info(walk::ConstantUses)
+    top = walk.stack[end]
+    return (; use=top.cur, user=Value(API.LLVMGetUser(top.cur)), offset=top.offset,
+            samebits=top.samebits)
+end
+
+function next!(walk::ConstantUses)
+    walk.stack[end] = advance(walk.stack[end])
+    forward!(walk)
+    return walk
+end
+
+is_aggregate(ref::API.LLVMValueRef) =
+    API.LLVMIsAConstantStruct(ref) != C_NULL || API.LLVMIsAConstantArray(ref) != C_NULL ||
+    API.LLVMIsAConstantVector(ref) != C_NULL
+
+function forward!(walk::ConstantUses)
+    stack = walk.stack
+    while !isempty(stack)
+        frame = stack[end]
+        use = frame.cur
+        if use == C_NULL
+            pop!(stack)
+            continue
+        end
+        user = API.LLVMGetUser(use)
+        if walk.instructions ? API.LLVMIsAInstruction(user) != C_NULL :
+                               API.LLVMIsAGlobalValue(user) != C_NULL
+            return
+        end
+        stack[end] = advance(frame)
+        if is_aggregate(user)
+            if !frame.samebits
+                push!(stack, UseFrame(use, user, 0, false))
+                continue
+            end
+            idx = API.LLVMExtraGetOperandNo(use)
+            ty = API.LLVMTypeOf(user)
+            offset = if API.LLVMIsAConstantStruct(user) != C_NULL
+                API.LLVMOffsetOfElement(walk.datalayout, ty, idx)
+            else
+                API.LLVMABISizeOfType(walk.datalayout, API.LLVMGetElementType(ty)) * idx
+            end
+            push!(stack, UseFrame(use, user, frame.offset + Int(offset), true))
+        elseif API.LLVMIsAConstantExpr(user) != C_NULL
+            opcode = API.LLVMGetConstOpcode(user)
+            # Unlike Julia's walk, a cast to a narrower or wider type doesn't keep the bits
+            # (e.g., `ptrtoint` to `i32` of a 64-bit pointer): the image loader would write
+            # a full pointer there, over whatever follows.
+            keeps_bits = opcode in (API.LLVMPtrToInt, API.LLVMIntToPtr,
+                                    API.LLVMAddrSpaceCast, API.LLVMBitCast) &&
+                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(user)) ==
+                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(frame.val))
+            push!(stack, frame.samebits && keeps_bits ?
+                         UseFrame(use, user, frame.offset, true) :
+                         UseFrame(use, user, 0, false))
+        end
+    end
+    return
+end
+

@@ -4,9 +4,11 @@ using JuliaIR
 @testset "JuliaIR" begin
 
 include("dialect.jl")
+include("irutils.jl")
 include("registration.jl")
 include("jlopt.jl")
 include("passes.jl")
+include("multiversioning.jl")
 include("runtime.jl")
 include("type_lowering.jl")
 include("lit.jl")

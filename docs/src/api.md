@@ -36,6 +36,10 @@ JuliaIR.CPUFeaturesPass
 JuliaIR.CPUFeaturesError
 JuliaIR.always_have_fma
 JuliaIR.jit_target
+JuliaIR.MultiVersioningPass
+JuliaIR.MultiVersioningTarget
+JuliaIR.target_specs
+JuliaIR.MultiVersioningError
 ```
 
 
