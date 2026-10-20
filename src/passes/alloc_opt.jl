@@ -629,7 +629,8 @@ function remove_alloc!(opt::AllocOpt, orig::Instruction)
             elseif is_write_barrier(opt.fns, callee)
                 remove_write_barrier_use!(opt, user, orig_i)
             elseif callee isa LLVM.Function && LLVM.isintrinsic(callee) &&
-                   (LLVM.isintrinsic(callee, MEMSET) || is_lifetime_or_debug(callee))
+                   (LLVM.isintrinsic(callee, Intrinsic("llvm.memset")) ||
+                    is_lifetime_or_debug(callee))
                 erase_inst!(opt, user)
             else
                 # an operand bundle
@@ -819,7 +820,7 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
         elseif user isa CallInst
             callee = user.called_operand
             if callee isa LLVM.Function && LLVM.isintrinsic(callee)
-                if LLVM.isintrinsic(callee, MEMSET)
+                if LLVM.isintrinsic(callee, Intrinsic("llvm.memset"))
                     position_at!(opt, user)
                     val_arg = user.arguments[2]
                     val = convert(UInt64, user.arguments[2]) % UInt8
@@ -935,9 +936,10 @@ end
 function AllocOptModuleFacts(mod::LLVM.Module)
     layout = datalayout_string(mod)
     ptr = LLVM.PointerType(alloca_addrspace(layout))
+    start_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.start"), LLVMType[ptr])
+    end_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.end"), LLVMType[ptr])
     return AllocOptModuleFacts(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
-                          ptr, LLVM.overloaded_name(LIFETIME_START, LLVMType[ptr]),
-                          LLVM.overloaded_name(LIFETIME_END, LLVMType[ptr]),
+                          ptr, start_name, end_name,
                           LLVM.PointerType(AS_TRACKED), LLVM.PointerType(AS_GENERIC))
 end
 
@@ -954,10 +956,10 @@ function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOpt
     fns = JuliaFunctions(mod, dialect)
     fns.alloc_obj === nothing && return PreservedAnalyses(AllAnalyses)
     m = module_facts(() -> AllocOptModuleFacts(mod), opts, mod, AllocOptModuleFacts)
-    lifetime_start = intrinsic_declaration(mod, LIFETIME_START, m.lifetime_start_name,
-                                           LLVMType[m.T_alloca])
-    lifetime_end = intrinsic_declaration(mod, LIFETIME_END, m.lifetime_end_name,
-                                         LLVMType[m.T_alloca])
+    lifetime_start = intrinsic_declaration(mod, Intrinsic("llvm.lifetime.start"),
+                                           m.lifetime_start_name, LLVMType[m.T_alloca])
+    lifetime_end = intrinsic_declaration(mod, Intrinsic("llvm.lifetime.end"),
+                                         m.lifetime_end_name, LLVMType[m.T_alloca])
 
     @dispose builder=IRBuilder() begin
         opt = AllocOpt(f, am, dialect, fns, m.dl, m.layout, builder, m.lifetime_size,

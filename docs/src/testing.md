@@ -200,6 +200,18 @@ The package tests run under the preference too (`Pkg.test()`, with the same
 lowering, which only exist in Julia's LLVM, are skipped there (`julia_llvm_in_use()` in
 the testsets, the lit feature `julia-llvm` in RUN lines).
 
+With the preference, the package is compiled for the selected library. GPUCompiler
+instead registers its library next to Julia's after the package was loaded, and selects
+it while compiling, so the passes must not use what they computed for Julia's library,
+such as intrinsic IDs, which differ between LLVM versions. `JULIAIR_TEST_LIBRARY` tests
+that configuration: when it names a library, `Pkg.test()` registers it and runs the tests
+that stay in its process (not the lit suite, `jlopt` or the harness, which start other
+processes) with that library selected, after loading the package with Julia's:
+
+```
+JULIAIR_TEST_LIBRARY=/path/to/libLLVM-standalone-23.so julia --project -e 'using Pkg; Pkg.test()'
+```
+
 Two things differ from mode A, the default run of the previous section:
 
 - A standalone LLVM doesn't have Julia's C++ passes. RUN lines whose pipeline names one
@@ -233,8 +245,9 @@ mode B locally; adding one back to CI takes one line in the job's matrix. The
 of the LLVM.jl release that the package resolves to (and caches it, so that it is rebuilt
 only when that release, the LLVM version or the runner image change), and packs it
 together with the LLVM 23 tools that the tests need. The `mode-b` job runs the package
-tests (`Pkg.test()`, after checking that LLVM.jl loaded the standalone library) and then
-the harness with `--mode B`, both on that library. It also checks that its Julia doesn't
+tests with that library next to Julia's (`JULIAIR_TEST_LIBRARY`), then sets the
+preference and runs the package tests (`Pkg.test()`, after checking that LLVM.jl loaded
+the standalone library) and the harness with `--mode B`, both on that library. It also checks that its Julia doesn't
 use an LLVM newer than the standalone one, in which case the latter needs to move on.
 
 ### Where the mode-B patches come from

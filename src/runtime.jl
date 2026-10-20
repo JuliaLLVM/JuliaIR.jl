@@ -387,8 +387,12 @@ end
 function with_probe_ir(f, probe, types, what)
     ir = sprint(io -> InteractiveUtils.code_llvm(io, probe, types; optimize=true,
                                                  dump_module=true, debuginfo=:none))
-    result = @dispose ctx=Context(; opaque_pointers=true) mod=parse_probe_ir(ir, what) begin
-        f(mod)
+    # Julia's code generator wrote the probe for its own LLVM, which may be newer than the
+    # library that a pass runs with: inspect it with Julia's, then restore the caller's.
+    result = Context(; library=:julia, opaque_pointers=true) do ctx
+        @dispose mod=parse_probe_ir(ir, what) begin
+            f(mod)
+        end
     end
     result === nothing &&
         throw(RuntimeError("the code it generates for $what doesn't have the expected shape:\n$ir"))

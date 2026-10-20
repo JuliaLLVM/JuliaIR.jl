@@ -179,6 +179,22 @@ end
             @test !occursin(r"call [^@]*@julia\.", string(mod))
         end
     end
+
+    # with the library of the module, also when another one is current (as with
+    # `JULIAIR_TEST_LIBRARY`)
+    @testset "module of Julia's LLVM" begin
+        ctx = Context(; library=:julia, opaque_pointers=true)
+        try
+            mod = context!(() -> parse(LLVM.Module, unoptimized_ir(boxed, (Int,))), ctx)
+            JuliaIR.optimize!(mod)
+            context!(ctx) do
+                verify(mod)
+                @test !occursin(r"call [^@]*@julia\.", string(mod))
+            end
+        finally
+            dispose(ctx)
+        end
+    end
 end
 
 @testset "target of CPUFeatures" begin

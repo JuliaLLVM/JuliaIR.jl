@@ -150,8 +150,10 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
         push!(setjmp_func.function_attributes, EnumAttribute("returns_twice"))
     end
     # (the lifetime intrinsics for generic pointers are declared even where unused)
-    LLVM.Function(mod, LIFETIME_START, LLVMType[T_ptr])
-    LLVM.Function(mod, LIFETIME_END, LLVMType[T_ptr])
+    lifetime_start = Intrinsic("llvm.lifetime.start")
+    lifetime_end = Intrinsic("llvm.lifetime.end")
+    LLVM.Function(mod, lifetime_start, LLVMType[T_ptr])
+    LLVM.Function(mod, lifetime_end, LLVMType[T_ptr])
 
     @dispose builder=IRBuilder() begin
         # step 2: one buffer per nesting level, in the entry block; separate allocas, so
@@ -188,7 +190,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
             buff = buffs[depth+1]
             position!(builder, LLVM.before(enter))
             builder.debug_location = nothing
-            lifetime!(LIFETIME_START, depth+1)
+            lifetime!(lifetime_start, depth+1)
             args = task_arg ? Value[enter.arguments[1], buff] : Value[buff]
             new_enter = call!(builder, jlenter_func.function_type, jlenter_func, args)
             sj_args = savemask ? Value[buff, ConstantInt(T_int32, 0)] :
@@ -227,7 +229,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
             position!(builder, LLVM.after(leave))
             builder.debug_location = nothing
             for level in depth-npops+1:depth
-                lifetime!(LIFETIME_END, level)
+                lifetime!(lifetime_end, level)
             end
         end
     end

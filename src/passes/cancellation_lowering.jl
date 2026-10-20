@@ -49,10 +49,9 @@ const CANCELLATION_RUNTIME_FACTS = (:task_gcstack, :task_ptls, :task_eh, :task_r
                                     :setjmp)
 
 # the intrinsics an untagged call may call without closing a region
-const RESET_SAFE_INTRINSICS = Intrinsic.(["llvm.lifetime.start", "llvm.lifetime.end",
-                                          "llvm.dbg.declare", "llvm.dbg.value",
-                                          "llvm.dbg.label", "llvm.assume", "llvm.expect",
-                                          "llvm.prefetch"])
+const RESET_SAFE_INTRINSICS = ("llvm.lifetime.start", "llvm.lifetime.end",
+                               "llvm.dbg.declare", "llvm.dbg.value", "llvm.dbg.label",
+                               "llvm.assume", "llvm.expect", "llvm.prefetch")
 # `DbgInfoIntrinsic`, by name: LLVM 15 has no `llvm.dbg.assign`
 const DBG_INFO_INTRINSICS = ("llvm.dbg.declare", "llvm.dbg.value", "llvm.dbg.label",
                              "llvm.dbg.assign")
@@ -294,7 +293,7 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     fns = p.fns
     if startswith(LLVM.name(callee), "llvm.")
         id = intrinsic_id(callee)
-        id !== nothing && id in RESET_SAFE_INTRINSICS && return true
+        id !== nothing && id.name in RESET_SAFE_INTRINSICS && return true
     end
     name = LLVM.name(callee)
     name == "julia.safepoint" && return true
@@ -340,7 +339,8 @@ function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_
                 callee = called_function(inst)
                 id = callee === nothing ? nothing : intrinsic_id(callee)
                 id !== nothing && (LLVM.name(callee) in DBG_INFO_INTRINSICS ||
-                                   id == LIFETIME_START || id == LIFETIME_END) &&
+                                   id == Intrinsic("llvm.lifetime.start") ||
+                                   id == Intrinsic("llvm.lifetime.end")) &&
                     continue
                 if !has_reset_safe_md(inst) || is_implicit_runtime_call(p, inst)
                     is_exempt_call(p, inst) || push!(unsafe, inst)

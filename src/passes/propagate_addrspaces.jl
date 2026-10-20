@@ -193,10 +193,6 @@ function visit_memop!(p::PropagateAddrspaces, f::LLVM.Function, inst::Instructio
     return
 end
 
-const MEMSET_INTRINSICS = (Intrinsic("llvm.memset"), Intrinsic("llvm.memset.inline"))
-const MEMTRANSFER_INTRINSICS = (Intrinsic("llvm.memcpy"), Intrinsic("llvm.memcpy.inline"),
-                                Intrinsic("llvm.memmove"))
-
 function visit_memintrinsic!(p::PropagateAddrspaces, f::LLVM.Function, call::Instruction,
                              intr::LLVM.Intrinsic, transfer::Bool)
     args = collect(call.arguments)
@@ -242,6 +238,9 @@ end
 
 function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
     mod = f.parent
+    memsets = (Intrinsic("llvm.memset"), Intrinsic("llvm.memset.inline"))
+    memtransfers = (Intrinsic("llvm.memcpy"), Intrinsic("llvm.memcpy.inline"),
+                    Intrinsic("llvm.memmove"))
     @dispose builder=IRBuilder() begin
         p = PropagateAddrspaces(mod, builder, alloca_addrspace(mod), Dict{Value,Value}(),
                                 Set{Value}(), Dict{Int,Instruction}(), Instruction[])
@@ -254,9 +253,9 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
                 callee = inst.called_function
                 (callee isa LLVM.Function && LLVM.isintrinsic(callee)) || continue
                 intr = callee.intrinsic
-                if intr in MEMSET_INTRINSICS
+                if intr in memsets
                     visit_memintrinsic!(p, f, inst, intr, false)
-                elseif intr in MEMTRANSFER_INTRINSICS
+                elseif intr in memtransfers
                     visit_memintrinsic!(p, f, inst, intr, true)
                 end
             end

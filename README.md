@@ -19,8 +19,8 @@ the IR.
 
 Every pass of Julia's optimization pipelines, Julia 1.10 to 1.15, is ported (see the
 table on the documentation's home page), and the pipeline itself is rebuilt from the
-ports for each Julia version. The package is not registered yet, and needs an unreleased
-version of LLVM.jl, which `Project.toml` takes from a branch.
+ports for each Julia version. The package is not registered yet; it needs LLVM.jl 10.3 or
+later.
 
 ## What is supported
 
@@ -63,6 +63,23 @@ available when running on Julia's LLVM.
 
 Julia's whole optimization pipeline is available as `JuliaIR.optimize!(mod; level=2)`,
 or `JuliaIR.build_pipeline!(pb; level=2)` to add it to a pass builder.
+
+To use another LLVM library next to Julia's, e.g. a standalone build of a newer LLVM,
+register it with LLVM.jl and select it for the whole transformation, by creating the
+context with it:
+
+```julia
+lib = LLVM.register_library!(:other, "/path/to/libLLVM-standalone.so")
+Context(; library=lib, opaque_pointers=true) do ctx
+    @dispose mod=parse(LLVM.Module, ir) begin
+        run!(JuliaIR.RemoveNIPass(), mod)
+    end
+end
+```
+
+For an existing context, `context!(ctx) do ... end` selects it and its library. The passes
+look up intrinsics and decide what depends on the LLVM version in the library they run
+with, not in the one the package was loaded with.
 
 GPUCompiler runs the ports instead of Julia's C++ passes with `julia_passes = :ports` in
 its `CompilerConfig` (or its `julia_passes` preference set to `"ports"`) and JuliaIR.jl

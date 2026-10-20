@@ -120,10 +120,6 @@ is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_ty
 # the type of a value, by its reference
 typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
 
-const LIFETIME_START = Intrinsic("llvm.lifetime.start")
-const LIFETIME_END = Intrinsic("llvm.lifetime.end")
-const MEMSET = Intrinsic("llvm.memset")
-
 # the instructions that have to come first in their block, after any PHIs
 const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
                     LLVM.CatchSwitchInst}
@@ -157,9 +153,12 @@ function is_intrinsic_call(call::Instruction)
     return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
 end
 
+# Intrinsic IDs belong to the LLVM library that a pass runs with, so passes look them up
+# while processing IR instead of keeping them in constants, which would hold the IDs of
+# the library that the package was precompiled with.
 intrinsic_is(call::Instruction, intr::Intrinsic) =
     let callee = called_function(call)
-        callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
+        callee !== nothing && LLVM.isintrinsic(callee, intr)
     end
 
 # `Module::getOrInsertFunction`: whatever global has the name (a function of another

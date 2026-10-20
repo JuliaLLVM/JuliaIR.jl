@@ -393,6 +393,27 @@ end
 
 TBAACache() = TBAACache(nothing, Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
 
+# The intrinsics that instruction processing checks for, looked up once per invocation
+# of the pass, in the library it runs with.
+struct GCIntrinsics
+    masked_load::Intrinsic
+    masked_gather::Intrinsic
+    vector_extract::Intrinsic
+    vector_insert::Intrinsic
+    lifetime_start::Intrinsic
+    lifetime_end::Intrinsic
+    memset::Intrinsic
+end
+GCIntrinsics() = GCIntrinsics(
+    Intrinsic("llvm.masked.load"),
+    Intrinsic("llvm.masked.gather"),
+    Intrinsic("llvm.vector.extract"),
+    Intrinsic("llvm.vector.insert"),
+    Intrinsic("llvm.lifetime.start"),
+    Intrinsic("llvm.lifetime.end"),
+    Intrinsic("llvm.memset"),
+)
+
 mutable struct LateLowerGCFrame
     dialect::Dialect
     opts::PassOptions
@@ -400,6 +421,7 @@ mutable struct LateLowerGCFrame
     f::LLVM.Function
     am::Any
     fns::GCFunctions
+    intrinsics::GCIntrinsics
     builder::IRBuilder
     gc::GCCodegen
     # the GC stack: a call in the entry block, or an argument
@@ -416,11 +438,6 @@ end
 
 
 ## numbering (FindBaseValue, Number*, Lift*)
-
-const MASKED_LOAD = Intrinsic("llvm.masked.load")
-const MASKED_GATHER = Intrinsic("llvm.masked.gather")
-const VECTOR_EXTRACT = Intrinsic("llvm.vector.extract")
-const VECTOR_INSERT = Intrinsic("llvm.vector.insert")
 
 is_gc_loaded_call(p::LateLowerGCFrame, @nospecialize(v::Value)) =
     p.dialect.has_gc_loaded && v isa LLVM.CallInst &&
@@ -477,12 +494,13 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
         elseif cur isa LLVM.AtomicCmpXchgInst || cur isa LLVM.AtomicRMWInst
             break
         elseif cur isa LLVM.CallInst && is_intrinsic_call(cur)
-            if intrinsic_is(cur, MASKED_LOAD) || intrinsic_is(cur, MASKED_GATHER)
+            if intrinsic_is(cur, p.intrinsics.masked_load) ||
+               intrinsic_is(cur, p.intrinsics.masked_gather)
                 # like a load followed by a select; never derived, so no lifting is
                 # needed, but loaded pointers walk to their base
                 t = typeref(cur)
                 if is_vector_type(t) && has_loaded_ty(API.LLVMGetElementType(t))
-                    is_load = intrinsic_is(cur, MASKED_LOAD)
+                    is_load = intrinsic_is(cur, p.intrinsics.masked_load)
                     cur = cur.operands[1]
                     if is_load
                         fld_idx = -1
@@ -497,7 +515,7 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
                     continue
                 end
                 break
-            elseif intrinsic_is(cur, VECTOR_EXTRACT)
+            elseif intrinsic_is(cur, p.intrinsics.vector_extract)
                 t = typeref(cur)
                 if is_vector_type(t) && has_loaded_ty(API.LLVMGetElementType(t))
                     cur = cur.operands[1]
@@ -777,7 +795,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
             error("LateLowerGCFrame: insertelement of a tracked pointer at a non-constant index is not supported")
         numbers = copy(number_all!(p, S, cur.operands[1]))
         numbers[convert(Int, idx_op)+1] = number!(p, S, cur.operands[2])
-    elseif cur isa LLVM.CallInst && intrinsic_is(cur, VECTOR_INSERT)
+    elseif cur isa LLVM.CallInst && intrinsic_is(cur, p.intrinsics.vector_insert)
         # vector insert is a bit like a shuffle, so use the same approach
         numbers1 = number_all!(p, S, cur.operands[1])
         numbers2 = number_all!(p, S, cur.operands[2])
@@ -1376,10 +1394,12 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
         # skip those that are emitted often and cannot be GC uses.
         callee = called_function(ci)
         if is_debug_intrinsic(callee) ||
-           intrinsic_is(ci, LIFETIME_START) || intrinsic_is(ci, LIFETIME_END)
+           intrinsic_is(ci, p.intrinsics.lifetime_start) ||
+           intrinsic_is(ci, p.intrinsics.lifetime_end)
             return
         end
-        if intrinsic_is(ci, MASKED_LOAD) || intrinsic_is(ci, MASKED_GATHER)
+        if intrinsic_is(ci, p.intrinsics.masked_load) ||
+           intrinsic_is(ci, p.intrinsics.masked_gather)
             t = typeref(ci)
             if is_vector_type(t)
                 elt = API.LLVMGetElementType(t)
@@ -1395,7 +1415,8 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
                 has_loaded_ty(elt) && return  # not real defs
             end
         end
-        if intrinsic_is(ci, VECTOR_EXTRACT) || intrinsic_is(ci, VECTOR_INSERT)
+        if intrinsic_is(ci, p.intrinsics.vector_extract) ||
+           intrinsic_is(ci, p.intrinsics.vector_insert)
             return  # not real defs
         end
     end
@@ -1934,10 +1955,10 @@ end
 
 # whether a store or memset in the prologue stores null to a rooted alloca, which the
 # frame's slots already are; `nothing` stops the scan
-function prologue_null_store(S::State, inst::Instruction)
+function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     if inst isa LLVM.StoreInst
         ptr, val, vol = inst.operands[2], inst.operands[1], inst.volatile
-    elseif inst isa LLVM.CallInst && intrinsic_is(inst, MEMSET)
+    elseif inst isa LLVM.CallInst && intrinsic_is(inst, p.intrinsics.memset)
         ptr, val = inst.operands[1], inst.operands[2]
         vol = convert(Int, inst.operands[4]) != 0
     else
@@ -1981,7 +2002,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                 erase!(to_erase)
                 to_erase = nothing
             end
-            r = prologue_null_store(S, inst)
+            r = prologue_null_store(p, S, inst)
             r === nothing && break
             r && (to_erase = inst)
         end
@@ -2006,8 +2027,8 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
         # lifetime intrinsics no longer apply
         to_delete = Instruction[]
         recursively_visit_intrinsics(ai) do ii
-            (intrinsic_is(ii, LIFETIME_START) || intrinsic_is(ii, LIFETIME_END)) &&
-                push!(to_delete, ii)
+            (intrinsic_is(ii, p.intrinsics.lifetime_start) ||
+             intrinsic_is(ii, p.intrinsics.lifetime_end)) && push!(to_delete, ii)
         end
         foreach(erase!, to_delete)
         replace_uses!(ai, slot_address)
@@ -2608,8 +2629,8 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
     @dispose builder=IRBuilder() begin
         tbaa = module_facts(TBAACache, opts, mod, TBAACache)
         gc = GCCodegen(dialect, mod, builder, runtime_layout(opts, mod); tbaa=tbaa.tags)
-        p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder,
-                             gc, nothing, nothing, false, tbaa)
+        p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect),
+                             GCIntrinsics(), builder, gc, nothing, nothing, false, tbaa)
         declare_small_alloc && get_or_declare(p.gc, :gc_small_alloc)
         p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing

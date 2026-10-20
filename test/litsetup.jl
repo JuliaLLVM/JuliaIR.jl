@@ -8,9 +8,9 @@ using JuliaIR: JuliaIR
 const JULIAIR_DIR = dirname(@__DIR__)
 
 # Whether LLVM.jl uses Julia's own LLVM, rather than a library selected with its `libLLVM`
-# preference (e.g. a newer, standalone LLVM). Only Julia's LLVM has Julia's C++ passes, so
-# tests that run them, as references or between ports, need it.
-julia_llvm_in_use() = !isdefined(LLVM, :julia_llvm) || getfield(LLVM, :julia_llvm)::Bool
+# preference or `JULIAIR_TEST_LIBRARY` (e.g. a newer, standalone LLVM). Only Julia's LLVM
+# has Julia's C++ passes, so tests that run them, as references or between ports, need it.
+julia_llvm_in_use() = LLVM.library().name === :julia
 
 function find_python()
     for name in ("python3", "python")
