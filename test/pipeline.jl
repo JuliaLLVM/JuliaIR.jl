@@ -95,7 +95,7 @@ end
     @test JuliaPipeline(; level=7).level == 3
     @test JuliaPipeline(; level=-1).level == 0
     @test_throws "unknown option frobnicate" JuliaPipeline(; frobnicate=true)
-    @test_throws "must be a Bool" JuliaPipeline(; dump_native=1)
+    @test_throws ArgumentError("option dump_native of Julia's pipeline must be a Bool") JuliaPipeline(; dump_native=1)
     if PIPELINE_MINOR == v"1.10"
         @test_throws "has no option cleanup" JuliaPipeline(; cleanup=false)
     else

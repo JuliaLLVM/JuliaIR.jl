@@ -239,17 +239,18 @@ function set_target_specs!(mod::LLVM.Module, targets::Vector{MultiVersioningTarg
 end
 
 # the targets to clone for: the module's, or the `targets` option if the module has none
-function resolve_targets(mod::LLVM.Module, option::Vector{MultiVersioningTarget},
+function resolve_targets(mod::LLVM.Module,
+                         option::Union{Nothing,Vector{MultiVersioningTarget}},
                          dialect::Dialect)
     specs = target_specs(mod, dialect)
     if specs === nothing
-        isempty(option) &&
+        option === nothing &&
             throw(MultiVersioningError("the module has no julia.mv.specs flag and no targets were given (the `targets` option)"))
         # what the module flag will say
         option = [normalize_target(t, dialect) for t in option]
         return option, true
     end
-    isempty(option) || [normalize_target(t, dialect) for t in option] == specs ||
+    option === nothing || [normalize_target(t, dialect) for t in option] == specs ||
         throw(MultiVersioningError("the targets given (the `targets` option) differ from the module's julia.mv.specs flag"))
     return specs, false
 end
@@ -1331,7 +1332,7 @@ end
 ## pass
 
 function run_multiversioning!(mod::LLVM.Module, am, dialect::Dialect, external::Bool,
-                              option::Vector{MultiVersioningTarget})
+                              option::Union{Nothing,Vector{MultiVersioningTarget}})
     module_flag(mod, "julia.mv.enable") !== nothing || return false
     targets, add_specs = resolve_targets(mod, option, dialect)
     check_targets(targets)
@@ -1359,11 +1360,14 @@ end
 
 const MULTIVERSIONING = define_pass("jl-multiversioning", :module, multiversioning!;
                                     required=true, cpp_name="JuliaMultiVersioning",
-                                    extra=(; external=false,
-                                           targets=MultiVersioningTarget[]))
+                                    options=(; external=false,
+                                             targets=option(
+                                                 Union{Nothing,Vector{MultiVersioningTarget}},
+                                                 nothing; text=false, valid=!isempty,
+                                                 requirement="a non-empty vector of MultiVersioningTarget")))
 
 """
-    JuliaIR.MultiVersioningPass(; external=false, targets=MultiVersioningTarget[])
+    JuliaIR.MultiVersioningPass(; external=false, targets=nothing)
 
 Clone the functions of a module for several CPU targets, and emit the tables with which
 Julia's image loader picks a version of each function for the CPU it runs on
@@ -1373,8 +1377,8 @@ module flag.
 
 The targets come from the module flag `julia.mv.specs` (see [`JuliaIR.target_specs`](@ref)),
 which Julia sets when it builds an image, or for a module without it from `targets` (a
-vector of [`JuliaIR.MultiVersioningTarget`](@ref)s, which the pass then records in the
-flag); targets that differ from the module's are an error.
+non-empty vector of [`JuliaIR.MultiVersioningTarget`](@ref)s, which the pass then records
+in the flag); targets that differ from the module's are an error.
 
 Julia annotates the functions of its modules with the targets to clone them for before it
 runs the pass; for modules without the `julia.mv.annotated` flag, the pass annotates them

@@ -32,27 +32,32 @@ const RUNTIME_FACTS = (
     cfuncdata_size = "the size of the call-site data of a `@cfunction` (`cfuncdata_t`)",
 )
 
-# the option that gives a fact explicitly, with the value that means "not given"
-function fact_option_default(name::Symbol)
-    name === :setjmp && return ""
-    name in (:tls_elf_support, :cfunction_cache) && return :auto
-    name === :tls_offset && return Optional{Int}()
-    name in (:pgcstack_getter, :pgcstack_key) && return Optional{UInt}()
-    return 0
+# the declaration of the option that gives a fact explicitly (`nothing` when it isn't)
+function fact_option(name::Symbol)
+    name === :setjmp && return option(Union{Nothing,String}, nothing; valid=!isempty,
+                                      requirement="a non-empty string")
+    name === :tls_elf_support && return option(Union{Nothing,Bool}, nothing)
+    name === :cfunction_cache &&
+        return option(Union{Nothing,Symbol}, nothing; valid=in((:arguments, :cfuncdata)),
+                      requirement="arguments or cfuncdata")
+    name === :tls_offset && return option(Union{Nothing,Int}, nothing)
+    name in (:pgcstack_getter, :pgcstack_key) && return option(Union{Nothing,UInt}, nothing)
+    return option(Union{Nothing,Int}, nothing; valid=(>=(0)),
+                  requirement="a non-negative integer")
 end
 
 """
     JuliaIR.runtime_options(facts::Symbol...)
 
 The pass options of a pass that needs the runtime facts `facts` (see
-[`JuliaIR.runtime_layout`](@ref)), for `define_pass`'s `extra`: one option per fact that
-gives it explicitly (`task_ptls` is `task-ptls=N` in a pipeline).
+[`JuliaIR.runtime_layout`](@ref)), for `define_pass`'s `options`: one option per fact
+that gives it explicitly (`task_ptls` is `task-ptls=N` in a pipeline).
 """
 function runtime_options(facts::Symbol...)
     for f in facts
         haskey(RUNTIME_FACTS, f) || throw(ArgumentError("unknown runtime fact $f"))
     end
-    return NamedTuple{facts}(map(fact_option_default, facts))
+    return NamedTuple{facts}(map(fact_option, facts))
 end
 
 """
@@ -90,18 +95,8 @@ running_julia() = "Julia $(VERSION.major).$(VERSION.minor)"
 
 function runtime_fact(rt::RuntimeFacts, name::Symbol)
     overrides = getfield(rt, :overrides)
-    given = option_value(get(overrides, name, nothing))
-    if given !== nothing && given != option_value(fact_option_default(name))
-        if name === :tls_elf_support
-            given === :yes && return true
-            given === :no && return false
-            throw(ArgumentError("invalid option $(option_key(name))=$given; expected yes or no"))
-        elseif name === :cfunction_cache
-            given in (:arguments, :cfuncdata) ||
-                throw(ArgumentError("invalid option $(option_key(name))=$given; expected arguments or cfuncdata"))
-        end
-        return given
-    end
+    given = get(overrides, name, nothing)
+    given === nothing || return given
     dialect = getfield(rt, :dialect)
     julia = "Julia $(dialect.minor.major).$(dialect.minor.minor)"
     what = "$(RUNTIME_FACTS[name]) (`$name`) of $julia's runtime"
@@ -149,10 +144,11 @@ With `PassOptions`, the facts given explicitly come from the pass's options (see
 [`JuliaIR.runtime_options`](@ref)).
 """
 function runtime_layout(dialect::Dialect, mod::LLVM.Module; facts...)
-    for (k, _) in facts
+    given = map(collect(pairs(facts))) do (k, v)
         haskey(RUNTIME_FACTS, k) || throw(ArgumentError("unknown runtime fact $k"))
+        k => convert_option(fact_option(k), v, "the runtime fact $k")
     end
-    return RuntimeFacts(dialect, values(facts))
+    return RuntimeFacts(dialect, (; given...))
 end
 
 function runtime_layout(opts::PassOptions, mod::LLVM.Module)
@@ -425,12 +421,6 @@ function base_offset(ptr::LLVM.Value, dl::DataLayout)
     end
 end
 
-function returns_twice(call::LLVM.CallInst)
-    haskey(call.function_attributes, :returns_twice) && return true
-    callee = call.called_function
-    return callee !== nothing && haskey(callee.function_attributes, :returns_twice)
-end
-
 # A safepoint is a volatile load from the page that the thread-local state's `safepoint`
 # points to, and the thread-local state is loaded from the task's `ptls`, at an offset
 # from the task's `pgcstack`.
@@ -462,7 +452,7 @@ function run_probe(::Val{:handler})
     with_probe_ir(probe_handler, Tuple{Int}, "a `try`") do mod
         dl = mod.datalayout
         calls = [inst for inst in instructions(mod)
-                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                 if inst isa LLVM.CallInst && can_return_twice(inst) &&
                     !isempty(inst.arguments)]
         length(calls) == 1 || return nothing
         call = only(calls)
@@ -487,7 +477,7 @@ function run_probe(::Val{:cancel})
     with_probe_ir(probe_cancel, Tuple{}, "`Base.@cancel_check`") do mod
         dl = mod.datalayout
         calls = [inst for inst in instructions(mod)
-                 if inst isa LLVM.CallInst && returns_twice(inst) &&
+                 if inst isa LLVM.CallInst && can_return_twice(inst) &&
                     !isempty(inst.arguments)]
         isempty(calls) && return nothing
         buff, mctx = base_offset(first(calls).arguments[1], dl)

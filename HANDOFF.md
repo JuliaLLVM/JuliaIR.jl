@@ -38,6 +38,7 @@ read it first, including its Log). This file says where things are and how to co
 | S11 steps 2–3, 6–7: tests on a standalone LLVM 23 (`julia_llvm_in_use()`, lit tools of the library, LowerExcHandlers lifetime fix), mode B at every pin, the IR-crossing test, CI jobs `standalone-llvm`/`mode-b`/`oracle` | done, branch `tb/s11-standalone` (on S36) | see `git log` |
 | S29a local performance fixes (TBAA, attributes, type stability, module facts) | done, branch `tb/s29-local-perf` (on S11) | see `git log` |
 | S23 Julia's pipeline rebuilt from the ports (`julia<...>`), parts 2 and 3 | done, branch `tb/s23-pipelines` (on S29a) | see `git log` |
+| S33 pass options and GC codegen helpers consolidated (S-D33) | done, branch `tb/s33-consolidate` (on S23) | see `git log` |
 
 S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
 LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks
@@ -117,7 +118,7 @@ from pass options) returns a lazy `RuntimeFacts` whose properties are the facts
 them). Each is resolved when read: the pass option of the same name, else the running
 Julia's value (only for its own dialect), else a `RuntimeError` naming the fact and the
 option. No target checks: like the C++, the host's values serve any triple. A pass
-declares the options with `extra=runtime_options(:fact, ...)`. The running Julia's values
+declares the options with `options=runtime_options(:fact, ...)`. The running Julia's values
 come from probes run once per process (`NATIVE_FACTS`, emptied in `__init__`): live from
 the runtime (`jl_get_pgcstack`, the task word a `try` changes, the TLS byte
 `jl_gc_safe_enter` sets, `jl_tls_elf_support`) or from `code_llvm` of small functions
@@ -170,7 +171,7 @@ every version ran every dialect's lines); mode A 20/21/22/24/27 and `--cpp` 28/3
 
 S19 details: `src/passes/cancellation_lowering.jl`, faithful to master's C++ (the only
 version with the pass; `Dialect.has_cancellation_lowering`, a no-op before). Required.
-The safepoint emission it shares with LateLowerGCFrame moved to `src/codegen_shared.jl`;
+It emits safepoints through the shared `emit_gc_safepoint!` of `src/gc.jl` (S33);
 `GCFunctions` gained `cancellation_point` and `get_pgcstack` (in `src/gc.jl` since S15)
 serves both passes. Facts: the task, `jl_reset_ctx_t` and `setjmp` facts of S24c, read
 only for functions with points or runtime calls in `"julia.ipo_reset_safe"` functions;
@@ -351,13 +352,12 @@ S16 details: `src/passes/lower_ptls.jl` (`jl-lower-ptls`, `cpp_name = "LowerPTLS
 required), a port of `llvm-ptls.cpp` for every dialect (the `ptls_*` fields and
 `gc_state_condition` of `Dialect`). JIT mode reads the running Julia's facts when a module
 calls a getter: `tls_offset` (`jl_tls_offset`) and `pgcstack_getter`/`pgcstack_key`
-(`jl_pgcstack_getkey`), which are `JuliaIR.Optional` options (`tls-offset=-1`,
+(`jl_pgcstack_getkey`), options of type `Union{Nothing,Int}` and `Union{Nothing,UInt}` (`tls-offset=-1`,
 `pgcstack-getter=0x1000`); imaging mode is the `imaging` option, with `tls-elf-support`.
 `tp_asm` is gone from the runtime facts: the thread-pointer asm follows the module's
 triple through LLVM.jl's `Triple` (an empty triple is the running Julia's host).
-`src/gc_transitions.jl` has the GC-state and safepoint emitters of
-`llvm-codegen-shared.h` on a `GCCodegen` context (builder, dialect, facts, data layout);
-they belong in S15's `src/gc.jl` and duplicate parts of LateLowerGCFrame's own copies.
+The GC-state and safepoint emitters of `llvm-codegen-shared.h` are in `src/gc.jl`, on
+the `GCCodegen` context that every GC pass holds (S33).
 `docs/src/lower_ptls.md` lists the deviations (1.12's entry safepoint fixed as in 1.13,
 `align 1` GC state stores, the data layout's pointer size, errors where the C++ crashes or
 hits `llvm_unreachable`, reused image variables). No upstream fixture runs LowerPTLS
@@ -377,10 +377,10 @@ caller's `target-features`, else in the JIT's string), `:subtarget` on master (L
 `SubtargetInfo`: a `TargetMachine`'s subtarget, or one created from the attributes and the
 options; `julia.cpu.supports.*` only there, `Dialect.has_cpu_supports`). The target is
 given by the keyword-only options `target_cpu`, `target_features`, `target_machine`
-(`jlopt -mcpu/-mattr`): a pass option whose default in `define_pass` is `nothing` is
-keyword-only (rejected in pipeline text, left out by `options_string`, of any type,
-checked by the definition's `check` when the pass is created; to be merged with S16's
-`Optional` by the consolidation item), and
+(`jlopt -mcpu/-mattr`), declared with `option(T, nothing; text=false)` since S33
+(rejected in pipeline text, left out by `options_string`, converted to `T` when the pass
+is created; the definition's `check` rejects combining `target_machine` with the
+others), and
 `register!(pb; options=Dict(name => (; ...)))` sets such defaults per pass. Defaults:
 1.10-1.13 read the JIT's two answers from `code_llvm` of `Core.Intrinsics.have_fma`
 (probe `:jit_fma`, used only for modules of the JIT's architecture family); master by
@@ -476,6 +476,43 @@ listed in `docs/src/pipeline.md`; not visible in printing and not checked: text
 `loop-mssa` with SimpleLoopUnswitch may let LLVM use BFI, and the TLI comes from the
 module's triple rather than the target machine's.
 
+S33 details (S-D33): pass options are declared with `option(T, default; text, valid,
+requirement)` (`src/registration.jl`, `OptionSpec`), or by a plain default
+(`strong=false`, of the default's type). The type decides the text form (`Bool` a flag,
+`Union{Nothing,Bool}` `yes`/`no`, `Symbol`, `Int`, `UInt` an address printed in hex,
+`String`; other types need `text=false`), how constructor keywords are converted (`Ptr`,
+integers in range, `SubString`, vectors) and what `options_string` prints. `PassDefinition`
+holds the declarations in `options` (the values still arrive as `opts.extra`);
+`parse_options(def, str)` also runs the definition's `check`, so text can't bypass it.
+`Optional`, `option_value`, `keyword_only` and the vector special cases are gone.
+Runtime facts, `setjmp_savemask` and the multiversioning `targets` are `nothing` when not
+given: `task-ptls=0` is a fact of 0, `setjmp=` (empty), `tls-elf-support=auto`,
+`setjmp-savemask=auto` and `targets=[]` are rejected, and `runtime_layout` converts the
+facts given to it like pass options. On the GC side, `GCCodegen` (dialect, module,
+builder, runtime facts, layout types) is the context of every helper in `src/gc.jl`;
+it also holds Julia's TBAA tags, built on first use (`tbaa_tags`), or given by
+LateLowerGCFrame, which keeps them for the whole run (S29a). FinalLowerGC,
+LateLowerGCFrame, LowerPTLS and CancellationLowering hold one.
+`gc_transitions.jl` and `codegen_shared.jl` are gone. One `emit_gc_safepoint!(g, ptls,
+tbaa; final)` emits final and `julia.safepoint` safepoints; each pass keeps its own forms
+(LowerPTLS's `align 1` GC state, LateLowerGCFrame's `gcd` alignment, CancellationLowering's
+own GEPs and untagged loads), which `test/gc.jl` checks for every dialect. Generic IR
+helpers (attribute and intrinsic predicates, `get_or_insert_function!`, metadata) are in
+`src/irutils.jl`; metadata by name goes through LLVM.jl's `inst.metadata[name]`, which
+needs LLVM.jl 10.3 (`LLVMGetMetadata2`). The port
+outputs on the differential corpus are byte-identical to the base's.
+Validated on S9 (LLVM.jl `tb/juliair-deps` 07200ee, LLVMExtra 9a88a5345ba0):
+`Pkg.test()` 1.10 1850, 1.11 1964, 1.12 1956, nightly 1987; mode A 31/32/33/35/40/40 and
+`--cpp` 28/32/33/35/40/40 (1.10 to 1.15, 2 unsupported on 1.14 and 1.15), unchanged;
+differential 1.12 and nightly 0 different, counts unchanged; docs build. Review: sol,
+`s33-review`, no P1/P2 left. Rebased onto S23, where `GCCodegen` also took over S29a's
+TBAA tags: `Pkg.test()` 1.10 2079, 1.12 2290, nightly 2318; mode A 1.12 38/38 and nightly
+45/47 (as on S23), `--cpp` 34/34 and 41/43 (2 unsupported on this host); the port outputs
+on the frozen differential corpus at 1.12 are byte-identical to S23's. Review of the
+conflict resolutions: sol, `s33-rebase-review`, no P1/P2 left. Not done (follow-up):
+unifying `GCFunctions` and `JuliaFunctions` (plan Q5); GC safe-enter/leave emitters stay
+out of scope.
+
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
 MemorySSA, the target triple wrapper, standalone libraries, ...; JuliaLLVM/LLVM.jl#678 to
@@ -522,7 +559,9 @@ rejects (`cpu-features-tokens.ll`'s untrimmed `"+sse2, +fma"`), now run before L
   `register!`, `require_opaque`, `library_facts`, the ledger (`JULIAIR_LEDGER`).
   `src/runtime.jl`: `runtime_layout` and the probes behind it (facts about the
   running Julia's runtime that some passes need), and `gc_pool_class`. `src/gc.jl`: what
-  LateLowerGCFrame and FinalLowerGC share (`GCLowering`, declarations, TBAA, barriers).
+  the GC passes share: tracked-pointer counting, the `GCCodegen` context, TBAA,
+  declarations, type tags, write barriers, and the task, thread-local state, safepoint
+  and GC-state emitters.
   `src/jlopt.jl`: the `opt`-compatible driver. `src/passes/<pass>.jl`: one file per pass,
   each ending with `define_pass(...)` and its `JuliaIR.<Name>Pass` constructor.
 - `bin/jlopt`: executable wrapper (`using JuliaIR; exit(JuliaIR.jlopt_main(ARGS))`).
@@ -700,9 +739,9 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   `LLVM.after(inst)`. `mod.datalayout` is a `DataLayout`; `alloca_addrspace` wants the
   string (`unsafe_string(API.LLVMGetDataLayoutStr(mod))`).
 - Pass defaults and pipeline options are merged before the pass sees them, so a pass
-  can't tell a default from an explicit option: the runtime-fact options use a value
-  that means "not given" (0, `""`, `:auto`), or, where every value of the type is
-  meaningful (offsets that may be 0 or -1, addresses), a `JuliaIR.Optional` (S16).
+  can't tell a default from an explicit option: an option that the pass decides when it
+  isn't given is declared `option(Union{Nothing,T}, nothing)` (S33), never with a
+  sentinel value of `T`.
 - Closures assign outer locals of the same name: `plan_fixture`'s `classify` overwrote
   the fixture's `runs` (fixed with `local`), which hid override pipelines from the
   ledger check.

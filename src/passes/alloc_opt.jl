@@ -4,8 +4,6 @@
 # versions where their tests check them (see `alloc_layout` and `alloc_initialization`
 # in `Dialect`).
 
-# the alignment of Julia's small GC allocations (`JL_SMALL_BYTE_ALIGNMENT`)
-const JL_SMALL_BYTE_ALIGNMENT = 16
 
 mutable struct AllocOpt
     const f::LLVM.Function

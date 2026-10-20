@@ -161,31 +161,44 @@ end
 end
 
 @testset "explicit facts" begin
-    rt = facts(; task_ptls=100, setjmp="jl_setjmp", tls_elf_support=:no)
+    rt = facts(; task_ptls=100, setjmp="jl_setjmp", tls_elf_support=false)
     @test rt.task_ptls == 100
     @test rt.setjmp == "jl_setjmp"
     @test rt.tls_elf_support === false
     @test rt.task_gcstack == facts().task_gcstack
     @test facts(; tls_offset=-16).tls_offset == -16
-    @test facts(; tls_offset=JuliaIR.Optional{Int}(-1)).tls_offset == -1
-    @test facts(; tls_offset=JuliaIR.Optional{Int}()).tls_offset == facts().tls_offset
+    @test facts(; tls_offset=nothing).tls_offset == facts().tls_offset
     @test facts(; pgcstack_getter=0x1234).pgcstack_getter == 0x1234
-    @test_throws "invalid option tls-elf-support" facts(; tls_elf_support=:maybe).tls_elf_support
     @test facts(; cfunction_cache=:arguments).cfunction_cache === :arguments
-    @test_throws "invalid option cfunction-cache" facts(; cfunction_cache=:maybe).cfunction_cache
+    # a fact given as 0 is used, not taken for one that isn't given
+    @test facts(; task_ptls=0).task_ptls == 0
+    @test facts(; task_ptls=nothing).task_ptls == facts().task_ptls
+    @test_throws ArgumentError("the runtime fact tls_elf_support must be true, false or `nothing`") facts(; tls_elf_support=:no)
+    @test_throws ArgumentError("the runtime fact task_ptls must be a non-negative integer or `nothing`") facts(; task_ptls=-8)
+    @test_throws ArgumentError("the runtime fact setjmp must be a non-empty string or `nothing`") facts(; setjmp="")
+    @test_throws ArgumentError("the runtime fact cfunction_cache must be arguments, cfuncdata or `nothing`") facts(; cfunction_cache=:auto)
     @test_throws "unknown runtime fact" facts(; task_foo=1)
     @test propertynames(facts()) == keys(JuliaIR.RUNTIME_FACTS)
 
     # as pass options
-    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tls_offset,
-                                  :pgcstack_key, :cfunction_cache) ==
-          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tls_offset=JuliaIR.Optional{Int}(),
-           pgcstack_key=JuliaIR.Optional{UInt}(), cfunction_cache=:auto)
+    specs = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tls_offset,
+                                    :pgcstack_key, :cfunction_cache)
+    @test all(spec -> spec.default === nothing, specs)
     @test_throws "unknown runtime fact" JuliaIR.runtime_options(:task_foo)
-    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :tls_offset, :pgcstack_key,
-                                    :cfunction_cache)
+    options = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :tls_offset, :pgcstack_key,
+                                      :cfunction_cache)
     opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;tls-offset=-4;pgcstack-key=0x10;cfunction-cache=arguments";
-                                 extra)
+                                 options)
+    @test_throws ArgumentError("option task-ptls requires a non-negative integer") JuliaIR.parse_options("task-ptls=-8"; options)
+    @test_throws ArgumentError("option tls-elf-support requires yes or no") JuliaIR.parse_options("tls-elf-support=auto"; options)
+    @test_throws ArgumentError("option cfunction-cache requires arguments or cfuncdata") JuliaIR.parse_options("cfunction-cache=auto"; options)
+    @test JuliaIR.parse_options("task-ptls=0"; options).extra.task_ptls === 0
+    @test JuliaIR.options_string(JuliaIR.parse_options("tls-elf-support=no;task-ptls=16;pgcstack-key=0x4011c0;tls-offset=-8"; options), options) ==
+          "task-ptls=16;tls-elf-support=no;tls-offset=-8;pgcstack-key=0x4011c0"
+    let options = JuliaIR.runtime_options(:setjmp)
+        @test_throws ArgumentError("option setjmp requires a non-empty string") JuliaIR.parse_options("setjmp="; options)
+        @test JuliaIR.parse_options("setjmp=__sigsetjmp"; options).extra.setjmp == "__sigsetjmp"
+    end
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
         rt = JuliaIR.runtime_layout(opts, mod)
         @test rt.task_ptls == 100

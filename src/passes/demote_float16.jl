@@ -94,8 +94,6 @@ function float_type(ty::API.LLVMTypeRef, T_float::API.LLVMTypeRef)
     return T_float
 end
 
-typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
-
 function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     dialect = opts.dialect
     triple = f.parent.triple
@@ -161,7 +159,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
 end
 
 const DEMOTE_FLOAT16 = define_pass("jl-demote-float16", :function, demote_float16!;
-                                   required=true, extra=(; jit_features=true),
+                                   required=true, options=(; jit_features=true),
                                    cpp_name="DemoteFloat16")
 
 """

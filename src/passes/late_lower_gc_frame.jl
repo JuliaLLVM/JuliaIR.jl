@@ -8,30 +8,7 @@
 # docs/src/late_lower_gc_frame.md.
 
 
-## constants of Julia's runtime (the same on every target)
-
-# GC states of a thread (`julia_threads.h`)
-const JL_GC_STATE_SAFE = 2
-
-
 ## types and values
-
-const TypeRef = API.LLVMTypeRef
-const ValueRef = API.LLVMValueRef
-
-type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
-vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
-
-is_pointer_type(t::TypeRef) = type_kind(t) == API.LLVMPointerTypeKind
-is_vector_type(t::TypeRef) = type_kind(t) in (API.LLVMVectorTypeKind,
-                                              API.LLVMScalableVectorTypeKind)
-is_struct_type(t::TypeRef) = type_kind(t) == API.LLVMStructTypeKind
-is_array_type(t::TypeRef) = type_kind(t) == API.LLVMArrayTypeKind
-type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
-
-# a scalar pointer type in one of Julia's address spaces (10 to 13)
-is_special_ptr(t::TypeRef) =
-    is_pointer_type(t) && AS_TRACKED <= type_addrspace(t) <= AS_LOADED
 
 # a pointer, or vector of pointers, in the tracked address space
 is_tracked_value(@nospecialize(v::Value)) =
@@ -43,96 +20,6 @@ is_tracked_value(@nospecialize(v::Value)) =
 value_addrspace(@nospecialize(v::Value)) = type_addrspace(scalar_typeref(typeref(v)))
 
 is_pointer_value(@nospecialize(v::Value)) = is_pointer_type(typeref(v))
-
-function array_length(t::TypeRef)
-    return LLVM.version() >= v"17" ? Int(API.LLVMGetArrayLength2(t)) :
-                                     Int(API.LLVMGetArrayLength(t))
-end
-
-# the number of elements of a struct, array or vector type (the minimum for scalable
-# vectors), like `getCompositeNumElements`
-function composite_num_elements(t::TypeRef)
-    is_struct_type(t) && return Int(API.LLVMCountStructElementTypes(t))
-    is_array_type(t) && return array_length(t)
-    return Int(API.LLVMGetVectorSize(t))
-end
-
-# the type of element `i` (0-based) of a struct, array or vector type
-composite_element_type(t::TypeRef, i::Integer) =
-    is_struct_type(t) ? API.LLVMStructGetTypeAtIndex(t, i) : API.LLVMGetElementType(t)
-
-# the types contained in a struct, array or vector type (`Type::subtypes`)
-function subtypes(t::TypeRef)
-    is_struct_type(t) || return [API.LLVMGetElementType(t)]
-    return [API.LLVMStructGetTypeAtIndex(t, i) for i in 0:composite_num_elements(t)-1]
-end
-
-is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_type(t)
-
-# how many pointers in Julia's address spaces a type holds (`count`), whether it holds
-# anything else (`all == false`), and whether any of them isn't tracked (`derived`)
-struct CountTrackedPointers
-    count::Int
-    all::Bool
-    derived::Bool
-end
-
-function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
-    count = 0
-    all = true
-    derived = false
-    if is_pointer_type(t)
-        if is_special_ptr(t)
-            as = type_addrspace(t)
-            if !(ignore_loaded && as == AS_LOADED)
-                count += 1
-                as != AS_TRACKED && (derived = true)
-            end
-        end
-    elseif is_composite(t)
-        for elt in subtypes(t)
-            sub = CountTrackedPointers(elt, ignore_loaded)
-            count += sub.count
-            all &= sub.all
-            derived |= sub.derived
-        end
-        if is_array_type(t)
-            count *= array_length(t)
-        elseif is_vector_type(t)
-            count *= Int(API.LLVMGetVectorSize(t))
-        end
-    end
-    count == 0 && (all = false)
-    return CountTrackedPointers(count, all, derived)
-end
-
-function has_loaded_ty(t::TypeRef)
-    if is_pointer_type(t)
-        return type_addrspace(t) == AS_LOADED
-    elseif is_composite(t)
-        return any(has_loaded_ty, subtypes(t))
-    end
-    return false
-end
-
-# the index paths of the special pointers inside a type, like `TrackCompositeType`
-function track_composite_type(t::TypeRef)
-    numberings = Vector{Vector{Int}}()
-    idxs = Int[]
-    function walk(t)
-        if is_pointer_type(t)
-            is_special_ptr(t) && push!(numberings, copy(idxs))
-        elseif is_composite(t)
-            for idx in 0:composite_num_elements(t)-1
-                push!(idxs, idx)
-                walk(composite_element_type(t, idx))
-                pop!(idxs)
-            end
-        end
-    end
-    walk(t)
-    return numberings
-end
 
 # the type at a path of indices in an aggregate type (`ExtractValueInst::getIndexedType`)
 function indexed_type(t::TypeRef, idxs)
@@ -200,37 +87,6 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     end
 end
 
-
-# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
-function called_function(call::Instruction)
-    callee = call.called_operand
-    callee isa LLVM.Function || return nothing
-    callee.function_type == call.called_type || return nothing
-    return callee
-end
-
-# whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
-function is_intrinsic_call(call::Instruction)
-    callee = called_function(call)
-    return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
-end
-
-intrinsic_is(call::Instruction, intr::Intrinsic) =
-    let callee = called_function(call)
-        callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
-    end
-
-# `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
-# function type differs from the function's (unlike `called_function`); `kind` is the
-# name of an LLVM attribute (a symbol) or of a string attribute
-function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
-    haskey(call.function_attributes, kind) && return true
-    callee = call.called_operand
-    return callee isa LLVM.Function && haskey(callee.function_attributes, kind)
-end
-
-can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
-
 # the memory effects of the attributes of a function or call site: the `memory`
 # attribute, or the legacy ones before LLVM 16; unrestricted without them
 function attribute_memory_effects(attrs)
@@ -279,9 +135,6 @@ only_reads_memory(e::MemoryEffects) =
     all(loc -> !(e[loc] in (:write, :readwrite)), MEMORY_LOCATIONS)
 only_accesses_arg_pointees(e::MemoryEffects) =
     all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
-
-# the integer of a constant, at most INT_MAX (`getLimitedValue(INT_MAX)`)
-limited_value(c::LLVM.ConstantInt) = min(convert(UInt64, c), UInt64(typemax(Int32)))
 
 # the element `i` of a constant aggregate, or nothing
 function aggregate_element(c::LLVM.Constant, i::Integer)
@@ -556,9 +409,10 @@ is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
 
 # What the pass knows of TBAA metadata, which is uniqued in the context and whose operands
 # passes don't set, so the same for all functions of a module (`module_facts`), as is what
-# follows from the operands of a tag's ancestors: its own tags, built on first use
-# (`tbaa_tags`), and about the tags of the input, whether they derive from the dialect's
-# `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces them with.
+# follows from the operands of a tag's ancestors: its own tags, once a function has built
+# them (`tbaa_tags` of its `GCCodegen`), and about the tags of the input, whether they
+# derive from the dialect's `gc_immutable_tbaa` types, and what `cleanup_ir!` replaces
+# them with.
 mutable struct TBAACache
     tags::Union{Nothing,TBAATags}
     immutable::Dict{MDNode,Bool}
@@ -567,7 +421,7 @@ end
 
 TBAACache() = TBAACache(nothing, Dict{MDNode,Bool}(), Dict{MDNode,MDNode}())
 
-mutable struct LateLowerGCFrame <: GCLowering
+mutable struct LateLowerGCFrame
     dialect::Dialect
     opts::PassOptions
     mod::LLVM.Module
@@ -575,14 +429,10 @@ mutable struct LateLowerGCFrame <: GCLowering
     am::Any
     fns::GCFunctions
     builder::IRBuilder
-    dl::DataLayout
-    T_prjlvalue::LLVMType
-    T_size::LLVMType
+    gc::GCCodegen
     # the GC stack: a call in the entry block, or an argument
     pgcstack::Union{Nothing,Value}
     domtree::Union{Nothing,DomTree}
-    # the facts about Julia's runtime (`RuntimeFacts`), read when needed
-    layout::Any
     cfg_modified::Bool
     tbaa::TBAACache
 end
@@ -590,17 +440,6 @@ end
 function dominator_tree(p::LateLowerGCFrame)
     p.domtree === nothing && (p.domtree = p.am[DomTree])
     return p.domtree::DomTree
-end
-
-function tbaa_tags(p::LateLowerGCFrame)
-    cache = p.tbaa
-    cache.tags === nothing && (cache.tags = TBAATags())
-    return cache.tags::TBAATags
-end
-
-function runtime_layout(p::LateLowerGCFrame)
-    p.layout === nothing && (p.layout = runtime_layout(p.opts, p.mod))
-    return p.layout
 end
 
 
@@ -739,7 +578,7 @@ function maybe_extract_scalar(p::LateLowerGCFrame, S::State, val_expr::Tuple{Val
         if !is_tracked_value(v)
             base = number_base!(p, S, v)
             v = base >= 0 ? get_ptr_for_number(p, S, base, insert_before) :
-                            LLVM.null(p.T_prjlvalue)
+                            LLVM.null(p.gc.T_prjlvalue)
         end
     elseif idx != -1
         tracked = track_composite_type(typeref(v))
@@ -753,7 +592,7 @@ function maybe_extract_scalar(p::LateLowerGCFrame, S::State, val_expr::Tuple{Val
             numbers = number_all_base!(p, S, v)
             base = numbers[idx+1]
             return base >= 0 ? get_ptr_for_number(p, S, base, insert_before) :
-                               LLVM.null(p.T_prjlvalue)
+                               LLVM.null(p.gc.T_prjlvalue)
         end
         if length(idxs) > is_vec
             v = extract_value_at!(p, v, is_vec ? idxs_not_vec : idxs, insert_before)
@@ -769,7 +608,7 @@ function maybe_extract_vector(p::LateLowerGCFrame, S::State, @nospecialize(base_
                               insert_before::Instruction)
     numbers = number_all_base!(p, S, base_vec)
     return Value[n >= 0 ? get_ptr_for_number(p, S, n, insert_before) :
-                          LLVM.null(p.T_prjlvalue) for n in numbers]
+                          LLVM.null(p.gc.T_prjlvalue) for n in numbers]
 end
 
 function get_ptr_for_number(p::LateLowerGCFrame, S::State, num::Int, insert_before::Instruction)
@@ -846,7 +685,7 @@ function lift_extract_element!(p::LateLowerGCFrame, S::State, eei::Instruction)
     bases = maybe_extract_vector(p, S, base, eei)
     builder = p.builder
     position_before!(builder, eei; debug=true)
-    base_vec = Value(API.LLVMGetPoison(LLVM.VectorType(p.T_prjlvalue, length(bases))))
+    base_vec = Value(API.LLVMGetPoison(LLVM.VectorType(p.gc.T_prjlvalue, length(bases))))
     for (i, b) in enumerate(bases)
         base_vec = insert_element!(builder, base_vec, b, ConstantInt(LLVM.Int64Type(), i - 1))
     end
@@ -867,7 +706,7 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
     end
     for i in 1:num_roots
         position_before!(p.builder, phi; debug=false)
-        lift = phi!(p.builder, p.T_prjlvalue, "gclift")
+        lift = phi!(p.builder, p.gc.T_prjlvalue, "gclift")
         number = (S.max_ptr_number += 1)
         S.all_ptr_numbering[vref(lift)] = number
         S.reverse_ptr_numbering[number] = lift
@@ -1559,17 +1398,13 @@ function is_non_safepoint_callee(p::LateLowerGCFrame, callee::LLVM.Function)
     return LLVM.name(callee) in NON_SAFEPOINT_RUNTIME_CALLS
 end
 
-const DBG_INTRINSIC_PREFIX = "llvm.dbg."
-const LIFETIME_START_INTR = Intrinsic("llvm.lifetime.start")
-const LIFETIME_END_INTR = Intrinsic("llvm.lifetime.end")
-
 function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction)
     if is_intrinsic_call(ci)
         # Most intrinsics are not GC uses or defs, but some have memory operands. Only
         # skip those that are emitted often and cannot be GC uses.
         callee = called_function(ci)
-        if startswith(LLVM.name(callee), DBG_INTRINSIC_PREFIX) ||
-           intrinsic_is(ci, LIFETIME_START_INTR) || intrinsic_is(ci, LIFETIME_END_INTR)
+        if is_debug_intrinsic(callee) ||
+           intrinsic_is(ci, LIFETIME_START) || intrinsic_is(ci, LIFETIME_END)
             return
         end
         if intrinsic_is(ci, MASKED_LOAD) || intrinsic_is(ci, MASKED_GATHER)
@@ -2048,7 +1883,7 @@ function add_in_predecessor_live_outs!(S::State, bb::BasicBlock, live_in::BitSet
 end
 
 function gc_frame_slot!(p::LateLowerGCFrame, gcframe::Instruction, slot::Int, name::String)
-    return call_intrinsic!(p, :get_gc_frame_slot,
+    return call_intrinsic!(p.gc, :get_gc_frame_slot,
                            Value[gcframe, ConstantInt(LLVM.Int32Type(), slot)], name)
 end
 
@@ -2059,7 +1894,7 @@ function place_gc_frame_store!(p::LateLowerGCFrame, S::State, r::Int, min_color_
     position_before!(p.builder, insert_before; debug=false)
     slot_address = gc_frame_slot!(p, gcframe, slot, slot_name(p, "gc_slot_addr_", slot))
     val = get_ptr_for_number(p, S, r, insert_before)
-    @assert LLVM.value_type(val) == p.T_prjlvalue
+    @assert LLVM.value_type(val) == p.gc.T_prjlvalue
     position_before!(p.builder, insert_before; debug=false)
     store!(p.builder, val, slot_address)
 end
@@ -2070,7 +1905,7 @@ function place_gc_frame_reset!(p::LateLowerGCFrame, S::State, r::Int, min_color_
     slot = colors[r+1] + min_color_root
     position_before!(p.builder, insert_before; debug=false)
     slot_address = gc_frame_slot!(p, gcframe, slot, slot_name(p, "gc_slot_addr_", slot))
-    store!(p.builder, LLVM.null(p.T_prjlvalue), slot_address)
+    store!(p.builder, LLVM.null(p.gc.T_prjlvalue), slot_address)
 end
 
 function place_gc_frame_stores!(p::LateLowerGCFrame, S::State, min_color_root::Int,
@@ -2160,11 +1995,12 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
 
     # create and push a GC frame
     position_before!(builder, first(entry.instructions); debug=false)
-    gcframe = call_intrinsic!(p, :new_gc_frame, Value[ConstantInt(T_int32, 0)], "gcframe")
+    gcframe = call_intrinsic!(p.gc, :new_gc_frame, Value[ConstantInt(T_int32, 0)], "gcframe")
     position!(builder, LLVM.after(p.pgcstack isa LLVM.Argument ? gcframe :
                                   p.pgcstack::Instruction))
     builder.debug_location = nothing
-    push_gcframe = call_intrinsic!(p, :push_gc_frame, Value[gcframe, ConstantInt(T_int32, 0)])
+    push_gcframe = call_intrinsic!(p.gc, :push_gc_frame,
+                                   Value[gcframe, ConstantInt(T_int32, 0)])
 
     if p.dialect.gc_prologue_store_elision
         # we don't run memsetopt after this, so remove null stores in the prologue, since
@@ -2184,8 +2020,8 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
 
     # replace allocas
     alloca_slot = GC_FRAME_HEADER_SLOTS
-    frame_align = TAG_ALIGNMENT
-    ptrsize = pointer_size(p)
+    frame_align = JL_SMALL_BYTE_ALIGNMENT
+    ptrsize = pointer_size(p.gc)
     function replace_alloca(ai::Instruction)
         # preserve both the alloca's alignment and its offset within the frame
         align = Int(LLVM.alignment(ai))
@@ -2200,7 +2036,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
         # lifetime intrinsics no longer apply
         to_delete = Instruction[]
         recursively_visit_intrinsics(ai) do ii
-            (intrinsic_is(ii, LIFETIME_START_INTR) || intrinsic_is(ii, LIFETIME_END_INTR)) &&
+            (intrinsic_is(ii, LIFETIME_START) || intrinsic_is(ii, LIFETIME_END)) &&
                 push!(to_delete, ii)
         end
         foreach(erase!, to_delete)
@@ -2232,7 +2068,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
             slot_address = gc_frame_slot!(p, gcframe, alloca_slot - GC_FRAME_HEADER_SLOTS,
                                           slot_name(p, "gc_slot_addr", alloca_slot - GC_FRAME_HEADER_SLOTS))
             elem = maybe_extract_scalar(p, S, (base, is_pointer_value(base) ? -1 : i), si)
-            @assert LLVM.value_type(elem) == p.T_prjlvalue
+            @assert LLVM.value_type(elem) == p.gc.T_prjlvalue
             position_before!(builder, si; debug=false)
             store!(builder, elem, slot_address)
             alloca_slot += 1
@@ -2240,7 +2076,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     end
     nroots = ConstantInt(T_int32, max_color + 1 + alloca_slot - GC_FRAME_HEADER_SLOTS)
     gcframe.operands[1] = nroots
-    if frame_align > TAG_ALIGNMENT
+    if frame_align > JL_SMALL_BYTE_ALIGNMENT
         push!(gcframe.return_attributes, EnumAttribute("align", frame_align))
     end
     push_gcframe.operands[2] = nroots
@@ -2253,7 +2089,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
         term = bb.terminator
         if term isa LLVM.RetInst
             position_before!(builder, term; debug=false)
-            call_intrinsic!(p, :pop_gc_frame, Value[gcframe])
+            call_intrinsic!(p.gc, :pop_gc_frame, Value[gcframe])
         end
     end
     return
@@ -2262,40 +2098,12 @@ end
 
 ## cleanup
 
-# the thread-local state of a task (`get_current_ptls_from_task`)
-function current_ptls_from_task!(p::LateLowerGCFrame, @nospecialize(task::Value), tbaa::MDNode)
-    builder = p.builder
-    offset = runtime_layout(p).task_ptls
-    T_ptr = LLVM.PointerType(AS_GENERIC)
-    pptls = if p.dialect.gc_ptls_gep === :pointer
-        inbounds_gep!(builder, T_ptr, task,
-                      [ConstantInt(p.T_size, offset ÷ pointer_size(p))], "ptls_field")
-    else
-        inbounds_gep!(builder, LLVM.Int8Type(), task,
-                      [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
-    end
-    ptls_load = load!(builder, T_ptr, pptls, "ptls_load"; align=pointer_align(p))
-    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(p).constant)
-    return ptls_load
-end
-
-# a safepoint (`emit_gc_safepoint`, not final)
-emit_gc_safepoint!(p::LateLowerGCFrame, @nospecialize(ptls::Value), tbaa::MDNode) =
-    emit_gc_safepoint!(p.builder, p.mod, ptls, p.dialect.gc_safepoint_load,
-                       runtime_layout(p).tls_safepoint, pointer_align(p), tbaa)
-
 # the GC stack of the function, created if there is none (Julia 1.12's `getOrAddPGCstack`)
 function get_or_add_pgcstack!(p::LateLowerGCFrame)
     fns = p.fns
+    pgcstack = get_pgcstack(p.dialect, p.f, fns.pgcstack_getter, fns.adoptthread)
+    pgcstack === nothing || return pgcstack
     entry = first(p.f.blocks)
-    if fns.pgcstack_getter !== nothing || fns.adoptthread !== nothing
-        for inst in entry.instructions
-            inst isa LLVM.CallInst || continue
-            callee = inst.called_operand
-            (is_fn(fns.pgcstack_getter, callee) || is_fn(fns.adoptthread, callee)) &&
-                return inst
-        end
-    end
     getter = fns.pgcstack_getter
     if getter === nothing
         getter = LLVM.Function(p.mod, "julia.get_pgcstack",
@@ -2314,33 +2122,31 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
     builder = p.builder
     lowering = p.dialect.gc_transition_lowering
     if lowering === :pgcstack
+        # only 1.12 lowers this way, a dialect with byte GEPs into the task, like the C++'s
+        # `get_current_task_from_pgcstack`
         pgcstack = get_or_add_pgcstack!(p)
         position_before!(builder, call; debug=true)
-        task = inbounds_gep!(builder, LLVM.Int8Type(), pgcstack,
-                             [ConstantInt(LLVM.Int32Type(), -runtime_layout(p).task_gcstack)],
-                             "current_task")
-        ptls = current_ptls_from_task!(p, task, tbaa_tags(p).gcframe)
+        ptls = current_ptls_from_task!(p.gc, current_task_from_pgcstack!(p.gc, pgcstack),
+                                       tbaa_tags(p.gc).gcframe)
     else
         position_before!(builder, call; debug=true)
         ptls = first(LLVM.inputs(bundle))
     end
-    offset = runtime_layout(p).tls_gc_state
     # the C++ claims pointer alignment for this byte, which only holds on 1.14's layout
-    align = gcd(pointer_align(p), offset)
+    align = gcd(pointer_align(p.gc), p.gc.layout.tls_gc_state)
     T_int8 = LLVM.Int8Type()
-    gc_state = inbounds_gep!(builder, T_int8, ptls, [ConstantInt(LLVM.Int32Type(), offset)],
-                             "gc_state")
+    gc_state = gc_state_address!(p.gc, ptls)
     last_gc_state = load!(builder, T_int8, gc_state; align,
                           ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
-    tbaa = tbaa_tags(p).constant
-    emit_gc_safepoint!(p, ptls, tbaa)
+    tbaa = tbaa_tags(p.gc).constant
+    emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
     next = call.next
     position_before!(builder, next; debug=true)
     store!(builder, last_gc_state, gc_state; align,
            ordering=LLVM.API.LLVMAtomicOrderingRelease)
-    emit_gc_safepoint!(p, ptls, tbaa)
+    emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
 end
 
 function update_ptr_numbering!(S::Union{Nothing,State}, @nospecialize(from::Value),
@@ -2369,12 +2175,12 @@ other_bundles(call::Instruction) =
 function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     builder = p.builder
     position_before!(builder, call; debug=true)
-    T_size = p.T_size
+    T_size = p.gc.T_size
 
     new_call = nothing
     if !p.dialect.gc_alloc_bytes_tag
-        alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
+        alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
+        ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
@@ -2393,21 +2199,21 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # valid in general, since the load might not be a type on other paths, but it is
         # for constant globals, which are the important cases.
         task_local = Ref(false)
-        if is_load_from_const_gv(p, tag, task_local) && get_load_value_align(tag) < TAG_ALIGNMENT
-            tag.metadata[LLVM.MD_align] = MDNode([i64_metadata(TAG_ALIGNMENT)])
+        if is_load_from_const_gv(p, tag, task_local) && get_load_value_align(tag) < JL_SMALL_BYTE_ALIGNMENT
+            tag.metadata[LLVM.MD_align] = MDNode([i64_metadata(JL_SMALL_BYTE_ALIGNMENT)])
         end
     end
     # as a last resort, an alignment assumption
     tag_type = LLVM.value_type(tag)
-    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < TAG_ALIGNMENT
-        emit_alignment_assumption!(p, tag, TAG_ALIGNMENT)
+    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < JL_SMALL_BYTE_ALIGNMENT
+        emit_alignment_assumption!(p, tag, JL_SMALL_BYTE_ALIGNMENT)
     end
 
     if p.dialect.gc_alloc_bytes_tag
         # `julia.gc_alloc_bytes` specializes on the size of the object, and doesn't set
         # its tag
-        alloc_bytes = get_or_declare(p, :gc_alloc_bytes)
-        ptls = current_ptls_from_task!(p, call.arguments[1], tbaa_tags(p).gcframe)
+        alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
+        ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
         size = intcast!(builder, call.arguments[2], T_size)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
@@ -2415,15 +2221,15 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         copy_function_attributes!(new_call, alloc_bytes)
         deref = return_dereferenceable_bytes(call)
         deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
-        reset_region = metadata_by_name(call, "julia.reset_region")
-        reset_region === nothing || set_metadata_by_name!(new_call, "julia.reset_region", reset_region)
+        reset_region = get(call.metadata, "julia.reset_region", nothing)
+        reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
         take_name!(new_call, call)
     end
 
     # set the tag in IR, rather than in the allocation function
-    store = store!(builder, tag, emit_tag_ptr!(p, tag_type, new_call);
-                   align=pointer_align(p), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
+    store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
+                   align=pointer_align(p.gc), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
     # sees valid pointers before the object is initialized
@@ -2437,7 +2243,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
             offset isa LLVM.ConstantInt || continue
             ptr = inbounds_gep!(builder, LLVM.Int8Type(), derived,
                                 [ConstantInt(T_size, convert(UInt64, offset))])
-            store!(builder, LLVM.null(p.T_prjlvalue), ptr; align=pointer_align(p))
+            store!(builder, LLVM.null(p.gc.T_prjlvalue), ptr; align=pointer_align(p.gc))
         end
     end
     if zeroinit !== nothing
@@ -2445,7 +2251,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         if !(size isa LLVM.ConstantInt && convert(UInt64, size) == 0)
             derived = addrspacecast!(builder, new_call, T_derived)
             ptr = inbounds_gep!(builder, LLVM.Int8Type(), derived, [offset])
-            memset!(builder, ptr, ConstantInt(LLVM.Int8Type(), 0), size, pointer_align(p))
+            memset!(builder, ptr, ConstantInt(LLVM.Int8Type(), 0), size, pointer_align(p.gc))
         end
     end
 
@@ -2467,9 +2273,9 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         align > 0 && return align
         API.LLVMTypeIsSized(LLVM.global_value_type(v)) != 0 || return 1
         if !LLVM.isdeclaration(v)
-            return Int(API.LLVMPreferredAlignmentOfGlobal(p.dl, v))
+            return Int(API.LLVMPreferredAlignmentOfGlobal(p.gc.dl, v))
         end
-        return abi_alignment(p.dl, LLVM.global_value_type(v))
+        return abi_alignment(p.gc.dl, LLVM.global_value_type(v))
     elseif v isa LLVM.AllocaInst
         return LLVM.alignment(v)
     elseif v isa LLVM.CallBase
@@ -2508,7 +2314,7 @@ end
 function emit_alignment_assumption!(p::LateLowerGCFrame, @nospecialize(ptr::Value), align::Int)
     assume = Intrinsic("llvm.assume")
     f = LLVM.Function(p.mod, assume)
-    T_intptr = LLVM.IntType(8 * storage_size(p.dl, LLVM.value_type(ptr)))
+    T_intptr = LLVM.IntType(8 * storage_size(p.gc.dl, LLVM.value_type(ptr)))
     bundle = OperandBundle("align", Value[ptr, ConstantInt(T_intptr, align)])
     call!(p.builder, f.function_type, f, Value[ConstantInt(LLVM.Int1Type(), 1)],
           [bundle])
@@ -2518,10 +2324,11 @@ end
 function lower_typeof!(p::LateLowerGCFrame, call::Instruction, S)
     builder = p.builder
     position_before!(builder, call; debug=true)
-    tag = emit_load_tag!(p, call.arguments[1])
-    masked = and!(builder, tag, ConstantInt(p.T_size, ~UInt64(15) & typemax_of(p.T_size)))
+    tag = emit_load_tag!(p.gc, call.arguments[1])
+    T_size = p.gc.T_size
+    masked = and!(builder, tag, ConstantInt(T_size, ~UInt64(15) & typemax_of(T_size)))
     typ = addrspacecast!(builder, inttoptr!(builder, masked, LLVM.PointerType(AS_GENERIC)),
-                         p.T_prjlvalue)
+                         p.gc.T_prjlvalue)
     replace_call!(typ, call, S)
 end
 
@@ -2553,9 +2360,9 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     frame_values = args[2+nfixed:end]
     position_before!(builder, call; debug=true)
     for (slot, val) in enumerate(frame_values)
-        ptr = inbounds_gep!(builder, p.T_prjlvalue, frame,
+        ptr = inbounds_gep!(builder, p.gc.T_prjlvalue, frame,
                             [ConstantInt(LLVM.Int32Type(), slot - 1)])
-        store!(builder, val, ptr; align=pointer_align(p))
+        store!(builder, val, ptr; align=pointer_align(p.gc))
     end
     T_ptr = LLVM.PointerType(AS_GENERIC)
     push!(replacement_args, isempty(frame_values) ? LLVM.null(T_ptr) :
@@ -2567,11 +2374,12 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     end
     T_int32 = LLVM.Int32Type()
     ft = if kind === :call3
-        LLVM.FunctionType(p.T_prjlvalue, [LLVM.PointerType(AS_DERIVED), T_ptr, T_int32])
+        LLVM.FunctionType(p.gc.T_prjlvalue, [LLVM.PointerType(AS_DERIVED), T_ptr, T_int32])
     elseif kind === :call2
-        LLVM.FunctionType(p.T_prjlvalue, [p.T_prjlvalue, T_ptr, T_int32, p.T_prjlvalue])
+        LLVM.FunctionType(p.gc.T_prjlvalue,
+                          [p.gc.T_prjlvalue, T_ptr, T_int32, p.gc.T_prjlvalue])
     else
-        LLVM.FunctionType(p.T_prjlvalue, [p.T_prjlvalue, T_ptr, T_int32])
+        LLVM.FunctionType(p.gc.T_prjlvalue, [p.gc.T_prjlvalue, T_ptr, T_int32])
     end
     builder.debug_location = nothing
     # Julia's bundles are dropped
@@ -2618,8 +2426,8 @@ function zeroinit_indirect!(p::LateLowerGCFrame, call::Instruction, bundle::Oper
     derived = addrspacecast!(builder, call, LLVM.PointerType(AS_DERIVED))
     field = inbounds_gep!(builder, LLVM.Int8Type(), derived, [offset])
     T_ptr = LLVM.PointerType(AS_GENERIC)
-    data = load!(builder, T_ptr, field; align=pointer_align(p))
-    memset!(builder, data, ConstantInt(LLVM.Int8Type(), 0), size, pointer_align(p))
+    data = load!(builder, T_ptr, field; align=pointer_align(p.gc))
+    memset!(builder, data, ConstantInt(LLVM.Int8Type(), 0), size, pointer_align(p.gc))
     return true
 end
 
@@ -2752,7 +2560,8 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
         # lowered by FinalLowerGC from Julia 1.14 on
         lowering === :deferred && continue
         p.cfg_modified = true
-        emit_write_barrier!(p, ci, parent, collect(ci.arguments)[2:end], lowering, debug_info)
+        emit_write_barrier!(p.gc, ci, parent, collect(ci.arguments)[2:end], lowering,
+                            debug_info)
         erase!(ci)
     end
 end
@@ -2762,7 +2571,7 @@ function cleanup_ir!(p::LateLowerGCFrame, S::Union{Nothing,State})
     entry = first(f.blocks)
     # one array for the arguments of every jlcall, since LLVM would merge them anyway
     position_before!(p.builder, first(entry.instructions); debug=false)
-    frame = array_alloca!(p.builder, p.T_prjlvalue, ConstantInt(LLVM.Int32Type(), 0),
+    frame = array_alloca!(p.builder, p.gc.T_prjlvalue, ConstantInt(LLVM.Int32Type(), 0),
                           p.dialect.gc_names ? "jlcallframe" : "")
     maxframeargs = Ref(0)
     write_barriers = Instruction[]
@@ -2827,13 +2636,11 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         return PreservedAnalyses(AllAnalyses)
     mod = LLVM.parent(f)
     @dispose builder=IRBuilder() begin
-        dl = mod.datalayout
-        p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder, dl,
-                             LLVM.PointerType(AS_TRACKED),
-                             LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                             nothing, nothing, nothing, false,
-                             module_facts(TBAACache, opts, mod, TBAACache))
-        declare_small_alloc && get_or_declare(p, :gc_small_alloc)
+        tbaa = module_facts(TBAACache, opts, mod, TBAACache)
+        gc = GCCodegen(dialect, mod, builder, runtime_layout(opts, mod); tbaa=tbaa.tags)
+        p = LateLowerGCFrame(dialect, opts, mod, f, am, GCFunctions(mod, dialect), builder,
+                             gc, nothing, nothing, false, tbaa)
+        declare_small_alloc && get_or_declare(p.gc, :gc_small_alloc)
         p.pgcstack = get_pgcstack(dialect, f, p.fns.pgcstack_getter, p.fns.adoptthread)
         if p.pgcstack !== nothing
             drop_safepoint_memory_effects!(f)
@@ -2854,6 +2661,7 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         else
             cleanup_ir!(p, nothing)
         end
+        tbaa.tags = gc.tbaa
         return p.cfg_modified ? PreservedAnalyses() : PreservedAnalyses(CFGAnalyses)
     end
 end
@@ -2864,12 +2672,13 @@ const GC_RUNTIME_FACTS = (:task_gcstack, :task_ptls, :tls_safepoint, :tls_gc_sta
 const LATE_LOWER_GC_FRAME = define_pass("jl-late-lower-gc-frame", :function,
                                         (f, am, opts) -> late_lower_gc_frame!(f, am, opts);
                                         required=true,
-                                        extra=runtime_options(GC_RUNTIME_FACTS...),
+                                        options=runtime_options(GC_RUNTIME_FACTS...),
                                         cpp_name="LateLowerGCFrame")
 
 """
-    JuliaIR.LateLowerGCFramePass(; gc_barrier=:stock, task_gcstack=0, task_ptls=0,
-                                 tls_safepoint=0, tls_gc_state=0)
+    JuliaIR.LateLowerGCFramePass(; gc_barrier=:stock, task_gcstack=nothing,
+                                 task_ptls=nothing, tls_safepoint=nothing,
+                                 tls_gc_state=nothing)
 
 Julia's GC root placement (`jl-late-lower-gc-frame` in a pipeline, `LateLowerGCFrame`
 in Julia's pipelines): roots the values in Julia's tracked address spaces that are live

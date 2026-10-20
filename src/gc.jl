@@ -1,8 +1,9 @@
-# What Julia's GC lowering passes share (LateLowerGCFrame, FinalLowerGC): the constants
-# of the runtime's GC, the declarations of the GC intrinsics and of the runtime functions
-# they are lowered to (`JuliaPassContext`, `jl_intrinsics` and `jl_well_known` in Julia's
-# `llvm-pass-helpers.cpp`), TBAA nodes, and the code both passes emit (type tag loads,
-# write barriers). JuliaLICM uses the write-barrier helpers too.
+# What Julia's GC lowering passes share (LateLowerGCFrame, FinalLowerGC, LowerPTLS,
+# CancellationLowering, JuliaLICM): the constants of the runtime's GC, the counting of
+# tracked pointers in types, Julia's TBAA nodes, the declarations of the GC intrinsics and
+# of the runtime functions they are lowered to (`JuliaPassContext`, `jl_intrinsics` and
+# `jl_well_known` in Julia's `llvm-pass-helpers.cpp`), and the code the passes emit (type
+# tag loads, write barriers).
 
 ## constants of Julia's runtime (the same on every target)
 
@@ -13,23 +14,195 @@ const GC_IN_IMAGE = 4
 const GC_IN_IMAGE_REMSET = 8
 const GC_IN_IMAGE_NOT_REMSET = GC_IN_IMAGE
 
-# type tags are the header word before an object; types are 16-byte aligned, so the low
-# 4 bits of the tag are GC bits (`JL_SMALL_BYTE_ALIGNMENT`)
-const TAG_ALIGNMENT = 16
+# the alignment of small GC allocations and of types (`JL_SMALL_BYTE_ALIGNMENT`): type
+# tags are the header word before an object, whose low 4 bits are GC bits
+const JL_SMALL_BYTE_ALIGNMENT = 16
+
+# GC states of a thread (`julia_threads.h`)
+const JL_GC_STATE_SAFE = 2
 
 # a GC frame starts with two words (`jl_gcframe_t`: nroots, prev)
 const GC_FRAME_HEADER_SLOTS = 2
 
 
-## the state of a GC lowering pass
+## tracked pointers
 
-# A pass that uses these helpers has the fields `dialect`, `mod`, `builder`, `dl`
-# (the module's data layout), `T_prjlvalue` (a tracked pointer) and `T_size` (the
-# integer of a pointer's size), and a method of `tbaa_tags` that returns its `TBAATags`.
-abstract type GCLowering end
+# a scalar pointer type in one of Julia's address spaces (10 to 13)
+is_special_ptr(t::TypeRef) =
+    is_pointer_type(t) && AS_TRACKED <= type_addrspace(t) <= AS_LOADED
 
-pointer_size(p::GCLowering) = storage_size(p.dl, LLVM.PointerType(AS_GENERIC))
-pointer_align(p::GCLowering) = abi_alignment(p.dl, LLVM.PointerType(AS_GENERIC))
+# how many pointers in Julia's address spaces a type holds (`count`), whether it holds
+# anything else (`all == false`), and whether any of them isn't tracked (`derived`)
+struct CountTrackedPointers
+    count::Int
+    all::Bool
+    derived::Bool
+end
+
+function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
+    count = 0
+    all = true
+    derived = false
+    if is_pointer_type(t)
+        if is_special_ptr(t)
+            as = type_addrspace(t)
+            if !(ignore_loaded && as == AS_LOADED)
+                count += 1
+                as != AS_TRACKED && (derived = true)
+            end
+        end
+    elseif is_composite(t)
+        for elt in subtypes(t)
+            sub = CountTrackedPointers(elt, ignore_loaded)
+            count += sub.count
+            all &= sub.all
+            derived |= sub.derived
+        end
+        if is_array_type(t)
+            count *= array_length(t)
+        elseif is_vector_type(t)
+            count *= Int(API.LLVMGetVectorSize(t))
+        end
+    end
+    count == 0 && (all = false)
+    return CountTrackedPointers(count, all, derived)
+end
+
+CountTrackedPointers(@nospecialize(t::LLVMType), ignore_loaded::Bool=false) =
+    CountTrackedPointers(Base.unsafe_convert(TypeRef, t), ignore_loaded)
+
+function has_loaded_ty(t::TypeRef)
+    if is_pointer_type(t)
+        return type_addrspace(t) == AS_LOADED
+    elseif is_composite(t)
+        return any(has_loaded_ty, subtypes(t))
+    end
+    return false
+end
+
+# the index paths of the special pointers inside a type, like `TrackCompositeType`
+function track_composite_type(t::TypeRef)
+    numberings = Vector{Vector{Int}}()
+    idxs = Int[]
+    function walk(t)
+        if is_pointer_type(t)
+            is_special_ptr(t) && push!(numberings, copy(idxs))
+        elseif is_composite(t)
+            for idx in 0:composite_num_elements(t)-1
+                push!(idxs, idx)
+                walk(composite_element_type(t, idx))
+                pop!(idxs)
+            end
+        end
+    end
+    walk(t)
+    return numberings
+end
+
+## TBAA
+
+# Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
+# node (`tbaa_make_child_with_context`)
+function tbaa_make_child(name::String, parent=nothing; constant::Bool=false)
+    jtbaa = MDNode([MDString("jtbaa")])
+    root = MDNode([MDString("jtbaa"), jtbaa, i64_metadata(0)])
+    scalar = MDNode([MDString(name), something(parent, root), i64_metadata(0)])
+    tag = constant ? MDNode([scalar, scalar, i64_metadata(0), i64_metadata(1)]) :
+                     MDNode([scalar, scalar, i64_metadata(0)])
+    return tag, scalar
+end
+
+tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
+tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
+tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
+
+# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
+# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
+struct TBAATags
+    gcframe::MDNode
+    tag::MDNode
+    constant::MDNode
+end
+
+TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
+
+# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
+# invariant (`tbaa_decorate`)
+function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
+    inst.metadata[LLVM.MD_tbaa] = md
+    if inst isa LLVM.LoadInst && md == constant
+        inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
+    end
+    return inst
+end
+
+# Whether the access tag `tag`, or a type it derives from up to the root, has one of
+# `names`, like Julia's `isTBAA`.
+function tbaa_derives_from(tag::MDNode, names)
+    node = tag
+    while length(node.operands) > 1
+        parent = node.operands[2]
+        parent isa MDNode && !isempty(parent.operands) || return false
+        name = parent.operands[1]
+        name isa MDString || return false
+        convert(String, name) in names && return true
+        node = parent
+    end
+    return false
+end
+
+# The access tag `tag` without its immutability flag, like LLVM's
+# `MDBuilder::createMutableTBAAAccessTag`: the tag itself if it is mutable, otherwise a
+# new tag `!{base, access, i64 offset}`, or `!{base, access, i64 offset, i64 size}` for the
+# new TBAA format (whose access types aren't named by a string).
+function mutable_tbaa_tag(tag::MDNode)
+    ops = tag.operands
+    base, access = ops[1], ops[2]
+    new_format = access.operands[1] isa MDNode
+    flag = new_format ? 5 : 4
+    length(ops) < flag && return tag
+    metadata_int(ops[flag]) == 0 && return tag
+    i64(op) = Metadata(ConstantInt(LLVM.Int64Type(), metadata_int(op)))
+    return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
+                        MDNode([base, access, i64(ops[3])])
+end
+
+
+## the context of the emitters
+
+# What the emitters need: the dialect, the module, the builder (positioned by the caller,
+# with the debug location the C++ builder would have), the runtime facts, the types of
+# the module's layout, and Julia's TBAA tags (built on first use, `tbaa_tags`).
+mutable struct GCCodegen
+    dialect::Dialect
+    mod::LLVM.Module
+    builder::IRBuilder
+    layout::RuntimeFacts
+    dl::DataLayout
+    T_prjlvalue::LLVMType     # a tracked pointer
+    T_size::LLVMType          # the integer of a pointer's size
+    tbaa::Union{Nothing,TBAATags}
+end
+
+# `tbaa`: tags that the pass keeps for longer than the context, e.g. for a whole run
+function GCCodegen(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder,
+                   layout::RuntimeFacts; tbaa::Union{Nothing,TBAATags}=nothing)
+    dl = mod.datalayout
+    T_size = LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC)))
+    return GCCodegen(dialect, mod, builder, layout, dl, LLVM.PointerType(AS_TRACKED), T_size,
+                     tbaa)
+end
+
+function tbaa_tags(g::GCCodegen)
+    g.tbaa === nothing && (g.tbaa = TBAATags())
+    return g.tbaa::TBAATags
+end
+
+pointer_size(g::GCCodegen) = storage_size(g.dl, LLVM.PointerType(AS_GENERIC))
+pointer_align(g::GCCodegen) = abi_alignment(g.dl, LLVM.PointerType(AS_GENERIC))
+
+
+## the GC stack
 
 # the GC stack of a function (`JuliaPassContext::getPGCstack`): a call to one of the
 # getters (`julia.get_pgcstack`, `julia.get_pgcstack_or_new`) in the entry block, or an
@@ -52,42 +225,6 @@ function get_pgcstack(dialect::Dialect, f::LLVM.Function, getter, adopt)
     return nothing
 end
 
-is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
-
-# position the builder before `inst`, with `inst`'s debug location like C++'s
-# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
-function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
-    position!(builder, LLVM.before(inst))
-    builder.debug_location = debug ? inst.debug_location : nothing
-end
-
-function copy_function_attributes!(call::Instruction, f::LLVM.Function)
-    for attr in collect(f.function_attributes)
-        push!(call.function_attributes, attr)
-    end
-    for attr in collect(f.return_attributes)
-        push!(call.return_attributes, attr)
-    end
-    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
-        push!(call.argument_attributes[i], attr)
-    end
-end
-
-md_kind(@nospecialize(v::Value), name::String) =
-    API.LLVMGetMDKindIDInContext(context(v), name, length(name))
-
-function metadata_by_name(inst::Instruction, name::String)
-    kind = md_kind(inst, name)
-    for (k, md) in inst.metadata
-        k == kind && return md
-    end
-    return nothing
-end
-
-function set_metadata_by_name!(inst::Instruction, name::String, md::Metadata)
-    API.LLVMSetMetadata(inst, md_kind(inst, name), API.LLVMMetadataAsValue(context(inst), md))
-end
-
 
 ## declarations of GC intrinsics (`jl_intrinsics`, `jl_well_known`)
 
@@ -101,8 +238,8 @@ alloc_size_attr(elem_size_arg::Integer) =
     EnumAttribute("allocsize", (UInt64(elem_size_arg) << 32) | 0xffffffff)
 
 # the attributes of allocation functions (`addGCAllocAttributes`)
-function add_gc_alloc_attributes!(p::GCLowering, f::LLVM.Function)
-    if p.dialect.gc_alloc_bytes_tag
+function add_gc_alloc_attributes!(g::GCCodegen, f::LLVM.Function)
+    if g.dialect.gc_alloc_bytes_tag
         push!(f.function_attributes,
               EnumAttribute(MemoryEffects(argmem=:read, inaccessiblemem=:readwrite)))
         push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc
@@ -153,6 +290,8 @@ function gc_declaration_name(dialect::Dialect, which::Symbol)
         "julia.push_gc_frame"
     elseif which === :pop_gc_frame
         "julia.pop_gc_frame"
+    elseif which === :safepoint
+        "julia.safepoint"
     elseif which === :queue_gc_root
         "julia.queue_gc_root"
     elseif which === :gc_queue_root
@@ -176,40 +315,42 @@ end
 
 # the type of a GC intrinsic or runtime function, built apart from its name so that one
 # that is already declared is found without building it
-function gc_declaration_type(p::GCLowering, which::Symbol)
+function gc_declaration_type(g::GCCodegen, which::Symbol)
     T_ptr = LLVM.PointerType(AS_GENERIC)
     T_int32 = LLVM.Int32Type()
     T_void = LLVM.VoidType()
-    T_size = p.T_size
+    T_size = g.T_size
     # from Julia 1.11 on, the allocation functions take the type tag as an integer
-    tag = p.dialect.gc_alloc_bytes_tag ? LLVMType[T_size] : LLVMType[]
+    tag = g.dialect.gc_alloc_bytes_tag ? LLVMType[T_size] : LLVMType[]
     return if which === :get_gc_frame_slot
         LLVM.FunctionType(T_ptr, [T_ptr, T_int32])
     elseif which === :gc_alloc_bytes
-        LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, tag...])
+        LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_size, tag...])
     elseif which === :new_gc_frame
         LLVM.FunctionType(T_ptr, [T_int32])
     elseif which === :push_gc_frame
         LLVM.FunctionType(T_void, [T_ptr, T_int32])
     elseif which === :pop_gc_frame
         LLVM.FunctionType(T_void, [T_ptr])
+    elseif which === :safepoint
+        LLVM.FunctionType(T_void, [T_ptr])
     elseif which in (:queue_gc_root, :gc_queue_root, :gc_queue_root_reset_safe)
-        LLVM.FunctionType(T_void, [p.T_prjlvalue])
+        LLVM.FunctionType(T_void, [g.T_prjlvalue])
     elseif which in (:gc_small_alloc, :gc_small_alloc_reset_safe)
-        LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_int32, T_int32, tag...])
+        LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_int32, T_int32, tag...])
     elseif which in (:gc_big_alloc, :gc_big_alloc_reset_safe)
-        LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, tag...])
+        LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_size, tag...])
     elseif which in (:gc_alloc_typed, :gc_alloc_typed_reset_safe)
         # Julia 1.10 passes a null pointer instead of the tag
-        LLVM.FunctionType(p.T_prjlvalue, [T_ptr, T_size, isempty(tag) ? T_ptr : T_size])
+        LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_size, isempty(tag) ? T_ptr : T_size])
     else
         error("unknown GC intrinsic $which")
     end
 end
 
 # the name and type of a GC intrinsic or runtime function
-gc_declaration(p::GCLowering, which::Symbol) =
-    gc_declaration_name(p.dialect, which), gc_declaration_type(p, which)
+gc_declaration(g::GCCodegen, which::Symbol) =
+    gc_declaration_name(g.dialect, which), gc_declaration_type(g, which)
 
 """
     JuliaIR.DeclarationError
@@ -232,24 +373,24 @@ Base.showerror(io::IO, err::DeclarationError) =
 # a GC intrinsic or runtime function, declared if the module doesn't have it yet
 # (`JuliaPassContext::getOrDeclare`). An existing function is used whatever its type,
 # like the C++, unless `check`, which throws a `DeclarationError` for another type.
-function get_or_declare(p::GCLowering, which::Symbol; check::Bool=false)
-    name = gc_declaration_name(p.dialect, which)
-    existing = get(p.mod.functions, name, nothing)
+function get_or_declare(g::GCCodegen, which::Symbol; check::Bool=false)
+    name = gc_declaration_name(g.dialect, which)
+    existing = get(g.mod.functions, name, nothing)
     if existing !== nothing
         if check
-            ft = gc_declaration_type(p, which)
+            ft = gc_declaration_type(g, which)
             existing.function_type != ft &&
                 throw(DeclarationError(name, string(ft), string(existing.function_type)))
         end
         return existing
     end
-    f = LLVM.Function(p.mod, name, gc_declaration_type(p, which))
+    f = LLVM.Function(g.mod, name, gc_declaration_type(g, which))
     if which in (:gc_alloc_bytes, :gc_big_alloc, :gc_alloc_typed)
         push!(f.function_attributes, alloc_size_attr(1))
-        add_gc_alloc_attributes!(p, f)
+        add_gc_alloc_attributes!(g, f)
     elseif which === :gc_small_alloc
         push!(f.function_attributes, alloc_size_attr(2))
-        add_gc_alloc_attributes!(p, f)
+        add_gc_alloc_attributes!(g, f)
     elseif which in (:gc_big_alloc_reset_safe, :gc_alloc_typed_reset_safe)
         push!(f.function_attributes, alloc_size_attr(1))
         add_reset_safe_gc_alloc_attributes!(f)
@@ -259,77 +400,38 @@ function get_or_declare(p::GCLowering, which::Symbol; check::Bool=false)
     elseif which === :new_gc_frame
         push!(f.return_attributes, EnumAttribute("noalias"))
         push!(f.return_attributes, EnumAttribute("nonnull"))
-    elseif which in (:queue_gc_root, :gc_queue_root)
+    elseif which in (:queue_gc_root, :gc_queue_root, :safepoint)
         push!(f.function_attributes, inaccessible_or_arg_mem_only())
     end
     return f
 end
 
-function call_intrinsic!(p::GCLowering, which::Symbol, args::Vector{<:Value},
+function call_intrinsic!(g::GCCodegen, which::Symbol, args::Vector{<:Value},
                          name::String="")
-    f = get_or_declare(p, which)
-    return call!(p.builder, f.function_type, f, Value[args...], name)
+    f = get_or_declare(g, which)
+    return call!(g.builder, f.function_type, f, Value[args...], name)
 end
 
 
-## metadata and type tags
-
-i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
-
-# Julia's TBAA access tag for a type `name` under `parent` (or the root), and the type
-# node (`tbaa_make_child_with_context`)
-function tbaa_make_child(name::String, parent=nothing; constant::Bool=false)
-    jtbaa = MDNode([MDString("jtbaa")])
-    root = MDNode([MDString("jtbaa"), jtbaa, i64_metadata(0)])
-    scalar = MDNode([MDString(name), something(parent, root), i64_metadata(0)])
-    tag = constant ? MDNode([scalar, scalar, i64_metadata(0), i64_metadata(1)]) :
-                     MDNode([scalar, scalar, i64_metadata(0)])
-    return tag, scalar
-end
-
-tbaa_gcframe() = first(tbaa_make_child("jtbaa_gcframe"))
-tbaa_tag() = first(tbaa_make_child("jtbaa_tag", last(tbaa_make_child("jtbaa_data"))))
-tbaa_const() = first(tbaa_make_child("jtbaa_const"; constant=true))
-
-# Julia's TBAA access tags that the GC lowering passes attach (`tbaa_gcframe`, `tbaa_tag`
-# and `tbaa_const` of C++'s pass context), which a pass keeps once built (`tbaa_tags`)
-struct TBAATags
-    gcframe::MDNode
-    tag::MDNode
-    constant::MDNode
-end
-
-TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
-
-# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
-# invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
-    inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == constant
-        inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
-    end
-    return inst
-end
-
-value_name(@nospecialize(v::Value)) = LLVM.name(v)
+## type tags
 
 # the address of the type tag of an object: the word before it (`EmitTagPtr`)
-function emit_tag_ptr!(p::GCLowering, t::LLVMType, @nospecialize(v::Value))
-    name = p.dialect.gc_names ? value_name(v) * ".tag_addr" : ""
-    return inbounds_gep!(p.builder, t, v, [ConstantInt(p.T_size, -1)], name)
+function emit_tag_ptr!(g::GCCodegen, t::LLVMType, @nospecialize(v::Value))
+    name = g.dialect.gc_names ? LLVM.name(v) * ".tag_addr" : ""
+    return inbounds_gep!(g.builder, t, v, [ConstantInt(g.T_size, -1)], name)
 end
 
 # a load of the type tag of an object (`EmitLoadTag`)
-function emit_load_tag!(p::GCLowering, @nospecialize(v::Value))
-    addr = emit_tag_ptr!(p, p.T_size, v)
-    name = p.dialect.gc_names ? value_name(v) * ".tag" : ""
-    load = load!(p.builder, p.T_size, addr, name; align=pointer_align(p),
+function emit_load_tag!(g::GCCodegen, @nospecialize(v::Value))
+    addr = emit_tag_ptr!(g, g.T_size, v)
+    name = g.dialect.gc_names ? LLVM.name(v) * ".tag" : ""
+    load = load!(g.builder, g.T_size, addr, name; align=pointer_align(g),
                  ordering=LLVM.API.LLVMAtomicOrderingUnordered,
-                 volatile=p.dialect.gc_tag_load_volatile)
-    load.metadata[LLVM.MD_tbaa] = tbaa_tags(p).tag
+                 volatile=g.dialect.gc_tag_load_volatile)
+    load.metadata[LLVM.MD_tbaa] = tbaa_tags(g).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
-    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(p.T_size, TAG_ALIGNMENT),
-                                           i64_metadata_of(p.T_size, 0)])
+    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(g.T_size, JL_SMALL_BYTE_ALIGNMENT),
+                                           i64_metadata_of(g.T_size, 0)])
     return load
 end
 
@@ -385,15 +487,15 @@ end
 # when the parent is old and marked, and one of the children isn't marked (or, with
 # `:image`, the parent is in the system image but not yet in its remembered set), queue
 # the parent. Returns the `julia.queue_gc_root` call.
-function emit_write_barrier!(p::GCLowering, ci::Instruction, @nospecialize(parent::Value),
+function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent::Value),
                              children::Vector{<:Value}, lowering::Symbol, debug_info::Int)
-    builder = p.builder
-    T_size = p.T_size
+    builder = g.builder
+    T_size = g.T_size
     named = lowering in (:named, :image)
     set_name!(v, name) = (lowering === :debug_named && debug_info >= 2 &&
                           !(v isa LLVM.Constant)) && (v.name = name)
     position_before!(builder, ci; debug=true)
-    par_tag = emit_load_tag!(p, parent)
+    par_tag = emit_load_tag!(g, parent)
     par_bits = and!(builder, par_tag, ConstantInt(T_size, GC_OLD_MARKED),
                     named ? "parent_bits" : "")
     set_name!(par_bits, "parent_bits")
@@ -418,7 +520,7 @@ function emit_write_barrier!(p::GCLowering, ci::Instruction, @nospecialize(paren
     end
     any_child_not_marked = nothing
     for child in children
-        child_bit = and!(builder, emit_load_tag!(p, child), ConstantInt(T_size, GC_MARKED),
+        child_bit = and!(builder, emit_load_tag!(g, child), ConstantInt(T_size, GC_MARKED),
                          named ? "child_bit" : "")
         set_name!(child_bit, "child_bit")
         child_not_marked = icmp!(builder, LLVM.API.LLVMIntEQ, child_bit,
@@ -436,5 +538,146 @@ function emit_write_barrier!(p::GCLowering, ci::Instruction, @nospecialize(paren
     named && (trig_block.name = "trigger_wb")
     set_name!(trig_block, "trigger_wb")
     position_before!(builder, trig_term; debug=true)
-    return call_intrinsic!(p, :queue_gc_root, Value[parent])
+    return call_intrinsic!(g, :queue_gc_root, Value[parent])
 end
+
+
+## the task, safepoints and GC states
+
+# Code that reaches the current task's thread-local state from its GC stack, polls
+# safepoints and switches the GC state, as emitted by the helpers of Julia's
+# `llvm-codegen-shared.h` (`get_current_task_from_pgcstack`, `get_current_ptls_from_task`,
+# `get_current_signal_page_from_ptls`, `emit_gc_safepoint`, `emit_gc_state_set`).
+
+# the current task, from its GC stack (`get_current_task_from_pgcstack`)
+function current_task_from_pgcstack!(g::GCCodegen, @nospecialize(pgcstack::Value))
+    offset = g.layout.task_gcstack
+    if g.dialect.gc_ptls_gep === :pointer
+        # (the C++ negates the quotient as an unsigned number, which the constant of the
+        # pointer-sized type truncates to the same value)
+        return inbounds_gep!(g.builder, LLVM.PointerType(AS_GENERIC), pgcstack,
+                             [ConstantInt(g.T_size, -(offset ÷ pointer_size(g)))],
+                             "current_task")
+    else
+        return inbounds_gep!(g.builder, LLVM.Int8Type(), pgcstack,
+                             [ConstantInt(LLVM.Int32Type(), -offset)], "current_task")
+    end
+end
+
+# the thread-local state of a task (`get_current_ptls_from_task`)
+function current_ptls_from_task!(g::GCCodegen, @nospecialize(task::Value), tbaa::MDNode)
+    offset = g.layout.task_ptls
+    T_ptr = LLVM.PointerType(AS_GENERIC)
+    pptls = if g.dialect.gc_ptls_gep === :pointer
+        inbounds_gep!(g.builder, T_ptr, task,
+                      [ConstantInt(g.T_size, offset ÷ pointer_size(g))], "ptls_field")
+    else
+        inbounds_gep!(g.builder, LLVM.Int8Type(), task,
+                      [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
+    end
+    ptls_load = load!(g.builder, T_ptr, pptls, "ptls_load"; align=pointer_align(g))
+    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(g).constant)
+    return ptls_load
+end
+
+# the safepoint page of a thread (`get_current_signal_page_from_ptls`), without TBAA when
+# `tbaa` is `nothing`
+function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value),
+                                tbaa::Union{Nothing,MDNode})
+    T_ptr = LLVM.PointerType(AS_GENERIC)
+    offset = g.layout.tls_safepoint
+    style = g.dialect.gc_safepoint_load
+    psafepoint = if g.dialect.gc_ptls_gep === :pointer
+        inbounds_gep!(g.builder, T_ptr, ptls,
+                      [ConstantInt(g.T_size, offset ÷ pointer_size(g))])
+    else
+        inbounds_gep!(g.builder, LLVM.Int8Type(), ptls,
+                      [ConstantInt(LLVM.Int32Type(), offset)],
+                      style === :monotonic_named ? "safepoint_addr" : "")
+    end
+    load = load!(g.builder, T_ptr, psafepoint, "safepoint"; align=pointer_align(g),
+                 ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
+                                             LLVM.API.LLVMAtomicOrderingMonotonic)
+    tbaa === nothing || tbaa_decorate!(tbaa, load, tbaa_tags(g).constant)
+    return load
+end
+
+emit_signal_fence!(g::GCCodegen) =
+    fence!(g.builder, LLVM.API.LLVMAtomicOrderingSequentiallyConsistent; scope="singlethread")
+
+# A safepoint (`emit_gc_safepoint`): with `final`, a volatile load from the safepoint
+# page, which faults when the GC wants this thread to stop; otherwise a call of
+# `julia.safepoint` on the page, which FinalLowerGC lowers to that load.
+function emit_gc_safepoint!(g::GCCodegen, @nospecialize(ptls::Value),
+                            tbaa::Union{Nothing,MDNode}; final::Bool)
+    signal_page = signal_page_from_ptls!(g, ptls, tbaa)
+    emit_signal_fence!(g)
+    if final
+        load!(g.builder, g.T_size, signal_page; volatile=true)
+    else
+        call_intrinsic!(g, :safepoint, Value[signal_page])
+    end
+    emit_signal_fence!(g)
+    return
+end
+
+# the address of the thread's GC state (a byte)
+gc_state_address!(g::GCCodegen, @nospecialize(ptls::Value)) =
+    inbounds_gep!(g.builder, LLVM.Int8Type(), ptls,
+                  [ConstantInt(LLVM.Int32Type(), g.layout.tls_gc_state)], "gc_state")
+
+# Julia's C++ stores the byte with the alignment of a pointer, which only holds where the
+# offset is a multiple of it.
+const GC_STATE_ALIGN = 1
+
+# Set the thread's GC state to `state`, and poll a final safepoint when the dialect's
+# condition holds (`emit_gc_state_set(..., final=true)`). The current state is loaded
+# unless `old_state` is given. The safepoint goes in two new blocks at the end of the
+# function, and the builder is left at the end of the second. Returns the old state.
+function emit_gc_state_set!(g::GCCodegen, @nospecialize(ptls::Value), state::Value,
+                            old_state::Union{Nothing,Value})
+    builder = g.builder
+    T_int8 = LLVM.Int8Type()
+    condition = g.dialect.gc_state_condition
+    gc_state = gc_state_address!(g, ptls)
+    if old_state === nothing
+        old_state = load!(builder, T_int8, gc_state, condition === :ne ? "old_state" : "";
+                          ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+    end
+    store!(builder, state, gc_state; align=GC_STATE_ALIGN,
+           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+    if condition === :ne
+        old_state isa ConstantInt && state isa ConstantInt &&
+            convert(UInt64, old_state) == convert(UInt64, state) && return old_state
+    else
+        old_state isa ConstantInt && iszero(convert(UInt64, old_state)) && return old_state
+        state isa ConstantInt && !iszero(convert(UInt64, state)) && return old_state
+    end
+    f = LLVM.parent(builder.insert_block)
+    pass_bb = BasicBlock(f, "safepoint")
+    exit_bb = BasicBlock(f, "after_safepoint")
+    zero8 = ConstantInt(T_int8, 0)
+    cond = if condition === :and
+        and!(builder, icmp!(builder, LLVM.API.LLVMIntNE, old_state, zero8),
+             icmp!(builder, LLVM.API.LLVMIntEQ, state, zero8))
+    elseif condition === :or
+        or!(builder, icmp!(builder, LLVM.API.LLVMIntEQ, old_state, zero8),
+            icmp!(builder, LLVM.API.LLVMIntEQ, state, zero8))
+    else
+        icmp!(builder, LLVM.API.LLVMIntNE, old_state, state, "is_new_state")
+    end
+    br!(builder, cond, pass_bb, exit_bb)
+    position!(builder, LLVM.at_end(pass_bb))
+    emit_gc_safepoint!(g, ptls, tbaa_tags(g).constant; final=true)
+    br!(builder, exit_bb)
+    position!(builder, LLVM.at_end(exit_bb))
+    return old_state
+end
+
+# enter the GC-unsafe state (`emit_gc_unsafe_enter(..., final=true)`)
+emit_gc_unsafe_enter!(g::GCCodegen, @nospecialize(ptls::Value)) =
+    emit_gc_state_set!(g, ptls, ConstantInt(LLVM.Int8Type(), 0), nothing)
+
+# leave the GC-unsafe state for `state` (`emit_gc_unsafe_leave(..., final=true)`)
+emit_gc_unsafe_leave!(g::GCCodegen, @nospecialize(ptls::Value), state::Value) =
+    emit_gc_state_set!(g, ptls, state, ConstantInt(LLVM.Int8Type(), 0))

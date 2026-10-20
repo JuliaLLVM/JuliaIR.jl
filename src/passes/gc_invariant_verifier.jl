@@ -206,7 +206,7 @@ end
 
 const GC_INVARIANT_VERIFIER = define_pass("jl-gc-invariant-verifier", :function,
                                           gc_invariant_verifier!; required=true,
-                                          extra=(; strong=false),
+                                          options=(; strong=false),
                                           cpp_name="GCInvariantVerifier")
 
 """

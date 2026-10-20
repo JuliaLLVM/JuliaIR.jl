@@ -69,41 +69,138 @@ function clone_call!(builder::IRBuilder, call::Instruction,
 end
 
 
-## TBAA
+## types, by reference
+
+const TypeRef = API.LLVMTypeRef
+const ValueRef = API.LLVMValueRef
+
+type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
+vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
+
+is_pointer_type(t::TypeRef) = type_kind(t) == API.LLVMPointerTypeKind
+is_vector_type(t::TypeRef) = type_kind(t) in (API.LLVMVectorTypeKind,
+                                              API.LLVMScalableVectorTypeKind)
+is_struct_type(t::TypeRef) = type_kind(t) == API.LLVMStructTypeKind
+is_array_type(t::TypeRef) = type_kind(t) == API.LLVMArrayTypeKind
+type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
+
+function array_length(t::TypeRef)
+    return LLVM.version() >= v"17" ? Int(API.LLVMGetArrayLength2(t)) :
+                                     Int(API.LLVMGetArrayLength(t))
+end
+
+# the number of elements of a struct, array or vector type (the minimum for scalable
+# vectors), like `getCompositeNumElements`
+function composite_num_elements(t::TypeRef)
+    is_struct_type(t) && return Int(API.LLVMCountStructElementTypes(t))
+    is_array_type(t) && return array_length(t)
+    return Int(API.LLVMGetVectorSize(t))
+end
+
+# the type of element `i` (0-based) of a struct, array or vector type
+composite_element_type(t::TypeRef, i::Integer) =
+    is_struct_type(t) ? API.LLVMStructGetTypeAtIndex(t, i) : API.LLVMGetElementType(t)
+
+# the types contained in a struct, array or vector type (`Type::subtypes`)
+function subtypes(t::TypeRef)
+    is_struct_type(t) || return [API.LLVMGetElementType(t)]
+    return [API.LLVMStructGetTypeAtIndex(t, i) for i in 0:composite_num_elements(t)-1]
+end
+
+is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_type(t)
+
+
+## values, calls and attributes
+
+# the type of a value, by its reference
+typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
+
+const LIFETIME_START = Intrinsic("llvm.lifetime.start")
+const LIFETIME_END = Intrinsic("llvm.lifetime.end")
+
+# whether a function is one of the intrinsics of debug records (`llvm.dbg.*`)
+is_debug_intrinsic(f::LLVM.Function) = startswith(LLVM.name(f), "llvm.dbg.")
+
+# whether `callee` is the function `f`, which may be absent (`nothing`)
+is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
+
+# the integer of a constant, at most INT_MAX (`getLimitedValue(INT_MAX)`)
+limited_value(c::LLVM.ConstantInt) = min(convert(UInt64, c), UInt64(typemax(Int32)))
+
+# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
+function called_function(call::Instruction)
+    callee = call.called_operand
+    callee isa LLVM.Function || return nothing
+    callee.function_type == call.called_type || return nothing
+    return callee
+end
+
+# whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
+function is_intrinsic_call(call::Instruction)
+    callee = called_function(call)
+    return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
+end
+
+intrinsic_is(call::Instruction, intr::Intrinsic) =
+    let callee = called_function(call)
+        callee !== nothing && LLVM.isintrinsic(callee) && callee.intrinsic == intr
+    end
+
+# `Module::getOrInsertFunction`: whatever global has the name (a function of another
+# type, an alias) is called with `ft`
+function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
+    f = get(mod.functions, name, nothing)
+    f === nothing || return f
+    for lookup in (API.LLVMGetNamedGlobalAlias, API.LLVMGetNamedGlobalIFunc)
+        ref = lookup(mod, name, length(name))
+        ref == C_NULL || return LLVM.Value(ref)
+    end
+    ref = API.LLVMGetNamedGlobal(mod, name)
+    ref == C_NULL || return LLVM.Value(ref)
+    return LLVM.Function(mod, name, ft)
+end
+
+# position the builder before `inst`, with `inst`'s debug location like C++'s
+# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
+function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
+    position!(builder, LLVM.before(inst))
+    builder.debug_location = debug ? inst.debug_location : nothing
+end
+
+# `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
+# function type differs from the function's (unlike `called_function`); `kind` is the
+# name of an LLVM attribute (a symbol) or of a string attribute
+function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
+    haskey(call.function_attributes, kind) && return true
+    callee = call.called_operand
+    return callee isa LLVM.Function && haskey(callee.function_attributes, kind)
+end
+
+can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
+
+# the attributes of a function, on a call of it
+function copy_function_attributes!(call::Instruction, f::LLVM.Function)
+    for attr in collect(f.function_attributes)
+        push!(call.function_attributes, attr)
+    end
+    for attr in collect(f.return_attributes)
+        push!(call.return_attributes, attr)
+    end
+    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
+        push!(call.argument_attributes[i], attr)
+    end
+end
+
+
+## metadata
+
+i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 
 # the integer in a `ConstantAsMetadata` operand
 metadata_int(md::Metadata) = convert(Int, Value(md))
 
-# Whether the access tag `tag`, or a type it derives from up to the root, has one of
-# `names`, like Julia's `isTBAA`.
-function tbaa_derives_from(tag::MDNode, names)
-    node = tag
-    while length(node.operands) > 1
-        parent = node.operands[2]
-        parent isa MDNode && !isempty(parent.operands) || return false
-        name = parent.operands[1]
-        name isa MDString || return false
-        convert(String, name) in names && return true
-        node = parent
-    end
-    return false
-end
 
-# The access tag `tag` without its immutability flag, like LLVM's
-# `MDBuilder::createMutableTBAAAccessTag`: the tag itself if it is mutable, otherwise a
-# new tag `!{base, access, i64 offset}`, or `!{base, access, i64 offset, i64 size}` for the
-# new TBAA format (whose access types aren't named by a string).
-function mutable_tbaa_tag(tag::MDNode)
-    ops = tag.operands
-    base, access = ops[1], ops[2]
-    new_format = access.operands[1] isa MDNode
-    flag = new_format ? 5 : 4
-    length(ops) < flag && return tag
-    metadata_int(ops[flag]) == 0 && return tag
-    i64(op) = Metadata(ConstantInt(LLVM.Int64Type(), metadata_int(op)))
-    return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
-                        MDNode([base, access, i64(ops[3])])
-end
+## uses and opcodes
 
 # whether `v` has exactly one use (C++'s `hasOneUse`: `fadd %m, %m` uses `%m` twice)
 function has_one_use(@nospecialize(v::Value))

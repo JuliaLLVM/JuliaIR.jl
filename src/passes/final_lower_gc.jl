@@ -6,32 +6,22 @@
 # fields of `Dialect`, deviations from the C++ are documented in
 # docs/src/final_lower_gc.md.
 
-mutable struct FinalLowerGC <: GCLowering
+mutable struct FinalLowerGC
     dialect::Dialect
     mod::LLVM.Module
     builder::IRBuilder
-    dl::DataLayout
-    T_prjlvalue::LLVMType
-    T_size::LLVMType
+    gc::GCCodegen
     # the GC stack of the function being lowered: a call in the entry block, or an argument
     pgcstack::Union{Nothing,Value}
     # the runtime functions the intrinsics are lowered to, once declared
     runtime::Dict{Symbol,LLVM.Function}
     cfg_modified::Bool
-    # built on first use (`tbaa_tags`)
-    tbaa::Union{Nothing,TBAATags}
 end
 
 function FinalLowerGC(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder)
-    dl = mod.datalayout
-    return FinalLowerGC(dialect, mod, builder, dl, LLVM.PointerType(AS_TRACKED),
-                        LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC))),
-                        nothing, Dict{Symbol,LLVM.Function}(), false, nothing)
-end
-
-function tbaa_tags(p::FinalLowerGC)
-    p.tbaa === nothing && (p.tbaa = TBAATags())
-    return p.tbaa::TBAATags
+    gc = GCCodegen(dialect, mod, builder, runtime_layout(dialect, mod))
+    return FinalLowerGC(dialect, mod, builder, gc, nothing, Dict{Symbol,LLVM.Function}(),
+                        false)
 end
 
 # the runtime functions that FinalLowerGC declares, in the order the C++ declares them
@@ -44,7 +34,7 @@ runtime_functions(dialect::Dialect) =
 
 function declare_runtime_functions!(p::FinalLowerGC)
     for which in runtime_functions(p.dialect)
-        p.runtime[which] = get_or_declare(p, which; check=true)
+        p.runtime[which] = get_or_declare(p.gc, which; check=true)
     end
     return [p.runtime[which] for which in runtime_functions(p.dialect)]
 end
@@ -73,14 +63,14 @@ end
 function check_declarations(p::FinalLowerGC, functions)
     mod = p.mod
     for which in runtime_functions(p.dialect)
-        name, ft = gc_declaration(p, which)
+        name, ft = gc_declaration(p.gc, which)
         existing = get(mod.functions, name, nothing)
         existing === nothing || existing.function_type == ft ||
             throw(DeclarationError(name, string(ft), string(existing.function_type)))
     end
     queue_root = get(mod.functions, "julia.queue_gc_root", nothing)
     queue_root === nothing && return
-    name, ft = gc_declaration(p, :gc_queue_root)
+    name, ft = gc_declaration(p.gc, :gc_queue_root)
     if any(call -> parent_function(call) in functions && !isempty(barrier_children(call)),
            barrier_calls(p))
         queue_root.function_type == ft ||
@@ -119,17 +109,15 @@ should_run_final_gc(p::FinalLowerGC) =
 
 ## positions
 
-const DBG_PREFIX = "llvm.dbg."
-
-is_debug_intrinsic(inst::Instruction) =
+is_debug_intrinsic_call(inst::Instruction) =
     inst isa LLVM.CallInst && (callee = called_function(inst)) !== nothing &&
-    startswith(LLVM.name(callee), DBG_PREFIX)
+    is_debug_intrinsic(callee)
 
 # the debug location that C++'s `IRBuilder` takes from the instruction it is positioned
 # at (`getStableDebugLoc` from LLVM 18 on: the next instruction's for a debug intrinsic)
 function stable_debug_location(inst::Instruction)
     if LLVM.version() >= v"18"
-        while is_debug_intrinsic(inst) && inst.next !== nothing
+        while is_debug_intrinsic_call(inst) && inst.next !== nothing
             inst = inst.next
         end
     end
@@ -155,7 +143,7 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     nroots = Int(limited_value(target.arguments[1]::LLVM.ConstantInt))
     position_for!(p, target; after=p.dialect.gc_final_debugloc_next)
     T_int32 = LLVM.Int32Type()
-    frame_alloca = array_alloca!(builder, p.T_prjlvalue, ConstantInt(T_int32, nroots + 2))
+    frame_alloca = array_alloca!(builder, p.gc.T_prjlvalue, ConstantInt(T_int32, nroots + 2))
     # LateLowerGCFrame records a stronger alignment that allocas moved into the frame need
     # (Julia 1.13, adopted for every version)
     LLVM.alignment!(frame_alloca, max(16, something(ret_align(target), 1)))
@@ -165,10 +153,10 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     # the frame is zeroed with a non-volatile memset that only aliases the frame (Julia
     # 1.14 and later; up to 1.13, a volatile one without TBAA, which keeps it from being
     # removed)
-    size = pointer_size(p) * (nroots + 2)
+    size = pointer_size(p.gc) * (nroots + 2)
     memset = memset!(builder, gcframe, ConstantInt(LLVM.Int8Type(), 0),
                      ConstantInt(LLVM.Int64Type(), size), 16)
-    memset.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
+    memset.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
     replace_uses!(target, gcframe)
     erase!(target)
 end
@@ -181,19 +169,19 @@ function lower_push_gc_frame!(p::FinalLowerGC, target::Instruction)
     names = p.dialect.gc_names
     T_int32 = LLVM.Int32Type()
     T_ptr = LLVM.PointerType(AS_GENERIC)
-    align = pointer_align(p)
+    align = pointer_align(p.gc)
     position_for!(p, target; after=p.dialect.gc_final_debugloc_next)
-    nroots_addr = inbounds_gep!(builder, p.T_prjlvalue, gcframe, [ConstantInt(T_int32, 0)],
+    nroots_addr = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [ConstantInt(T_int32, 0)],
                                 names ? "frame.nroots" : "")
     # `JL_GC_ENCODE_PUSHARGS`
-    store = store!(builder, ConstantInt(p.T_size, nroots << 2), nroots_addr; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
+    store = store!(builder, ConstantInt(p.gc.T_size, nroots << 2), nroots_addr; align)
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
     # in the order of the C++ (whose compilers evaluate the store's operands right to left)
-    prev_addr = inbounds_gep!(builder, p.T_prjlvalue, gcframe, [ConstantInt(T_int32, 1)],
+    prev_addr = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [ConstantInt(T_int32, 1)],
                               names ? "frame.prev" : "")
     prev = load!(builder, T_ptr, p.pgcstack, names ? "task.gcstack" : ""; align)
     store = store!(builder, prev, prev_addr; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
     store!(builder, gcframe, p.pgcstack; align)
     erase!(target)
 end
@@ -202,15 +190,15 @@ end
 function lower_pop_gc_frame!(p::FinalLowerGC, target::Instruction)
     builder = p.builder
     gcframe = target.arguments[1]
-    align = pointer_align(p)
+    align = pointer_align(p.gc)
     position_for!(p, target)
-    prev_addr = inbounds_gep!(builder, p.T_prjlvalue, gcframe,
+    prev_addr = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe,
                               [ConstantInt(LLVM.Int32Type(), 1)])
-    prev = load!(builder, p.T_prjlvalue, prev_addr, p.dialect.gc_names ? "frame.prev" : "";
+    prev = load!(builder, p.gc.T_prjlvalue, prev_addr, p.dialect.gc_names ? "frame.prev" : "";
                  align)
-    prev.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
+    prev.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
     store = store!(builder, prev, p.pgcstack; align)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p).gcframe
+    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
     erase!(target)
 end
 
@@ -220,14 +208,13 @@ function lower_get_gc_frame_slot!(p::FinalLowerGC, target::Instruction)
     gcframe, index = target.arguments
     position_for!(p, target)
     index = add!(builder, index, ConstantInt(LLVM.Int32Type(), GC_FRAME_HEADER_SLOTS))
-    gep = inbounds_gep!(builder, p.T_prjlvalue, gcframe, [index])
+    gep = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [index])
     take_name!(gep, target)
     replace_uses!(target, gep)
     erase!(target)
 end
 
-has_reset_region(inst::Instruction) =
-    metadata_by_name(inst, "julia.reset_region") !== nothing
+has_reset_region(inst::Instruction) = haskey(inst.metadata, "julia.reset_region")
 
 # `julia.queue_gc_root(v)`: the runtime's function, called in place
 function lower_queue_gc_root!(p::FinalLowerGC, target::Instruction)
@@ -244,7 +231,7 @@ end
 # protects to stop the thread
 function lower_safepoint!(p::FinalLowerGC, target::Instruction)
     position_for!(p, target)
-    load!(p.builder, p.T_size, target.arguments[1]; volatile=true)
+    load!(p.builder, p.gc.T_size, target.arguments[1]; volatile=true)
     erase!(target)
 end
 
@@ -273,7 +260,7 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
         class = gc_pool_class(dialect, sz)
         if class === nothing
             callee = runtime(:gc_big_alloc)
-            call_args = Value[ptls, ConstantInt(p.T_size, sz + pointer_size(p)), tag...]
+            call_args = Value[ptls, ConstantInt(p.gc.T_size, sz + pointer_size(p.gc)), tag...]
         else
             offset, osize = class
             callee = runtime(:gc_small_alloc)
@@ -287,13 +274,13 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
         # the typed allocation function doesn't count the type tag in the size
         callee = runtime(:gc_alloc_typed)
         tag_arg = isempty(tag) ? LLVM.null(LLVM.PointerType(AS_GENERIC)) : tag[1]
-        call_args = Value[ptls, zext_or_trunc!(builder, size, p.T_size), tag_arg]
-        deref = UInt64(pointer_size(p))
+        call_args = Value[ptls, zext_or_trunc!(builder, size, p.gc.T_size), tag_arg]
+        deref = UInt64(pointer_size(p.gc))
     end
     new_call = call!(builder, callee.function_type, callee, call_args)
     copy_function_attributes!(new_call, callee)
     if dialect.gc_alloc_bytes_tag
-        align = max(something(ret_align(target), 1), pointer_align(p))
+        align = max(something(ret_align(target), 1), pointer_align(p.gc))
         push!(new_call.return_attributes, EnumAttribute("align", align))
     end
     deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
@@ -319,11 +306,10 @@ function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     children = barrier_children(target)
     isempty(children) && return
     p.cfg_modified = true
-    queue_root = emit_write_barrier!(p, target, parent, children, :image, 1)
+    queue_root = emit_write_barrier!(p.gc, target, parent, children, :image, 1)
     # the slow path runs in the barrier's cancellation reset region, if any
-    reset_region = metadata_by_name(target, "julia.reset_region")
-    reset_region === nothing ||
-        set_metadata_by_name!(queue_root, "julia.reset_region", reset_region)
+    reset_region = get(target.metadata, "julia.reset_region", nothing)
+    reset_region === nothing || (queue_root.metadata["julia.reset_region"] = reset_region)
 end
 
 
@@ -399,7 +385,7 @@ function final_lower_gc_function!(p::FinalLowerGC, f::LLVM.Function; declare::Bo
     return p.cfg_modified ? :cfg_changed : :changed
 end
 
-preserved(result::Symbol) =
+final_lower_gc_preserved(result::Symbol) =
     result === :skipped ? PreservedAnalyses(AllAnalyses) :
     result === :changed ? PreservedAnalyses(CFGAnalyses) : PreservedAnalyses()
 
@@ -408,7 +394,7 @@ preserved(result::Symbol) =
 function final_lower_gc!(f::LLVM.Function, am, opts::PassOptions)
     @dispose builder=IRBuilder() begin
         p = FinalLowerGC(opts.dialect, LLVM.parent(f), builder)
-        return preserved(final_lower_gc_function!(p, f; declare=true))
+        return final_lower_gc_preserved(final_lower_gc_function!(p, f; declare=true))
     end
 end
 

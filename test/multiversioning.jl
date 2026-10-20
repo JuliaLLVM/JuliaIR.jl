@@ -93,15 +93,17 @@ end
         end
     end
 
-    # the module's targets, or the option's
+    # the module's targets, or the option's, which can't be empty
+    @test_throws ArgumentError("option targets of pass jl-multiversioning must be a non-empty vector of MultiVersioningTarget or `nothing`") JuliaIR.MultiVersioningPass(; targets=MultiVersioningTarget[])
     ts = targets[1:3]
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("test") begin
-        @test_throws "no julia.mv.specs flag and no targets were given" JuliaIR.resolve_targets(mod, MultiVersioningTarget[], dialect)
+        @test_throws "no julia.mv.specs flag and no targets were given" JuliaIR.resolve_targets(mod, nothing, dialect)
         @test JuliaIR.resolve_targets(mod, ts, dialect) ==
               ([JuliaIR.normalize_target(t, dialect) for t in ts], true)
         JuliaIR.set_target_specs!(mod, ts, dialect)
-        @test JuliaIR.resolve_targets(mod, MultiVersioningTarget[], dialect) ==
+        @test JuliaIR.resolve_targets(mod, nothing, dialect) ==
               (JuliaIR.target_specs(mod, dialect), false)
+        @test_throws "differ from the module's julia.mv.specs" JuliaIR.resolve_targets(mod, MultiVersioningTarget[], dialect)
         @test JuliaIR.resolve_targets(mod, ts, dialect) ==
               (JuliaIR.target_specs(mod, dialect), false)
         @test_throws "differ from the module's julia.mv.specs" JuliaIR.resolve_targets(mod, ts[1:2], dialect)
@@ -447,7 +449,7 @@ function clone_module(f, ir::String, d::Dialect=dialect; targets=two_targets, ex
         try
             datalayout === nothing || (mod.datalayout = datalayout)
             JuliaIR.set_target_specs!(mod, targets, d)
-            JuliaIR.run_multiversioning!(mod, nothing, d, external, MultiVersioningTarget[])
+            JuliaIR.run_multiversioning!(mod, nothing, d, external, nothing)
             verify(mod)
             return f(mod)
         finally
@@ -717,7 +719,7 @@ end
             JuliaIR.set_target_specs!(mod, targets, d)
             before = string(mod)
             err = try
-                JuliaIR.run_multiversioning!(mod, nothing, d, false, MultiVersioningTarget[])
+                JuliaIR.run_multiversioning!(mod, nothing, d, false, nothing)
                 nothing
             catch err
                 err

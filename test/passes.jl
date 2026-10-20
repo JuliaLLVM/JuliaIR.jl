@@ -100,7 +100,7 @@ end
 
 @testset "GCInvariantVerifier" begin
     @test JuliaIR.GCInvariantVerifierPass().required
-    @test_throws "must be a Bool" JuliaIR.GCInvariantVerifierPass(; strong=1)
+    @test_throws ArgumentError("option strong of pass jl-gc-invariant-verifier must be true or false") JuliaIR.GCInvariantVerifierPass(; strong=1)
     ir = """
         define ptr addrspace(11) @f(ptr addrspace(10) %obj, ptr %p) {
           %derived = addrspacecast ptr addrspace(10) %obj to ptr addrspace(11)
@@ -765,7 +765,7 @@ end
     no_handlers = ir(; triple="armv7-unknown-linux-gnueabihf", call=false)
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, no_handlers) begin
         before = string(mod)
-        opts = JuliaIR.parse_options(""; extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+        opts = JuliaIR.parse_options(""; options=JuliaIR.LOWER_EXC_HANDLERS.options)
         @test JuliaIR.lower_exc_handlers!(mod.functions["f"], nothing, opts) ==
               PreservedAnalyses(AllAnalyses)
         @test string(mod) == before
@@ -827,16 +827,18 @@ end
             end
             # the signature of setjmp, explicitly
             out = lower(""; handler_size=264, handler_align=16, setjmp="__sigsetjmp",
-                        setjmp_savemask=:no)
+                        setjmp_savemask=false)
             @test occursin("call i32 @__sigsetjmp(ptr %1)", out)
             out = lower("x86_64-w64-mingw32"; handler_size=320, handler_align=16,
-                        setjmp="jl_setjmp", setjmp_savemask=:yes)
+                        setjmp="jl_setjmp", setjmp_savemask=true)
             @test occursin("call i32 @jl_setjmp(ptr %1, i32 0)", out)
             opts = JuliaIR.parse_options("setjmp-savemask=no";
-                                         extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
-            @test opts.extra.setjmp_savemask === :no
-            @test_throws "invalid option setjmp-savemask" lower(""; handler_size=264,
-                handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:maybe)
+                                         options=JuliaIR.LOWER_EXC_HANDLERS.options)
+            @test opts.extra.setjmp_savemask === false
+            @test_throws ArgumentError("option setjmp-savemask requires yes or no") JuliaIR.parse_options(
+                "setjmp-savemask=auto"; options=JuliaIR.LOWER_EXC_HANDLERS.options)
+            @test_throws "must be true, false or `nothing`" lower(""; handler_size=264,
+                handler_align=16, setjmp="__sigsetjmp", setjmp_savemask=:auto)
         end
 
         @testset "lowering" begin
@@ -852,7 +854,7 @@ end
                 before = string(mod)
                 f = mod.functions["f"]
                 opts = JuliaIR.parse_options("handler-size=200;handler-align=16;setjmp=sigsetjmp";
-                                             extra=JuliaIR.LOWER_EXC_HANDLERS.extra)
+                                             options=JuliaIR.LOWER_EXC_HANDLERS.options)
                 err = try
                     JuliaIR.lower_exc_handlers!(f, nothing, opts)
                     nothing
@@ -890,7 +892,7 @@ end
         }"""
     function lower(ir_str, options="")
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir_str) begin
-            opts = JuliaIR.parse_options(options; extra=JuliaIR.LOWER_PTLS.extra)
+            opts = JuliaIR.parse_options(options; options=JuliaIR.LOWER_PTLS.options)
             pa = JuliaIR.lower_ptls!(mod, nothing, opts)
             verify(mod)
             return pa, string(mod)
@@ -899,17 +901,17 @@ end
 
     @testset "options" begin
         opts = JuliaIR.parse_options("imaging;tls-elf-support=no;tls-offset=-1;pgcstack-getter=0x10;pgcstack-key=32";
-                                     extra=JuliaIR.LOWER_PTLS.extra)
+                                     options=JuliaIR.LOWER_PTLS.options)
         @test opts.extra.imaging
         @test !opts.extra.tls_getters
-        @test opts.extra.tls_offset == JuliaIR.Optional{Int}(-1)
-        @test opts.extra.pgcstack_getter == JuliaIR.Optional{UInt}(0x10)
-        @test opts.extra.pgcstack_key == JuliaIR.Optional{UInt}(32)
+        @test opts.extra.tls_offset === -1
+        @test opts.extra.pgcstack_getter === UInt(0x10)
+        @test opts.extra.pgcstack_key === UInt(32)
         # unspecified facts are read from the running Julia, when needed
-        opts = JuliaIR.parse_options(""; extra=JuliaIR.LOWER_PTLS.extra)
-        @test opts.extra.tls_offset == JuliaIR.Optional{Int}()
-        @test_throws "requires an address" JuliaIR.parse_options("pgcstack-getter=-1";
-                                                                 extra=JuliaIR.LOWER_PTLS.extra)
+        opts = JuliaIR.parse_options(""; options=JuliaIR.LOWER_PTLS.options)
+        @test opts.extra.tls_offset === nothing
+        @test_throws ArgumentError("option pgcstack-getter requires an address (a non-negative integer)") JuliaIR.parse_options("pgcstack-getter=-1";
+                                                                 options=JuliaIR.LOWER_PTLS.options)
         @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
                                     pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
         if dialect.ptls_jit_getter === :resolved
@@ -945,7 +947,7 @@ end
         function rejection(ir_str, options)
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir_str) begin
                 before = string(mod)
-                opts = JuliaIR.parse_options(options; extra=JuliaIR.LOWER_PTLS.extra)
+                opts = JuliaIR.parse_options(options; options=JuliaIR.LOWER_PTLS.options)
                 err = try
                     JuliaIR.lower_ptls!(mod, nothing, opts)
                     nothing
@@ -1202,7 +1204,7 @@ end
           call void @llvm.julia.gc_preserve_end(token %tok)
           ret void
         }"""
-    opts = JuliaIR.parse_options(""; extra=JuliaIR.CANCELLATION_LOWERING.extra)
+    opts = JuliaIR.parse_options(""; options=JuliaIR.CANCELLATION_LOWERING.options)
     lower(mod, name) = JuliaIR.cancellation_lowering!(mod.functions[name], nothing, opts)
 
     if !dialect.has_cancellation_lowering
@@ -1532,9 +1534,10 @@ end
     @test JuliaIR.CPUFeaturesPass().required
 
     # the target can only be given as keyword arguments
-    @test_throws "target_cpu must be a string" JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
+    @test_throws ArgumentError("option target_cpu of pass jl-cpu-features must be a string or `nothing`") JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
+    @test_throws ArgumentError("option target_machine of pass jl-cpu-features must be an LLVM.TargetMachine or `nothing`") JuliaIR.CPUFeaturesPass(; target_machine="x86")
     @dispose pb=PassBuilder() begin
-        @test_throws "target_cpu must be a string" JuliaIR.register!(pb;
+        @test_throws "target_cpu of pass jl-cpu-features must be a string" JuliaIR.register!(pb;
             options=Dict("jl-cpu-features" => (; target_cpu=42)))
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") pb=PassBuilder() begin
@@ -1572,7 +1575,7 @@ end
     end
 
     @testset "preserved analyses" begin
-        opts = JuliaIR.parse_options(""; extra=JuliaIR.CPU_FEATURES.extra)
+        opts = JuliaIR.parse_options(""; options=JuliaIR.CPU_FEATURES.options)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
                 declare i1 @julia.cpu.have_fma.f64()
                 define i1 @f() "target-features"="+fma" {
