@@ -8,6 +8,8 @@ include("dialect.jl")
 include("registration.jl")
 include("runtime.jl")
 include("jlopt.jl")
+# `@main` is new in Julia 1.11
+isdefined(Base, Symbol("@main")) && include("app.jl")
 include("irutils.jl")
 include("type_lowering.jl")
 
