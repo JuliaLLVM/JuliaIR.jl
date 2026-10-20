@@ -12,11 +12,6 @@
 # Environment:
 #   JULIA_SRC         a local clone of JuliaLang/julia to take the fixtures from (cloned
 #                     with --shared); default: a blobless clone from GitHub
-#   LLVMEXTRA_BUILDS  a directory with libLLVMExtra builds (llvm<version>-<hash>/lib/),
-#                     for as long as JuliaIR needs an unreleased LLVM.jl: the build for
-#                     each Julia's LLVM version is set as the libLLVMExtra preference for
-#                     its run (and the previous preferences restored afterwards);
-#                     LLVMEXTRA_TREE selects among builds of several trees (the <hash>)
 #   GPUCOMPILER=0     skip the GPUCompiler corpus
 #
 # Runs one version at a time. The exit status is non-zero when any version has
@@ -29,23 +24,10 @@ ulimit -c 0
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DIFF=$ROOT/test/differential
-[ $# -ge 1 ] || { sed -n '2,23p' "${BASH_SOURCE[0]}"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 2; }
 WORK=$(mkdir -p "$1" && cd "$1" && pwd); shift
 CHANNELS=("$@")
 [ ${#CHANNELS[@]} -gt 0 ] || CHANNELS=(1.10 1.11 1.12 1.13 1.14-nightly nightly)
-
-# preferences are per environment; restore the user's after the runs
-PREFS=("$ROOT/LocalPreferences.toml" "$DIFF/LocalPreferences.toml")
-BACKUP=$(mktemp -d)
-for p in "${PREFS[@]}"; do [ -f "$p" ] && cp "$p" "$BACKUP/$(echo "$p" | tr / _)"; done
-restore() {
-    for p in "${PREFS[@]}"; do
-        b="$BACKUP/$(echo "$p" | tr / _)"
-        if [ -f "$b" ]; then cp "$b" "$p"; else rm -f "$p"; fi
-    done
-    rm -rf "$BACKUP"
-}
-trap restore EXIT
 
 jl() { local ch=$1; shift; julia +"$ch" --startup-file=no "$@"; }
 
@@ -74,21 +56,14 @@ for ch in "${CHANNELS[@]}"; do
     git -C "$dir/julia" fetch -q origin "$pin" 2>/dev/null
     git -C "$dir/julia" checkout -q "$pin" || { echo "cannot check out $pin"; status=1; continue; }
 
-    # the environment: workspaces from 1.12; before, develop JuliaIR (and LLVM.jl from
-    # its [sources]) into a versioned manifest that only this Julia reads
-    if [ -n "${LLVMEXTRA_BUILDS:-}" ]; then
-        lib=$(ls "$LLVMEXTRA_BUILDS"/llvm"$llvm"-${LLVMEXTRA_TREE:-*}/lib/libLLVMExtra-*.so 2>/dev/null | head -1)
-        [ -n "$lib" ] || { echo "no libLLVMExtra for LLVM $llvm in $LLVMEXTRA_BUILDS"; status=1; continue; }
-        for p in "${PREFS[@]}"; do printf '[LLVM]\nlibLLVMExtra = "%s"\n' "$lib" > "$p"; done
-    fi
+    # the environment: workspaces from 1.12; before, develop JuliaIR into a versioned
+    # manifest that only this Julia reads
     case $minor in
         1.10|1.11)
             touch "$DIFF/Manifest-v$minor.toml"
             jl "$ch" --project="$DIFF" -e '
-                using Pkg, TOML
+                using Pkg
                 Pkg.develop(path=ARGS[1])
-                src = TOML.parsefile(joinpath(ARGS[1], "Project.toml"))["sources"]["LLVM"]
-                Pkg.add(url=src["url"], rev=src["rev"])
                 Pkg.instantiate()' "$ROOT" || { status=1; continue; } ;;
         *)
             touch "$ROOT/Manifest-v$minor.toml"
