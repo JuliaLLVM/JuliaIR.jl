@@ -283,8 +283,6 @@ end
 
 const UNKNOWN_OFFSET = typemax(UInt32)
 
-const MEMSET = Intrinsic("llvm.memset")
-
 is_lifetime(f::LLVM.Function) =
     LLVM.isintrinsic(f, LIFETIME_START) || LLVM.isintrinsic(f, LIFETIME_END)
 # lifetime markers and debug intrinsics (`DbgInfoIntrinsic`)

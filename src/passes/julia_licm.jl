@@ -76,12 +76,9 @@ function create_access!(p::JuliaLICM, new::Instruction, ref::Instruction;
     return
 end
 
-is_eh_pad(inst::Instruction) =
-    inst isa Union{LandingPadInst,CatchPadInst,CleanupPadInst,CatchSwitchInst}
-
 # whether an instruction that isn't loop invariant may be hoisted once its operands are
 hoistable(inst::Instruction) =
-    is_safe_to_speculatively_execute(inst) && !may_read_from_memory(inst) && !is_eh_pad(inst)
+    is_safe_to_speculatively_execute(inst) && !may_read_from_memory(inst) && !(inst isa EHPad)
 
 # `makeLoopInvariant`, a copy of LLVM's `Loop::makeLoopInvariant` that also updates
 # MemorySSA and SCEV: whether `v` is loop invariant, after hoisting it and the operands it

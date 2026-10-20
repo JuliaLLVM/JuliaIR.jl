@@ -61,8 +61,7 @@ end
 function runtime_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
     f = get(mod.functions, name, nothing)
     f === nothing || return f
-    API.LLVMGetNamedGlobal(mod, name) == C_NULL &&
-        API.LLVMGetNamedGlobalAlias(mod, name, length(name)) == C_NULL ||
+    (haskey(mod.globals, name) || haskey(LLVM.aliases(mod), name)) &&
         throw(ArgumentError("module has a global named $name that is not a function"))
     return LLVM.Function(mod, name, ft)
 end
@@ -158,7 +157,7 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
         # step 2: one buffer per nesting level, in the entry block; separate allocas, so
         # that the optimizer can merge or rearrange them
         first_inst = first(first(f.blocks).instructions)
-        alloca_as = alloca_addrspace(unsafe_string(API.LLVMGetDataLayoutStr(mod)))
+        alloca_as = alloca_addrspace(mod)
         allocas = Value[]
         buffs = Value[]
         position!(builder, LLVM.before(first_inst))

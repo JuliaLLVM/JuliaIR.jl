@@ -40,6 +40,7 @@ read it first, including its Log). This file says where things are and how to co
 | S23 Julia's pipeline rebuilt from the ports (`julia<...>`), parts 2 and 3 | done, branch `tb/s23-pipelines` (on S29a) | see `git log` |
 | S33 pass options and GC codegen helpers consolidated (S-D33) | done, branch `tb/s33-consolidate` (on S23) | see `git log` |
 | jlopt as a Pkg app (`[apps]`, `@main` in `src/app.jl` on Julia 1.11+, docs in testing.md) | done, branch `tb/jlopt-app` (on S33) | see `git log` |
+| S31 readability refactor of the ports, first part (S-D25, S-D29) | in progress, branch `tb/s31-readability` (on `tb/review-fixes`): keyword `Dialect`, LLVM.jl opcode/global/enum wrappers, shared helpers in irutils; ports' output unchanged | see `git log` |
 
 S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
 LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks

@@ -242,9 +242,8 @@ end
 
 function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
     mod = f.parent
-    layout = unsafe_string(API.LLVMGetDataLayoutStr(mod))
     @dispose builder=IRBuilder() begin
-        p = PropagateAddrspaces(mod, builder, alloca_addrspace(layout), Dict{Value,Value}(),
+        p = PropagateAddrspaces(mod, builder, alloca_addrspace(mod), Dict{Value,Value}(),
                                 Set{Value}(), Dict{Int,Instruction}(), Instruction[])
         for bb in f.blocks, inst in bb.instructions
             if inst isa LLVM.LoadInst || inst isa LLVM.StoreInst

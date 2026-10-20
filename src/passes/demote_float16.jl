@@ -11,11 +11,6 @@
 const DEMOTED_OPCODES = (API.LLVMFNeg, API.LLVMFAdd, API.LLVMFSub, API.LLVMFMul,
                          API.LLVMFDiv, API.LLVMFRem, API.LLVMFCmp)
 
-function string_attribute(f::LLVM.Function, kind::String)
-    attr = get(f.function_attributes, kind, nothing)
-    return attr === nothing ? nothing : LLVM.value(attr)
-end
-
 # whether a type is kept (`true`) or demoted, according to the policy or to the rule of
 # the Julia version
 function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect, jit_features::Bool)
@@ -111,7 +106,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     erase = Instruction[]
     @dispose builder=IRBuilder() begin
         for bb in f.blocks, inst in bb.instructions
-            opcode = API.LLVMGetInstructionOpcode(inst)
+            opcode = inst.opcode
             opcode in DEMOTED_OPCODES || continue
             ops = inst.operands
             any(demoted, ops) || continue

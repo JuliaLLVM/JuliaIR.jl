@@ -335,7 +335,7 @@ function create_slot!(p::LowerPTLS, name::String)
         gv = GlobalVariable(p.mod, slot_type(p, name), name, p.gc.dl.globals_addrspace)
     end
     # (hidden visibility makes it `dso_local`)
-    LLVM.visibility!(gv, LLVM.API.LLVMHiddenVisibility)
+    LLVM.visibility!(gv, LLVM.Visibility.Hidden)
     p.slots[name] = gv
     return gv
 end

@@ -71,7 +71,6 @@ const OperandUse = Tuple{Instruction,Int}
 use_value(use::OperandUse) = use[1].operands[use[2]]
 set_use!(use::OperandUse, @nospecialize(val::Value)) = (use[1].operands[use[2]] = val)
 
-has_no_uses(@nospecialize(v::Value)) = API.LLVMGetFirstUse(v) == C_NULL
 
 may_read_or_write_memory(inst::Instruction) =
     may_read_from_memory(inst) || may_write_to_memory(inst)
@@ -174,7 +173,7 @@ function match_rmw_op(@nospecialize(old::Value), @nospecialize(retval))
 
     if is_binary_operator(retval)
         binop = retval::Instruction
-        opcode = API.LLVMGetInstructionOpcode(binop)
+        opcode = binop.opcode
         idx = old_operand(binop, old, iscommutative(binop))
         if idx != 0 && can_reorder_with_rmw(binop, verifyop)
             rmw_op = get(RMW_BINOPS, opcode, nothing)
@@ -184,10 +183,10 @@ function match_rmw_op(@nospecialize(old::Value), @nospecialize(retval))
         if opcode == API.LLVMXor
             ops = binop.operands
             if ops[2] isa ConstantInt &&
-               ops[2] == Value(API.LLVMConstAllOnes(ops[2].value_type))
+               ops[2] == all_ones(ops[2].value_type)
                 and = ops[1]
                 if is_binary_operator(and) && has_one_use(and) &&
-                   API.LLVMGetInstructionOpcode(and) == API.LLVMAnd
+                   and.opcode == API.LLVMAnd
                     idx = old_operand(and, old, iscommutative(and))
                     if idx != 0 && can_reorder_with_rmw(and, verifyop)
                         return API.LLVMAtomicRMWBinOpNand, (and, 3 - idx)

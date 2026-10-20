@@ -30,7 +30,12 @@ pointer_addrspace(@nospecialize(v::Value)) =
 pointer_addrspace(@nospecialize(ty::LLVMType)) =
     Int(API.LLVMGetPointerAddressSpace(scalar_typeref(Base.unsafe_convert(API.LLVMTypeRef, ty))))
 
+# the module's data layout as written in the IR (`mod.datalayout` is the parsed layout,
+# whose string form LLVM may print differently)
+datalayout_string(mod::LLVM.Module) = unsafe_string(API.LLVMGetDataLayoutStr(mod))
+
 # the address space of allocas, from the data layout string (`A<n>`)
+alloca_addrspace(mod::LLVM.Module) = alloca_addrspace(datalayout_string(mod))
 function alloca_addrspace(layout::String)
     for spec in split(layout, '-')
         m = match(r"^A(\d+)$", spec)
@@ -117,6 +122,17 @@ typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
 
 const LIFETIME_START = Intrinsic("llvm.lifetime.start")
 const LIFETIME_END = Intrinsic("llvm.lifetime.end")
+const MEMSET = Intrinsic("llvm.memset")
+
+# the instructions that have to come first in their block, after any PHIs
+const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
+                    LLVM.CatchSwitchInst}
+
+# the value of a function's string attribute, or `nothing` if it doesn't have it
+function string_attribute(f::LLVM.Function, kind::String)
+    attr = get(f.function_attributes, kind, nothing)
+    return attr === nothing ? nothing : LLVM.value(attr)
+end
 
 # whether a function is one of the intrinsics of debug records (`llvm.dbg.*`)
 is_debug_intrinsic(f::LLVM.Function) = startswith(LLVM.name(f), "llvm.dbg.")
@@ -149,14 +165,10 @@ intrinsic_is(call::Instruction, intr::Intrinsic) =
 # `Module::getOrInsertFunction`: whatever global has the name (a function of another
 # type, an alias) is called with `ft`
 function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
-    f = get(mod.functions, name, nothing)
-    f === nothing || return f
-    for lookup in (API.LLVMGetNamedGlobalAlias, API.LLVMGetNamedGlobalIFunc)
-        ref = lookup(mod, name, length(name))
-        ref == C_NULL || return LLVM.Value(ref)
+    for globals in (mod.functions, LLVM.aliases(mod), LLVM.ifuncs(mod), mod.globals)
+        gv = get(globals, name, nothing)
+        gv === nothing || return gv
     end
-    ref = API.LLVMGetNamedGlobal(mod, name)
-    ref == C_NULL || return LLVM.Value(ref)
     return LLVM.Function(mod, name, ft)
 end
 
@@ -207,11 +219,12 @@ function has_one_use(@nospecialize(v::Value))
     use = API.LLVMGetFirstUse(v)
     return use != C_NULL && API.LLVMGetNextUse(use) == C_NULL
 end
+has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
 
 # The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
 # C++ passes render instructions that way.
 function opcode_name(inst::Instruction)
-    opcode = API.LLVMGetInstructionOpcode(inst)
+    opcode = inst.opcode
     opcode == API.LLVMAtomicCmpXchg && return "cmpxchg"
     opcode == API.LLVMVAArg && return "va_arg"
     # `LLVM.Opcode.FAdd`, or `LLVMFAdd` with older LLVM.jl
