@@ -223,14 +223,19 @@ without its mode-B patch, and a fixture with a mode-A override with the mode-B p
 alone, and fails if either passes. A patch file for a fixture that the pin doesn't have
 is an error.
 
-CI runs mode B for every pin of the `upstream` job, on Linux, in the `mode-b` jobs. The
+CI runs mode B on Linux, in the `mode-b` job, for Julia 1.10 only. Running Julia's
+oldest supported IR on a newer LLVM is what GPUCompiler does, and that is where a port
+broke on LLVM 23 (LowerExcHandlers put lifetime markers on an address-space cast, which
+LLVM 22's verifier rejects). Newer IR on LLVM 23 is covered by the nightly builds, which
+use LLVM 23 themselves and run in the `test` and `upstream` jobs. The other pins pass
+mode B locally; adding one back to CI takes one line in the job's matrix. The
 `standalone-llvm` job builds the standalone LLVM 23 with the `deps/build_standalone.jl`
 of the LLVM.jl release that the package resolves to (and caches it, so that it is rebuilt
 only when that release, the LLVM version or the runner image change), and packs it
-together with the LLVM 23 tools that the tests need. Each `mode-b` job runs the package tests (`Pkg.test()`, after checking
-that LLVM.jl loaded the standalone library) and then the harness with `--mode B`, both on
-that library. The job of the development version also checks that its Julia doesn't use
-an LLVM newer than the standalone one, in which case the latter needs to move on.
+together with the LLVM 23 tools that the tests need. The `mode-b` job runs the package
+tests (`Pkg.test()`, after checking that LLVM.jl loaded the standalone library) and then
+the harness with `--mode B`, both on that library. It also checks that its Julia doesn't
+use an LLVM newer than the standalone one, in which case the latter needs to move on.
 
 ### Where the mode-B patches come from
 
@@ -290,10 +295,11 @@ The oracle passes at every pin with the patches of `derived-B/llvm23`, and Julia
 and master, which already use LLVM 23, need none. Mode B validates the
 composed patches against the ports.
 
-In CI, the `oracle` jobs run it at every pin, with the `opt` of the `standalone-llvm` job,
-when a pull request or a push changes what it checks: `test/upstream` (the harness, the
-pins, the patches and their generator), `test/litsetup.jl`, `bin/jlopt` or the workflow;
-and when the workflow is started by hand.
+In CI, the `oracle` job runs it for Julia 1.10, like mode B, with the `opt` of the
+`standalone-llvm` job, when a pull request or a push changes what it checks:
+`test/upstream` (the harness, the pins, the patches and their generator),
+`test/litsetup.jl`, `bin/jlopt` or the workflow; and when the workflow is started by
+hand.
 
 ## Differential test against Julia's C++ passes
 
