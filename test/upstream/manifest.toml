@@ -194,7 +194,7 @@ reason = "its RUN lines use typed pointers, but the file already has the checks 
 
 [fixtures."parsing.ll"]
 kind = "mixed"
-ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerPTLSPass", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
 ledger_empty = ["jl-lower-simdloop"]  # the module has no loops

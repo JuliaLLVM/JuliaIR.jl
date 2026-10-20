@@ -32,6 +32,24 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         @test_throws "non-negative integer" parse_options("size=-1"; extra)
         @test_throws "requires a value" parse_options("name"; extra)
     end
+    # options that may be unspecified: signed integers and addresses
+    let extra = (; offset=JuliaIR.Optional{Int}(), addr=JuliaIR.Optional{UInt}())
+        opts = parse_options(""; extra)
+        @test opts.extra == extra
+        @test JuliaIR.option_value(opts.extra.offset) === nothing
+        @test options_string(opts) == ""
+        opts = parse_options("offset=-8;addr=0x4011c0"; extra)
+        @test JuliaIR.option_value(opts.extra.offset) === -8
+        @test JuliaIR.option_value(opts.extra.addr) === UInt(0x4011c0)
+        @test options_string(opts) == "offset=-8;addr=0x4011c0"
+        @test parse_options(options_string(opts); extra) == opts
+        @test JuliaIR.option_value(parse_options("addr=4198848"; extra).extra.addr) == 0x4011c0
+        @test_throws "requires an integer" parse_options("offset=x"; extra)
+        @test_throws "requires an address" parse_options("addr=-1"; extra)
+        @test_throws "requires a value" parse_options("offset"; extra)
+        # only for the integers they can be parsed and printed as
+        @test_throws TypeError JuliaIR.Optional{BigInt}()
+    end
 
     # round trip
     for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
@@ -104,6 +122,19 @@ test_ir = """
         @test_throws "unknown option julia" JuliaIR.custom_pass(test_pass; julia=v"1.12")
         @test_throws "unknown option" JuliaIR.custom_pass(test_pass; frobnicate=true)
         @test_throws "must be a Bool" JuliaIR.custom_pass(test_pass; strong=:no)
+
+        # keyword arguments of optional options take a value or `nothing`
+        optional_pass = JuliaIR.PassDefinition("jl-test-optional", :module, false, record_pass,
+                                               (; offset=JuliaIR.Optional{Int}(),
+                                                  addr=JuliaIR.Optional{UInt}()))
+        empty!(calls)
+        run!(JuliaIR.custom_pass(optional_pass; offset=-8, addr=Ptr{Cvoid}(UInt(0x10))), mod)
+        run!(JuliaIR.custom_pass(optional_pass; offset=nothing, addr=16), mod)
+        @test [c[2].extra for c in calls] ==
+              [(; offset=JuliaIR.Optional{Int}(-8), addr=JuliaIR.Optional{UInt}(0x10)),
+               (; offset=JuliaIR.Optional{Int}(), addr=JuliaIR.Optional{UInt}(0x10))]
+        @test_throws "must be an address or `nothing`" JuliaIR.custom_pass(optional_pass; addr=-1)
+        @test_throws "must be an integer or `nothing`" JuliaIR.custom_pass(optional_pass; offset="x")
     end
 end
 

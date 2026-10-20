@@ -35,11 +35,18 @@ end
 
     # thread-local storage
     @test rt.tls_elf_support == (Sys.islinux() || Sys.isfreebsd())
-    if rt.tls_elf_support
-        @test rt.tp_asm == Dict(:x86_64 => "movq %fs:0, \$0", :i686 => "movl %gs:0, \$0",
-                                :aarch64 => "mrs \$0, tpidr_el0",
-                                :armv7l => "mrc p15, 0, \$0, c13, c0, 3",
-                                :riscv64 => "mv \$0, tp")[Sys.ARCH]
+    @test rt.tls_offset == unsafe_load(cglobal(:jl_tls_offset, Int))
+    if Sys.islinux() && Sys.ARCH === :x86_64
+        @test rt.tls_offset == -8
+    elseif Sys.isapple() || Sys.iswindows()
+        @test rt.tls_offset == -1
+    end
+    @test rt.pgcstack_getter isa UInt && rt.pgcstack_getter != 0
+    @test rt.pgcstack_key isa UInt
+    # the getter returns the GC stack of the calling task (on macOS, it takes the key)
+    if !Sys.isapple()
+        @test ccall(Ptr{Cvoid}(rt.pgcstack_getter), Ptr{Cvoid}, ()) ==
+              ccall(:jl_get_pgcstack, Ptr{Cvoid}, ())
     end
 
     # the cancellation points of Julia 1.14 and later
@@ -159,7 +166,10 @@ end
     @test rt.setjmp == "jl_setjmp"
     @test rt.tls_elf_support === false
     @test rt.task_gcstack == facts().task_gcstack
-    @test facts(; tp_asm="mov \$0, tp").tp_asm == "mov \$0, tp"
+    @test facts(; tls_offset=-16).tls_offset == -16
+    @test facts(; tls_offset=JuliaIR.Optional{Int}(-1)).tls_offset == -1
+    @test facts(; tls_offset=JuliaIR.Optional{Int}()).tls_offset == facts().tls_offset
+    @test facts(; pgcstack_getter=0x1234).pgcstack_getter == 0x1234
     @test_throws "invalid option tls-elf-support" facts(; tls_elf_support=:maybe).tls_elf_support
     @test facts(; cfunction_cache=:arguments).cfunction_cache === :arguments
     @test_throws "invalid option cfunction-cache" facts(; cfunction_cache=:maybe).cfunction_cache
@@ -167,17 +177,21 @@ end
     @test propertynames(facts()) == keys(JuliaIR.RUNTIME_FACTS)
 
     # as pass options
-    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tp_asm,
-                                  :cfunction_cache) ==
-          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tp_asm="", cfunction_cache=:auto)
+    @test JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :setjmp, :tls_offset,
+                                  :pgcstack_key, :cfunction_cache) ==
+          (; task_ptls=0, tls_elf_support=:auto, setjmp="", tls_offset=JuliaIR.Optional{Int}(),
+           pgcstack_key=JuliaIR.Optional{UInt}(), cfunction_cache=:auto)
     @test_throws "unknown runtime fact" JuliaIR.runtime_options(:task_foo)
-    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :cfunction_cache)
-    opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;cfunction-cache=arguments";
+    extra = JuliaIR.runtime_options(:task_ptls, :tls_elf_support, :tls_offset, :pgcstack_key,
+                                    :cfunction_cache)
+    opts = JuliaIR.parse_options("task-ptls=100;tls-elf-support=yes;tls-offset=-4;pgcstack-key=0x10;cfunction-cache=arguments";
                                  extra)
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") begin
         rt = JuliaIR.runtime_layout(opts, mod)
         @test rt.task_ptls == 100
         @test rt.tls_elf_support === true
+        @test rt.tls_offset == -4
+        @test rt.pgcstack_key == 0x10
         @test rt.cfunction_cache === :arguments
         @test rt.task_gcstack == facts().task_gcstack
         @test JuliaIR.runtime_fact(JuliaIR.Dialect(VERSION), mod, :task_ptls; task_ptls=12) == 12

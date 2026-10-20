@@ -29,6 +29,8 @@ include("passes/expand_atomic_modify.jl")
 include("passes/cancellation_lowering.jl")
 include("passes/remove_addrspaces.jl")
 include("passes/final_lower_gc.jl")
+include("gc_transitions.jl")
+include("passes/lower_ptls.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

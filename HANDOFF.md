@@ -30,6 +30,7 @@ read it first, including its Log). This file says where things are and how to co
 | v115 Julia 1.15 (master after 1.14 branched): pins, dialect gates, CI | done, branch `tb/julia-1.15` (on S11a) | see `git log` |
 | S7 RemoveJuliaAddrspaces (`jl-remove-addrspaces`), RemoveAddrspaces (`jl-remove-all-addrspaces`) | done, branch `tb/s7-remove-addrspaces` (on `tb/juliair-deps-pin`) | see `git log` |
 | S15 FinalLowerGC (`jl-final-lower-gc`) | done, every dialect; branch `tb/s15-final-lower-gc` (on S7) | see `git log` |
+| S16 LowerPTLS (`jl-lower-ptls`) | done, branch `tb/s16-lower-ptls` (on S15) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -94,7 +95,7 @@ S24c details (plan decision S-D17; replaces S17's `RuntimeProfile` and S24b's ge
 tables): `src/runtime.jl`. `runtime_layout(dialect, mod)` (or `runtime_layout(opts, mod)`
 from pass options) returns a lazy `RuntimeFacts` whose properties are the facts
 (`task_gcstack`, `task_ptls`, `task_eh`, `tls_safepoint`, `tls_gc_state`, `handler_size`,
-`setjmp`, `tp_asm`, master's `task_reset_ctx`/`reset_ctx_*`, ...; `RUNTIME_FACTS` lists
+`setjmp`, `tls_offset`, `pgcstack_getter`, master's `task_reset_ctx`/`reset_ctx_*`, ...; `RUNTIME_FACTS` lists
 them). Each is resolved when read: the pass option of the same name, else the running
 Julia's value (only for its own dialect), else a `RuntimeError` naming the fact and the
 option. No target checks: like the C++, the host's values serve any triple. A pass
@@ -329,6 +330,30 @@ differ between runs in that order). Validated after review: `Pkg.test()` 1.10 46
 470, 1.12 467, 1.13 435, nightly 441; mode A 22/23/24/26/29 and `--cpp` 28/32/33/35/40 + 2
 unsupported (1.10 to master, master at 08e5253dc0).
 
+S16 details: `src/passes/lower_ptls.jl` (`jl-lower-ptls`, `cpp_name = "LowerPTLSPass"`,
+required), a port of `llvm-ptls.cpp` for every dialect (the `ptls_*` fields and
+`gc_state_condition` of `Dialect`). JIT mode reads the running Julia's facts when a module
+calls a getter: `tls_offset` (`jl_tls_offset`) and `pgcstack_getter`/`pgcstack_key`
+(`jl_pgcstack_getkey`), which are `JuliaIR.Optional` options (`tls-offset=-1`,
+`pgcstack-getter=0x1000`); imaging mode is the `imaging` option, with `tls-elf-support`.
+`tp_asm` is gone from the runtime facts: the thread-pointer asm follows the module's
+triple through LLVM.jl's `Triple` (an empty triple is the running Julia's host).
+`src/gc_transitions.jl` has the GC-state and safepoint emitters of
+`llvm-codegen-shared.h` on a `GCCodegen` context (builder, dialect, facts, data layout);
+they belong in S15's `src/gc.jl` and duplicate parts of LateLowerGCFrame's own copies.
+`docs/src/lower_ptls.md` lists the deviations (1.12's entry safepoint fixed as in 1.13,
+`align 1` GC state stores, the data layout's pointer size, errors where the C++ crashes or
+hits `llvm_unreachable`, reused image variables). No upstream fixture runs LowerPTLS
+beyond `parsing.ll`; `test/lit/lower-ptls.ll` covers every mode and architecture, and the
+differentials (C++ vs port, in-process: a `code_llvm` corpus brought to LowerPTLS's input
+by Julia's C++ prefix pipeline, the fixtures with getter calls, synthetic cases, triple
+spellings) agree at every version up to the documented deviations. DemoteFloat16 asks
+`LLVM.Triple` too, instead of a table of architecture names. Validated after the review
+(sol, `s16-review`): `Pkg.test()` 1.10 498, 1.11 498, 1.12 495, 1.13 463, nightly 461; mode A 20/21/22/24/27 and `--cpp`
+28/32/33/35/40 + 2 unsupported (unchanged); corpus differential 187/187/190/190/199 equal,
+the 2 others per version being AMDGPU's `late-lower-gc-addrspaces.ll`, which the port
+rejects (no thread pointer) where the C++ emits x86 asm.
+
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
 MemorySSA, the target triple wrapper, standalone libraries, ...; JuliaLLVM/LLVM.jl#678 to
@@ -433,6 +458,15 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   itself (`ConstantAsMetadata`), not as an `MDNode`.
 - `jld eval` and shell heredocs inside complex commands are refused by the worktree
   sandbox; run scripts from files (`jld run`, `python3 script.py`).
+- The worktree sandbox also refuses commands with shell variables or loops around `git`,
+  `sh` or `julia`, and Python heredocs whose text names git: put the loop in a script
+  in the scratchpad and run it by its literal path.
+- LLVM.jl's `split_block_and_insert_if_then_else!` refuses a phi as the split point: to
+  split right after a call and put a phi there, split before the instruction after the
+  call (the same IR). `LLVM.called_operand!` replaces the callee but not the call's
+  function type, and refuses a callee of another pointer type (address space), which
+  `setCalledOperand` accepts; LowerPTLS sets the last operand instead. `GlobalVariable(mod, T, name)` is in address space 0, not the data
+  layout's globals address space that C++'s `new GlobalVariable` uses (`G1` on AMDGPU).
 - `julia +nightly` moves: the master fixtures must be checked out at its commit
   (`Base.GIT_VERSION_INFO.commit`), or `run.jl` refuses them.
 
@@ -508,7 +542,8 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   string (`unsafe_string(API.LLVMGetDataLayoutStr(mod))`).
 - Pass defaults and pipeline options are merged before the pass sees them, so a pass
   can't tell a default from an explicit option: the runtime-fact options use a value
-  that means "not given" (0, `""`, `:auto`).
+  that means "not given" (0, `""`, `:auto`), or, where every value of the type is
+  meaningful (offsets that may be 0 or -1, addresses), a `JuliaIR.Optional` (S16).
 - Closures assign outer locals of the same name: `plan_fixture`'s `classify` overwrote
   the fixture's `runs` (fixed with `local`), which hid override pipelines from the
   ledger check.
