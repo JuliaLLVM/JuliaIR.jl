@@ -1,28 +1,95 @@
 # JuliaIR.jl
 
-Julia implementations of the LLVM passes that operate on Julia's LLVM IR dialect.
+JuliaIR.jl provides Julia implementations of the LLVM passes that operate on *Julia's
+LLVM IR dialect*: the IR that Julia's code generator emits, with GC-tracked pointers in
+address spaces 10 to 13, intrinsics like `julia.gc_alloc_obj` and
+`julia.gc_preserve_begin`, and Julia-specific metadata and operand bundles. "IR" in the
+package name refers to that dialect, not to Julia's own SSA IR.
 
-The passes are ports of the C++ passes in Julia's `src/llvm-*.cpp`, written against
+The passes are ports of the C++ passes in Julia's `src/llvm-*.cpp` (and of the pipeline
+in `src/pipeline.cpp` that runs them), written against
 [LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API.
 
-What is supported:
+## Why
 
-- The passes process the IR that the running Julia generates: a Julia version handles
-  its own version's IR, not that of an older or newer Julia. Julia 1.10 up to the current
-  development version are supported.
-- They work with LLVM.jl on the LLVM library that Julia bundles, and on newer LLVM
-  versions (e.g. a separately built library like libLLVMGPU).
-- Only IR with opaque pointers is supported.
+Julia's own passes are compiled into Julia's copy of libLLVM, so they only exist in that
+library. Code that processes Julia's IR with another LLVM can't use them. The main case is
+GPUCompiler, which can load a standalone, newer libLLVM next to Julia's (e.g. to target a
+GPU that Julia's LLVM doesn't support yet), and still has to lower Julia's GC intrinsics,
+address spaces and so on before handing the IR to the back-end. The ports run on any
+LLVM library that LLVM.jl can load, so they work in either configuration, and they behave
+like the C++ passes of the Julia version that produced the IR.
 
-What the IR of each Julia version looks like is described by `JuliaIR.Dialect`, and the
-passes use the running Julia's (`JuliaIR.Dialect(VERSION)`). Their options cover what
-the version doesn't determine, like DemoteFloat16's `fp16` and `bf16` policies or the
-GC write-barrier configuration Julia was built with (`gc-barrier`). Facts about Julia's
-runtime that some passes need (see below) are taken from the running Julia too; IR for
-GPUs doesn't need them.
+## What is supported
 
-A required pass also runs on `optnone` functions, which LLVM's pass managers skip for
-the others; each port is required exactly when Julia's C++ pass is.
+- **The IR of the running Julia.** The passes process the IR that the running Julia
+  generates: Julia 1.12 processes Julia 1.12's IR, not that of an older or newer Julia.
+  Julia 1.10 up to the current development version (1.15) are supported. What the IR of
+  each Julia version looks like is described by its *dialect*, `JuliaIR.Dialect`, and the
+  passes use the running Julia's (`JuliaIR.Dialect(VERSION)`).
+- **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
+  Julia bundles, and on newer LLVM versions (e.g. a separately built library like
+  libLLVMGPU). They are tested on both: on the LLVM of each supported Julia version, and
+  with each version's IR on the newest LLVM (a standalone LLVM 23).
+- **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
+  supported when parsed into a context with opaque pointers
+  (`Context(; opaque_pointers=true)`), which upgrades it.
+
+JuliaIR.jl is not registered yet. It needs LLVM.jl 10.3 or later.
+
+## Using the passes
+
+Each pass is an LLVM.jl custom pass named after Julia's pass with a `jl-` prefix (see
+[the table below](#Passes)), so that it never clashes with Julia's C++ pass, which is also
+available when running on Julia's LLVM. Register them with a pass builder and use them by
+name, optionally with options:
+
+```julia
+using LLVM, LLVM.IR, LLVM.Passes, JuliaIR
+
+@dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
+    mod = parse(LLVM.Module, ir)
+    JuliaIR.register!(pb)
+    add!(pb, "jl-alloc-opt,jl-late-lower-gc-frame,jl-final-lower-gc")
+    run!(pb, mod)
+end
+```
+
+or run a single pass: `run!(JuliaIR.RemoveNIPass(), mod)`. Julia's whole optimization
+pipeline, rebuilt from the ports for the running Julia's version, is available too (see
+[Julia's optimization pipeline](pipeline.md)):
+
+```julia
+JuliaIR.optimize!(mod; level=2)           # optimize a module like Julia does
+JuliaIR.build_pipeline!(pb; level=2)      # or add the pipeline to a PassBuilder
+```
+
+From the command line, `jlopt` is an `opt`-compatible driver that runs the ports, and
+maps Julia's pass names (`-passes=AllocOpt`, `-passes='julia<level=2>'`) to them; see
+[`jlopt`](testing.md#jlopt) for how to run or install it.
+
+GPUCompiler uses the ports instead of Julia's C++ passes when its `CompilerConfig` has
+`julia_passes = :ports` (or GPUCompiler's `julia_passes` preference is `"ports"`) and
+JuliaIR.jl is loaded; the compilation then needs a context with opaque pointers, which
+GPUCompiler's `JuliaContext()` creates for that setting. This
+is not merged in GPUCompiler yet (JuliaGPU/GPUCompiler.jl#1026).
+
+## Terms
+
+- *Port*: the Julia implementation of one of Julia's C++ passes, e.g. `jl-alloc-opt` for
+  `AllocOpt`. A port does what the C++ pass of the running Julia's version does, except
+  for the deviations listed on this page and on the passes' own pages.
+- *Dialect*: what the IR of a Julia version looks like, and which passes and behaviours
+  that version has (`JuliaIR.Dialect`). A pass's options cover what the version doesn't
+  determine, like DemoteFloat16's `fp16` and `bf16` policies or the GC write-barrier
+  configuration Julia was built with (`gc-barrier`).
+- *Required*: a required pass also runs on `optnone` functions, which LLVM's pass
+  managers skip for the others. Each port is required exactly when Julia's C++ pass is.
+- *Runtime facts*: facts about the Julia runtime that the IR doesn't state, like the
+  offset of a field in the current task, which some passes need (see
+  [below](#Facts-about-the-Julia-runtime)). IR for GPUs doesn't need them.
+
+## Passes
 
 | Pass | Julia's name | Required |
 |------|--------------|----------|
@@ -33,9 +100,12 @@ the others; each port is required exactly when Julia's C++ pass is.
 | `jl-gc-invariant-verifier` | `GCInvariantVerifier` | yes |
 | `jl-combine-muladd` | `CombineMulAdd` (Julia 1.10 and 1.11) | no |
 | `jl-late-lower-gc-frame` | `LateLowerGCFrame` | yes |
+| `jl-final-lower-gc` | `FinalLowerGC` (a module pass on Julia 1.10, a function pass later, see [FinalLowerGC](final_lower_gc.md)) | yes |
 | `jl-late-gc-cleanup` | (`LateLowerGCFrame` on functions without a GC frame, for GPUs) | yes |
 | `jl-lower-exc-handlers` | `LowerExcHandlers` (Julia 1.10 to 1.12) | yes |
 | `jl-lower-simdloop` | `LowerSIMDLoop` (a loop pass) | no |
+| `jl-licm` | `JuliaLICM` (a loop pass, see [JuliaLICM](julia_licm.md)) | no |
+| `jl-lower-ptls` | `LowerPTLSPass` (a module pass, see [LowerPTLS](lower_ptls.md)) | yes |
 | `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
 | `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.14 and later) | yes |
 | `jl-remove-addrspaces` | `RemoveJuliaAddrspaces` | yes |
@@ -157,3 +227,6 @@ Differences with Julia's C++ passes:
   metadata of global variable declarations, the types of `inalloca` and `preallocated`
   attributes, and indirect functions, which the C++ passes drop, leave unmapped or
   corrupt; see [RemoveJuliaAddrspaces](@ref).
+- FinalLowerGC, LowerPTLS, JuliaLICM and JuliaMultiVersioning record their differences on
+  their own pages: [FinalLowerGC](final_lower_gc.md), [LowerPTLS](lower_ptls.md),
+  [JuliaLICM](julia_licm.md) and [JuliaMultiVersioning](multiversioning.md).
