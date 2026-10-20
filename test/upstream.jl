@@ -474,8 +474,8 @@ mktempdir() do dir
     @test_throws "which exist now" harness(write_manifest(stale_skip * override * excluded_cpp))
 
     # fixtures of ports that don't exist cannot run
-    no_port = replace(good, "[\"RemoveNI\"]" => "[\"RemoveNI\", \"JuliaLICM\"]")
-    @test_throws "the ports of JuliaLICM do not exist" harness(write_manifest(no_port * override * excluded_cpp))
+    no_port = replace(good, "[\"RemoveNI\"]" => "[\"RemoveNI\", \"NoSuchPass\"]")
+    @test_throws "the ports of NoSuchPass do not exist" harness(write_manifest(no_port * override * excluded_cpp))
 
     # the checkout must be at the pinned commit, with its fixtures unchanged
     @test_throws "but the fixtures of Julia $VERSION are those of $("0"^40)" harness(write_manifest(good * override * excluded_cpp; commit="0"^40))

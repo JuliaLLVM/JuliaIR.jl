@@ -2726,14 +2726,6 @@ function is_perm_rooted(S, @nospecialize(v::Value))
     return length(refined) == 1 && refined[1] == -2
 end
 
-# the children of a write barrier: the arguments after the parent, without the slot
-# operands of field barriers
-function write_barrier_children(p::LateLowerGCFrame, call::Instruction)
-    args = collect(call.arguments)
-    field = is_field_write_barrier(p.fns, call.called_operand)
-    return [args[i] for i in 2:length(args) if !field || iseven(i - 1)]
-end
-
 function module_debug_level(mod::LLVM.Module)
     flags = mod.flags
     haskey(flags, "julia.debug_level") || return 1
@@ -2749,7 +2741,7 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
         # the insertion-barrier optimization, invalid for snapshot barriers (1.14 and later)
         if !(lowering === :deferred && snapshot) &&
            all(child -> vref(child) == vref(parent) || is_perm_rooted(S, child),
-               write_barrier_children(p, ci))
+               write_barrier_children(p.fns, ci))
             erase!(ci)
             continue
         end

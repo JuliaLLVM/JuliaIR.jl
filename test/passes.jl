@@ -323,8 +323,12 @@ end
         end
         @test any(r -> r.kind === :passed && r.name == "Dead Allocation", remarks)
         @test any(r -> r.kind === :missed && r.name == "Escaped", remarks)
-        @test any(r -> r.kind === :missed && r.name == "UnknownCall", remarks)
-        @test all(r -> r.pass_name == "alloc-opt", remarks)
+        # the escape analysis has its own pass name, like in C++
+        unknown = only(filter(r -> r.name == "UnknownCall", remarks))
+        @test unknown.kind === :missed && unknown.pass_name == "escape-analysis"
+        @test unknown.message ==
+              "Unknown call, marking escape (  call void @external(ptr addrspace(10) %escaped))"
+        @test all(r -> r.pass_name == "alloc-opt", filter(r -> r !== unknown, remarks))
     end
 end
 
@@ -419,6 +423,198 @@ end
     push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
     @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
     @test all(r -> r.pass_name == "lower_simd_loop", remarks)
+end
+
+@testset "JuliaLICM" begin
+    @test !JuliaIR.JuliaLICMPass().required
+    @test JuliaIR.JULIA_LICM.kind === :loop
+    @test JuliaIR.JULIA_LICM.cpp_name == "JuliaLICM"
+    @test JuliaIR.JuliaLICMPass(; gc_barrier=:snapshot) isa LLVM.CustomPass
+    @test_throws ArgumentError JuliaIR.JuliaLICMPass(; gc_barrier=:nonsense)
+
+    object_barriers = dialect.barrier_flavour === :object_field
+    barrier = object_barriers ? "julia.object_write_barrier" : "julia.write_barrier"
+    ir = """
+        @tag = external addrspace(10) global {}, align 16
+        declare token @llvm.julia.gc_preserve_begin(...)
+        declare void @llvm.julia.gc_preserve_end(token)
+        declare ptr @julia.get_pgcstack()
+        declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10)) allocsize(1)
+        declare void @$barrier(ptr addrspace(10), ...)
+        declare void @use(ptr addrspace(10))
+
+        define void @f(ptr addrspace(10) %obj, ptr addrspace(10) %child, ptr %p, i1 %c) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          store i64 0, ptr %p
+          br label %loop
+        loop:
+          %i = phi i64 [ 0, %top ], [ %next, %loop ]
+          %token = call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %obj)
+          call void @use(ptr addrspace(10) %obj)
+          call void @llvm.julia.gc_preserve_end(token %token)
+          %local = call noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 8, ptr addrspace(10) @tag)
+          store i64 %i, ptr addrspace(10) %local
+          %escaped = call noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 8, ptr addrspace(10) @tag)
+          call void @use(ptr addrspace(10) %escaped)
+          call void (ptr addrspace(10), ...) @$barrier(ptr addrspace(10) %obj, ptr addrspace(10) %child)
+          store i64 %i, ptr %p
+          %next = add i64 %i, 1
+          br i1 %c, label %exit, label %loop
+        exit:
+          ret void
+        }"""
+
+    @testset "remarks" begin
+        remarks = []
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
+                JuliaIR.register!(pb)
+                add!(pb, "function(loop-mssa(jl-licm))")
+                run!(pb, mod)
+            end
+        end
+        # LLVM 21 and later render an intrinsic call with the intrinsic's name
+        intrinsic(name) = LLVM.version() >= v"21" ? "call $name" : "call"
+        summary = [(r.kind, r.pass_name, r.name) for r in remarks]
+        @test summary == [
+            (:passed, "julia-licm", "Hoisted"),
+            (:passed, "julia-licm", "Sunk"),
+            (:analysis, "julia-licm", "EscapeAnalysis"),
+            (:passed, "julia-licm", "Hoist"),
+            (:missed, "escape-analysis", "UnknownCall"),
+            (:analysis, "julia-licm", "EscapeAnalysis"),
+            (:missed, "julia-licm", "Escape"),
+            (:passed, "julia-licm", "Hoist")]
+        messages = [r.message for r in remarks]
+        @test messages[1] == "hoisting preserve begin $(intrinsic("llvm.julia.gc_preserve_begin"))"
+        @test messages[2] == "sinking preserve end $(intrinsic("llvm.julia.gc_preserve_end"))"
+        @test startswith(messages[3], "escape analysis for call\nAllocUseInfo:\nescaped: 0\n")
+        @test occursin("\nMemOps: 1\n  offset: 0\n  size: 8\n", messages[3])
+        @test messages[4] == "hoisting gc allocation call"
+        @test messages[5] ==
+              "Unknown call, marking escape (  call void @use(ptr addrspace(10) %escaped))"
+        @test startswith(messages[6], "escape analysis for call\nAllocUseInfo:\nescaped: 1\n")
+        @test messages[7] == "not hoisting gc allocation call because it may escape"
+        @test messages[8] == "hoisting write barrier call"
+        # the values are arguments of their own
+        @test remarks[1].arguments[2] ==
+              ("PreserveBegin" => intrinsic("llvm.julia.gc_preserve_begin"))
+        @test first.(remarks[3].arguments) == ["String", "GC Allocation", "String", "UseInfo"]
+    end
+
+    # what `pipeline` prints for `ir` (to stderr), with MemorySSA's accesses numbered in
+    # order
+    function printed(ir, pipeline)
+        out = tempname()
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            open(out, "w") do io
+                redirect_stderr(io) do
+                    @dispose pb=PassBuilder() begin
+                        JuliaIR.register!(pb)
+                        add!(pb, pipeline)
+                        run!(pb, mod)
+                    end
+                end
+            end
+        end
+        str = read(out, String)
+        ids = Dict{String,String}()
+        for m in eachmatch(r"; (\d+) = Memory(Def|Phi)", str)
+            ids[m[1]] = string(length(ids) + 1)
+        end
+        renumber(line) = startswith(line, "; ") ?
+            replace(line, r"\b\d+\b" => id -> get(ids, id, id)) : line
+        return join(map(renumber, split(str, '\n')), '\n')
+    end
+
+    @testset "preserved analyses" begin
+        # the analyses the pass keeps are those built from scratch for its result
+        updated = printed(ir, "function(loop-mssa(jl-licm),print<memoryssa>)")
+        @test occursin("call void @llvm.memset", updated)
+        @test updated ==
+              printed(ir, "function(loop-mssa(jl-licm),invalidate<memoryssa>,print<memoryssa>)")
+
+        # ScalarEvolution, queried before the pass, forgets what the pass invalidates:
+        # the loop disposition of the address of a field of a hoisted allocation
+        scev_ir = """
+            @tag = external addrspace(10) global {}, align 16
+            declare ptr @julia.get_pgcstack()
+            declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10)) allocsize(1)
+            define void @f(i1 %c) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              br label %loop
+            loop:
+              %i = phi i64 [ 0, %top ], [ %next, %loop ]
+              %local = call noalias nonnull ptr addrspace(10) @julia.gc_alloc_obj(ptr %pgcstack, i64 16, ptr addrspace(10) @tag)
+              %field = getelementptr i8, ptr addrspace(10) %local, i64 8
+              store i64 %i, ptr addrspace(10) %field
+              %next = add i64 %i, 1
+              br i1 %c, label %exit, label %loop
+            exit:
+              ret void
+            }"""
+        updated = printed(scev_ir, "function(print<scalar-evolution>,loop-mssa(jl-licm)," *
+                                   "print<scalar-evolution>)")
+        @test occursin("LoopDispositions: { %loop: Invariant }", updated)
+        @test updated == printed(scev_ir, "function(print<scalar-evolution>," *
+                                          "loop-mssa(jl-licm),invalidate<scalar-evolution>," *
+                                          "print<scalar-evolution>)")
+    end
+
+    @testset "errors" begin
+        # A declaration of the object barrier with another type is rejected when a field
+        # barrier is to be demoted to it, here after the allocation that is the barrier's
+        # child was hoisted: the barrier stays, and the IR is valid. A field barrier that
+        # keeps its slots doesn't need the declaration.
+        function run_bad(slot, child)
+            bad = """
+                @tag = external addrspace(10) global {}
+                declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+                declare void @julia.object_write_barrier(ptr)
+                declare void @julia.field_write_barrier.p11(ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...)
+                define void @f(ptr %task, ptr addrspace(10) %parent, ptr addrspace(10) %other, i1 %c) {
+                top:
+                  br label %loop
+                loop:
+                  %i = phi i64 [ 0, %top ], [ %i.next, %loop ]
+                  %child = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag)
+                  %slot = getelementptr ptr addrspace(10), ptr addrspace(10) $slot
+                  %slot.derived = addrspacecast ptr addrspace(10) %slot to ptr addrspace(11)
+                  call void (ptr addrspace(10), ptr addrspace(11), ptr addrspace(10), ...) @julia.field_write_barrier.p11(ptr addrspace(10) %parent, ptr addrspace(11) %slot.derived, ptr addrspace(10) $child)
+                  %i.next = add i64 %i, 1
+                  br i1 %c, label %exit, label %loop
+                exit:
+                  ret void
+                }"""
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
+                err = try
+                    @dispose pb=PassBuilder() begin
+                        JuliaIR.register!(pb)
+                        add!(pb, "function(loop-mssa(jl-licm))")
+                        run!(pb, mod)
+                    end
+                    nothing
+                catch err
+                    err
+                end
+                verify(mod)
+                # the block of the call of `callee`
+                block(callee) = only(LLVM.name(bb) for bb in mod.functions["f"].blocks
+                                     for inst in bb.instructions
+                                     if inst isa CallInst && LLVM.name(inst.called_operand) == callee)
+                return err, block("julia.field_write_barrier.p11"), block("julia.gc_alloc_obj")
+            end
+        end
+        if object_barriers
+            err, barrier_block, alloc_block = run_bad("%parent, i64 %i", "%child")
+            @test err isa PassException && err.ex isa ArgumentError
+            @test (barrier_block, alloc_block) == ("loop", "top")
+            # the slot varies with an allocation, which is hoisted first
+            @test run_bad("%child, i64 0", "%other") == (nothing, "top", "top")
+        end
+    end
 end
 
 @testset "LowerExcHandlers" begin

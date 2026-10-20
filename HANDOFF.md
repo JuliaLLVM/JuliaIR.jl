@@ -33,6 +33,7 @@ read it first, including its Log). This file says where things are and how to co
 | S16 LowerPTLS (`jl-lower-ptls`) | done, branch `tb/s16-lower-ptls` (on S15) | see `git log` |
 | S20 CPUFeatures (`jl-cpu-features`), keyword-only pass options | done, branch `tb/s20-cpufeatures` (on S16) | see `git log` |
 | S21 JuliaMultiVersioning (`jl-multiversioning`) | done, branch `tb/s21-multiversioning` (on S20) | see `git log` |
+| S9 JuliaLICM (`jl-licm`) | done, branch `tb/s9-julia-licm` (on S21) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -411,6 +412,28 @@ place of the C++ pass load and run with `-C generic`, `sandybridge`, `haswell` a
 on 1.13 (4 partitions) and nightly (88 partitions). LLVM.jl's `clone_into!` runs its
 value-mapper prepass even without callbacks (about 30% of its time on large functions).
 
+S9 details: `src/passes/julia_licm.jl` ports `JuliaLICM` (`jl-licm`, a loop pass,
+`required=false`). Every dialect follows master:
+
+- the #63036 rule for sinking preserve ends;
+- master's escape analysis, shared with AllocOpt in `src/allocations.jl`;
+- master's remark formats. The escape analysis reports under `escape-analysis`, with
+  LLVM.jl's lazy `remark!`.
+
+The deviations D1 to D6, where the C++ is buggy or crashes, are in
+`docs/src/julia_licm.md`. `src/gc.jl` holds the write-barrier helpers
+(`write_barrier_children` and the declaration of `julia.object_write_barrier`). The pass
+keeps MemorySSA up to date, and the testset compares it to one built from scratch. The
+differential against the C++ is a scratch script. Its output is identical at 1.13 and
+master. At 1.10 to 1.12 it differs only by D1 and D2, plus the older remark formats at
+1.10 and 1.11. Validated:
+
+- `Pkg.test()`: 1.10 452, 1.11 452, 1.12 449, 1.13 417, nightly 417.
+- Mode A: 24/25/26/28/31, each pin 4 more than before.
+- `--cpp`: unchanged.
+- Speed: about 2 to 2.7 times the C++ for the whole `loop-mssa` pipeline on a synthetic
+  module of 10000 loops.
+
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
 MemorySSA, the target triple wrapper, standalone libraries, ...; JuliaLLVM/LLVM.jl#678 to
@@ -695,6 +718,16 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   scratchpad and run it with `bash <script>`.
 - `LocalPreferences.toml` selects one LLVMExtra build (per LLVM major): running another
   Julia version with it fails LLVM.jl's precompilation, so set it right before each run.
+
+- Capturing `print<memoryssa>` (or any LLVM stderr output) with `redirect_stderr` also
+  captures the remarks that Julia's own code generator prints while it compiles the
+  capturing code. Compile first (a warmup run), or filter `remark: ` lines.
+- `inst.metadata[kind]` returns a one-operand node like `!{i64 1}` as its operand
+  (`MetadataAsValue` canonicalizes it), which can't be attached to another instruction;
+  iterate `inst.metadata` to copy such metadata.
+- Julia's C++ JuliaLICM segfaults on an end of `token none` and on demoting a field
+  barrier with a mistyped `julia.object_write_barrier`. Keep such probes out of
+  in-process differentials, because they kill the process.
 
 ## Decisions (Tim, 2026-10-17)
 

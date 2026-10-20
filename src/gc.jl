@@ -2,7 +2,7 @@
 # of the runtime's GC, the declarations of the GC intrinsics and of the runtime functions
 # they are lowered to (`JuliaPassContext`, `jl_intrinsics` and `jl_well_known` in Julia's
 # `llvm-pass-helpers.cpp`), TBAA nodes, and the code both passes emit (type tag loads,
-# write barriers).
+# write barriers). JuliaLICM uses the write-barrier helpers too.
 
 ## constants of Julia's runtime (the same on every target)
 
@@ -294,6 +294,48 @@ i64_metadata_of(t::LLVMType, x::Integer) = Metadata(ConstantInt(t, x))
 
 
 ## write barriers
+
+# The children of a write barrier (`writeBarrierChildren`): the arguments after the
+# parent, without the slot operands of field barriers, which alternate with the children.
+# `fns` is a pass' table of Julia's functions (`JuliaFunctions`, LateLowerGCFrame's
+# `GCFunctions`).
+function write_barrier_children(fns, call::Instruction)
+    args = collect(call.arguments)
+    field = is_field_write_barrier(fns, call.called_operand)
+    return [args[i] for i in 2:length(args) if !field || isodd(i)]
+end
+
+# the type of `julia.object_write_barrier`: `void (ptr addrspace(10), ...)`
+object_write_barrier_type() =
+    LLVM.FunctionType(LLVM.VoidType(), [LLVM.PointerType(AS_TRACKED)]; vararg=true)
+
+# The declaration of `julia.object_write_barrier` in `mod` (Julia 1.14 and later), added
+# if missing, with the attributes that codegen gives it (`getWriteBarrierAttributes`: the
+# barrier reads the headers of the parent and the children, and the slot it guards, which
+# keeps it ordered after the store). Throws if the module declares it with another type,
+# which a call can't be built for.
+function get_or_declare_object_write_barrier!(mod::LLVM.Module)
+    name = "julia.object_write_barrier"
+    ft = object_write_barrier_type()
+    f = get(mod.functions, name, nothing)
+    if f !== nothing
+        check_object_write_barrier(f)
+        return f
+    end
+    f = LLVM.Function(mod, name, ft)
+    push!(f.function_attributes,
+          EnumAttribute(MemoryEffects(argmem=:read, inaccessiblemem=:readwrite)))
+    push!(f.function_attributes, EnumAttribute("nounwind"))
+    push!(f.function_attributes, EnumAttribute("norecurse"))
+    push!(f.parameter_attributes[1], EnumAttribute("readonly"))
+    return f
+end
+
+function check_object_write_barrier(f::LLVM.Function)
+    f.function_type == object_write_barrier_type() ||
+        throw(ArgumentError("julia.object_write_barrier is declared as $(string(f.function_type)), not as $(string(object_write_barrier_type()))"))
+    return
+end
 
 # A write barrier of `parent` for `children`, before the barrier call `ci`, in the style of
 # `lowering` (`Dialect.gc_barrier_lowering`; `:image` for FinalLowerGC from Julia 1.14 on):

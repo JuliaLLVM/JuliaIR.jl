@@ -24,6 +24,7 @@ JuliaIR.UnsupportedConstruct
 JuliaIR.LowerExcHandlersPass
 JuliaIR.HandlerNestingError
 JuliaIR.LowerSIMDLoopPass
+JuliaIR.JuliaLICMPass
 JuliaIR.ExpandAtomicModifyPass
 JuliaIR.AtomicModifyError
 JuliaIR.CancellationLoweringPass
