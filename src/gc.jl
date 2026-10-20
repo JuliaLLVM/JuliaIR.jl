@@ -126,11 +126,11 @@ end
 
 TBAATags() = TBAATags(tbaa_gcframe(), tbaa_tag(), tbaa_const())
 
-# set a TBAA tag, and mark loads of constant memory (`constant`, the `tbaa_const` tag)
+# set a TBAA tag, and mark loads of constant memory (the `tbaa_const` tag of `tags`)
 # invariant (`tbaa_decorate`)
-function tbaa_decorate!(md::MDNode, inst::Instruction, constant::MDNode=tbaa_const())
+function tbaa_decorate!(tags::TBAATags, md::MDNode, inst::Instruction)
     inst.metadata[LLVM.MD_tbaa] = md
-    if inst isa LLVM.LoadInst && md == constant
+    if inst isa LLVM.LoadInst && md == tags.constant
         inst.metadata[LLVM.MD_invariant_load] = MDNode(Metadata[])
     end
     return inst
@@ -348,7 +348,8 @@ function gc_declaration_type(g::GCCodegen, which::Symbol)
     end
 end
 
-# the name and type of a GC intrinsic or runtime function
+# the name and type of a GC intrinsic or runtime function; this always builds the type,
+# so code that may find the function already declared should use `get_or_declare`
 gc_declaration(g::GCCodegen, which::Symbol) =
     gc_declaration_name(g.dialect, which), gc_declaration_type(g, which)
 
@@ -576,7 +577,7 @@ function current_ptls_from_task!(g::GCCodegen, @nospecialize(task::Value), tbaa:
                       [ConstantInt(LLVM.Int32Type(), offset)], "ptls_field")
     end
     ptls_load = load!(g.builder, T_ptr, pptls, "ptls_load"; align=pointer_align(g))
-    tbaa_decorate!(tbaa, ptls_load, tbaa_tags(g).constant)
+    tbaa_decorate!(tbaa_tags(g), tbaa, ptls_load)
     return ptls_load
 end
 
@@ -598,7 +599,7 @@ function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value),
     load = load!(g.builder, T_ptr, psafepoint, "safepoint"; align=pointer_align(g),
                  ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
                                              LLVM.API.LLVMAtomicOrderingMonotonic)
-    tbaa === nothing || tbaa_decorate!(tbaa, load, tbaa_tags(g).constant)
+    tbaa === nothing || tbaa_decorate!(tbaa_tags(g), tbaa, load)
     return load
 end
 

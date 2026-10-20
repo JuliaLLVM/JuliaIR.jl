@@ -108,8 +108,8 @@ The rebuilt pipeline prints like Julia's (as `print_pipeline` shows them), excep
 ## Testing
 
 `test/pipeline.jl` compares the printed pipeline with Julia's `julia<...>` element at
-every level, alone and with each option toggled, both with Julia's C++ passes and with the ports, and checks
-on a few functions that the rebuilt pipeline with Julia's C++ passes optimizes exactly
+every level, alone and with each option toggled, both with Julia's C++ passes and with
+the ports, and checks on a few functions that the rebuilt pipeline with Julia's C++ passes optimizes exactly
 like Julia's. The upstream fixture `pipeline-prints.ll` runs in `jlopt`, as do derived
 copies of `pipeline-o*.jl`, which run the pipeline on the unoptimized IR of Julia's code
 generator in `jlopt` (for the host CPU, like Julia's JIT) instead of in Julia. The

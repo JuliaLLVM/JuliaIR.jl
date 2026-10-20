@@ -921,7 +921,7 @@ end
 # `AllocOpt::doInitialization` in C++, which runs for every function). Not the lifetime
 # intrinsics, whose declarations a later pass of the pipeline may remove (the pass can run
 # again on the module in `repeat<n>(...)`): only the pointer type and names they have.
-struct AllocOptModule
+struct AllocOptModuleFacts
     dl::DataLayout
     layout::String
     lifetime_size::Bool
@@ -932,10 +932,10 @@ struct AllocOptModule
     T_pjlvalue::LLVMType
 end
 
-function AllocOptModule(mod::LLVM.Module)
+function AllocOptModuleFacts(mod::LLVM.Module)
     layout = unsafe_string(API.LLVMGetDataLayoutStr(mod))
     ptr = LLVM.PointerType(alloca_addrspace(layout))
-    return AllocOptModule(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
+    return AllocOptModuleFacts(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
                           ptr, LLVM.overloaded_name(LIFETIME_START, LLVMType[ptr]),
                           LLVM.overloaded_name(LIFETIME_END, LLVMType[ptr]),
                           LLVM.PointerType(AS_TRACKED), LLVM.PointerType(AS_GENERIC))
@@ -953,7 +953,7 @@ function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOpt
     dialect = opts.dialect
     fns = JuliaFunctions(mod, dialect)
     fns.alloc_obj === nothing && return PreservedAnalyses(AllAnalyses)
-    m = module_facts(() -> AllocOptModule(mod), opts, mod, AllocOptModule)
+    m = module_facts(() -> AllocOptModuleFacts(mod), opts, mod, AllocOptModuleFacts)
     lifetime_start = intrinsic_declaration(mod, LIFETIME_START, m.lifetime_start_name,
                                            LLVMType[m.T_alloca])
     lifetime_end = intrinsic_declaration(mod, LIFETIME_END, m.lifetime_end_name,
