@@ -253,7 +253,9 @@ const IRCE_WITH_CLEANUP = define_pass("jl-irce-with-cleanup", :function,
 
 Add the passes of Julia's optimization pipeline `p` (see [`JuliaIR.JuliaPipeline`](@ref)
 for the keyword arguments) to a module pass manager or a pass builder `pm`, which needs
-this package's passes to be registered (see [`JuliaIR.register!`](@ref)).
+this package's passes to be registered (see [`JuliaIR.register!`](@ref)). Some passes'
+options depend on the LLVM version: the pipeline is built for the current library, so
+select the library that it will run with (see `LLVM.library!`).
 
 The pipeline is built in stages, which are available on their own (an experimental API):
 `early_simplification!`, `early_optimization!`, `intrinsic_lowering!` and `cleanup!` add
@@ -337,11 +339,15 @@ function optimize!(mod::LLVM.Module, tm::Union{Nothing,LLVM.TargetMachine}=nothi
     if tm !== nothing && Dialect(VERSION).cpu_features_rule === :subtarget
         options[CPU_FEATURES.name] = (; target_machine=tm)
     end
-    @dispose pb=PassBuilder() begin
-        register!(pb; options)
-        alias_analyses!(pb, p.level)
-        build_pipeline!(pb, p)
-        run!(pb, mod, tm)
+    # the pass builder, and the pipeline's choices that depend on the LLVM version, are
+    # those of the library that `mod` belongs to
+    LLVM.library!(mod.library) do
+        @dispose pb=PassBuilder() begin
+            register!(pb; options)
+            alias_analyses!(pb, p.level)
+            build_pipeline!(pb, p)
+            run!(pb, mod, tm)
+        end
     end
     return mod
 end

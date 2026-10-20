@@ -328,9 +328,7 @@ the Julia dialect of the IR:
   cast to pointers have a known alignment).
 """
 function library_facts(ctx::Context)
-    # LLVM.jl supports one library per session; this is where a per-context library
-    # would be queried once it supports several.
-    llvm = LLVM.version()
+    llvm = LLVM.version(ctx)
     return (; llvm, lifetime_size = llvm < v"22", lifetime_on_alloca = llvm >= v"22",
              masked_load_alignment = llvm < v"22", null_pointer_alignment = llvm < v"22")
 end

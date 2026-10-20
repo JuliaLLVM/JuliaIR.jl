@@ -41,6 +41,7 @@ read it first, including its Log). This file says where things are and how to co
 | S33 pass options and GC codegen helpers consolidated (S-D33) | done, branch `tb/s33-consolidate` (on S23) | see `git log` |
 | jlopt as a Pkg app (`[apps]`, `@main` in `src/app.jl` on Julia 1.11+, docs in testing.md) | done, branch `tb/jlopt-app` (on S33) | see `git log` |
 | S31 readability refactor of the ports, first part (S-D25, S-D29) | in progress, branch `tb/s31-readability` (on `tb/review-fixes`): keyword `Dialect`, LLVM.jl opcode/global/enum wrappers, shared helpers in irutils; ports' output unchanged | see `git log` |
+| #42 intrinsic IDs and library facts in the selected library's scope (no `Intrinsic` constants; probes read with Julia's LLVM; `optimize!` selects the module's library; `JULIAIR_TEST_LIBRARY`) | done, branch `l3/scoped-library` (on `tb/ci-trim`) | see `git log` |
 
 S29a details: local speed-ups of AllocOpt, PropagateJuliaAddrspaces, LateLowerGCFrame,
 LateGCCleanup and FinalLowerGC, output unchanged (differential and mode A). AllocOpt walks
@@ -605,6 +606,10 @@ rejects (`cpu-features-tokens.ll`'s untrimmed `"+sse2, +fma"`), now run before L
   (it writes `test/Manifest.toml`: delete it before running `Pkg.test()` again).
   For master, check out the nightly's own commit:
   `git -C DIR checkout $(julia +nightly -e 'print(Base.GIT_VERSION_INFO.commit)')`.
+- A library next to Julia's (GPUCompiler's configuration):
+  `JULIAIR_TEST_LIBRARY=<libLLVM-standalone-23.so> julia +<ver> --project -e 'using Pkg; Pkg.test()'`
+  runs only the in-process testsets, with that library selected after loading the package
+  with Julia's (the `libLLVM` preference instead compiles the package for the library).
 - Docs: `julia +1.12 --project=docs docs/make.jl`.
 - Each Julia version only tests its own dialect (lit lines and testsets): a change to the
   1.10 code path is only exercised by running Julia 1.10, so run all five versions.
@@ -646,6 +651,13 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   and older): only cache what no pass changes (data layout, types, uniqued metadata), never
   functions or globals, nor the absence of a function (LateLowerGCFrame declares some of
   LateGCCleanup's while a pipeline runs). `repeat<n>` itself is gone from LLVM 19.
+- Never keep an `Intrinsic` (or anything else a library resolves, like attribute kinds)
+  in a global constant: it is evaluated when precompiling, with Julia's library, and
+  GPUCompiler then runs the passes with another one, where the same ID is another
+  intrinsic (the ID of `llvm.lifetime.start` in Julia 1.13's LLVM 20 is that of
+  `llvm.instrprof.mcdc.tvbitmap.update` in LLVM 23). Look intrinsics up while running, once per pass
+  invocation where it matters (`GCIntrinsics`), and ask the context for the LLVM version
+  (`library_facts(ctx)`). `JULIAIR_TEST_LIBRARY` catches this.
 - `remark!` only builds a remark's message when a consumer is set (callback, `-pass-remarks`
   options, remark file); unlike LLVM.jl's eager path it doesn't fall back to `@debug`.
 - The scratchpad directory is shared by all subagents: keep files in a subdirectory

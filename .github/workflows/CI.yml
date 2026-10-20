@@ -239,6 +239,11 @@ jobs:
         run: tar -xf standalone.tar
         working-directory: ${{ runner.temp }}
       - uses: julia-actions/cache@v3
+      # first next to Julia's LLVM, selected after loading the package, as GPUCompiler does
+      - name: Run the in-process tests with the standalone LLVM next to Julia's
+        run: julia --project -e 'using Pkg; Pkg.test()'
+        env:
+          JULIAIR_TEST_LIBRARY: ${{ runner.temp }}/standalone/lib/libLLVM-standalone-23.so
       # LLVM.jl's `libLLVM` preference selects the library, in every environment that
       # loads LLVM.jl; the lit tests need the tools of its LLVM version
       - name: Use the standalone LLVM

@@ -9,6 +9,19 @@ end
 
 @testset "runtime facts" begin
 
+# the probes' IR comes from Julia's code generator, so it is read with Julia's LLVM, also
+# when a pass runs with another library
+@testset "probes use Julia's LLVM" begin
+    caller = LLVM.library()
+    probed = JuliaIR.with_probe_ir(JuliaIR.probe_safepoint, Tuple{}, "`GC.safepoint()`") do mod
+        @test mod.library === LLVM.Library(:julia)
+        @test LLVM.library() === LLVM.Library(:julia)
+        true
+    end
+    @test probed
+    @test LLVM.library() === caller
+end
+
 # Each fact of the running Julia against an independent check: what the runtime exposes,
 # or the code Julia generates for other functions than the probes. Facts without such a
 # check are compared with the values measured for x86-64 Linux (S24's research).

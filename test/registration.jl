@@ -295,10 +295,17 @@ end
 end
 
 @testset "library facts" begin
-    @dispose ctx=Context() begin
-        facts = JuliaIR.library_facts(ctx)
-        @test facts.llvm == LLVM.version()
-        @test facts.lifetime_size == (LLVM.version() < v"22")
+    # of the library that the context belongs to, which needn't be the current one (with
+    # `JULIAIR_TEST_LIBRARY` or LLVM.jl's `libLLVM` preference, Julia's isn't)
+    for lib in unique((LLVM.library(), LLVM.Library(:julia)))
+        @dispose ctx=Context(; library=lib) begin
+            facts = JuliaIR.library_facts(ctx)
+            @test facts.llvm == LLVM.version(lib)
+            @test facts.lifetime_size == (LLVM.version(lib) < v"22")
+            @test facts.lifetime_on_alloca == (LLVM.version(lib) >= v"22")
+            @test facts.masked_load_alignment == (LLVM.version(lib) < v"22")
+            @test facts.null_pointer_alignment == (LLVM.version(lib) < v"22")
+        end
     end
 end
 

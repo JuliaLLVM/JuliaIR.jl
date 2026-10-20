@@ -284,7 +284,8 @@ end
 const UNKNOWN_OFFSET = typemax(UInt32)
 
 is_lifetime(f::LLVM.Function) =
-    LLVM.isintrinsic(f, LIFETIME_START) || LLVM.isintrinsic(f, LIFETIME_END)
+    LLVM.isintrinsic(f, Intrinsic("llvm.lifetime.start")) ||
+    LLVM.isintrinsic(f, Intrinsic("llvm.lifetime.end"))
 # lifetime markers and debug intrinsics (`DbgInfoIntrinsic`)
 is_lifetime_or_debug(f::LLVM.Function) = is_lifetime(f) || is_debug_intrinsic(f)
 
@@ -342,7 +343,7 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
         elseif inst isa CallInst
             callee = inst.called_operand
             if callee isa LLVM.Function && LLVM.isintrinsic(callee)
-                if LLVM.isintrinsic(callee, MEMSET)
+                if LLVM.isintrinsic(callee, Intrinsic("llvm.memset"))
                     len = inst.arguments[3]
                     val = inst.arguments[2]
                     if offset == UNKNOWN_OFFSET || !(len isa ConstantInt) ||

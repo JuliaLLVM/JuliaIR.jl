@@ -61,9 +61,9 @@ read the first time a pass needs it, once per process:
 | `cfunction_cache`, `cfuncdata_size` | the code Julia generates for a `@cfunction` (Julia 1.12 and later): the arguments of its call of `jl_get_abi_converter` |
 
 The generated code is the text that `code_llvm` prints for a small function, parsed
-into a context of the LLVM library that LLVM.jl uses, which may be newer than Julia's
-own. If that code doesn't have the expected shape, reading the fact throws a
-`RuntimeError` that shows it.
+into a context of Julia's own LLVM library, whose IR it is, also when the passes run with
+another library (which is then selected again). If that code doesn't have the expected
+shape, reading the fact throws a `RuntimeError` that shows it.
 
 FinalLowerGC also needs the pool that an allocation of a given size comes from, which the
 runtime computes (`jl_gc_classify_pools`) rather than stores. It is not a field of

@@ -64,6 +64,23 @@ JuliaIR.optimize!(mod; level=2)           # optimize a module like Julia does
 JuliaIR.build_pipeline!(pb; level=2)      # or add the pipeline to a PassBuilder
 ```
 
+To use another LLVM library next to Julia's, e.g. a standalone build of a newer LLVM,
+register it with LLVM.jl and select it for the whole transformation, by creating the
+context with it:
+
+```julia
+lib = LLVM.register_library!(:other, "/path/to/libLLVM-standalone.so")
+Context(; library=lib, opaque_pointers=true) do ctx
+    @dispose mod=parse(LLVM.Module, ir) begin
+        run!(JuliaIR.RemoveNIPass(), mod)
+    end
+end
+```
+
+For an existing context, `context!(ctx) do ... end` selects it and its library. The passes
+look up intrinsics and decide what depends on the LLVM version in the library they run
+with, not in the one the package was loaded with.
+
 From the command line, `jlopt` is an `opt`-compatible driver that runs the ports, and
 maps Julia's pass names (`-passes=AllocOpt`, `-passes='julia<level=2>'`) to them; see
 [`jlopt`](testing.md#jlopt) for how to run or install it.
