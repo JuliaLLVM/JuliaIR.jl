@@ -31,6 +31,7 @@ read it first, including its Log). This file says where things are and how to co
 | S7 RemoveJuliaAddrspaces (`jl-remove-addrspaces`), RemoveAddrspaces (`jl-remove-all-addrspaces`) | done, branch `tb/s7-remove-addrspaces` (on `tb/juliair-deps-pin`) | see `git log` |
 | S15 FinalLowerGC (`jl-final-lower-gc`) | done, every dialect; branch `tb/s15-final-lower-gc` (on S7) | see `git log` |
 | S16 LowerPTLS (`jl-lower-ptls`) | done, branch `tb/s16-lower-ptls` (on S15) | see `git log` |
+| S20 CPUFeatures (`jl-cpu-features`), keyword-only pass options | done, branch `tb/s20-cpufeatures` (on S16) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every
@@ -354,6 +355,30 @@ spellings) agree at every version up to the documented deviations. DemoteFloat16
 the 2 others per version being AMDGPU's `late-lower-gc-addrspaces.ll`, which the port
 rejects (no thread pointer) where the C++ emits x86 asm.
 
+S20 details: `src/passes/cpu_features.jl`, docs page `docs/src/cpu_features.md`. Two
+rules (`Dialect.cpu_features_rule`): `:tokens` up to 1.13 (the first FMA feature in the
+caller's `target-features`, else in the JIT's string), `:subtarget` on master (LLVM.jl's
+`SubtargetInfo`: a `TargetMachine`'s subtarget, or one created from the attributes and the
+options; `julia.cpu.supports.*` only there, `Dialect.has_cpu_supports`). The target is
+given by the keyword-only options `target_cpu`, `target_features`, `target_machine`
+(`jlopt -mcpu/-mattr`): a pass option whose default in `define_pass` is `nothing` is
+keyword-only (rejected in pipeline text, left out by `options_string`, of any type,
+checked by the definition's `check` when the pass is created; to be merged with S16's
+`Optional` by the consolidation item), and
+`register!(pb; options=Dict(name => (; ...)))` sets such defaults per pass. Defaults:
+1.10-1.13 read the JIT's two answers from `code_llvm` of `Core.Intrinsics.have_fma`
+(probe `:jit_fma`, used only for modules of the JIT's architecture family); master by
+name = the generic CPU; with options and an empty module triple, everything (also
+`have_fma`) is decided for the target machine's or the JIT's triple (recorded deviation:
+the C++ keeps the empty triple for `have_fma`); `JuliaIR.jit_target()` (probe `:jit_target`:
+`jl_get_llvm_target`, `JLJITGetTripleString`) gives what Julia's pipeline uses. Non-call
+uses, arguments, `invoke` and non-integer results throw `CPUFeaturesError` before any
+change. Upstream `cpu-features*.ll` run at every pin (the AArch64/RISC-V ones are
+unsupported on x86 hosts), `multiversioning-x86.ll` as mixed (Julia's JuliaMultiVersioning
+first), `parsing.ll` maps `CPUFeatures`. Lit: `cpu-features.ll` (all versions),
+`cpu-features-tokens.ll` (up to 1.13), `cpu-features-subtarget.ll` (master, X86
+registered), `cpu-features-targets.ll` (master, AArch64/RISC-V registered or not). `always_have_fma` is for S21.
+
 JuliaIR.jl depends on the registered LLVM.jl 10.3 (compat `"10.3"`), the first release with
 everything the ports use (custom loop passes, the inlining API, value mapping and cloning,
 MemorySSA, the target triple wrapper, standalone libraries, ...; JuliaLLVM/LLVM.jl#678 to
@@ -629,6 +654,15 @@ one would skip its lines silently. Ledger checks match `julia=` without a versio
   LLVM.jl 10: qualify them (`LLVM.functions(mod)`).
 - The worktree sandbox refuses shell commands that mention `GIT_VERSION_INFO`, or `git`
   in complex forms; put such Julia code in a script file.
+
+- lit tests run with lit's internal shell (`ShTest(False)`), also on Windows: don't use
+  `sed` and friends in RUN lines, use `split-file` pieces instead. RUN lines inside a
+  `split-file` piece are still RUN lines of the whole file.
+- The worktree sandbox refuses `cd` before `git`, `git -C` with variables, and compound
+  commands that mention "git" (even `.gitignore`): put such steps in a script in the
+  scratchpad and run it with `bash <script>`.
+- `LocalPreferences.toml` selects one LLVMExtra build (per LLVM major): running another
+  Julia version with it fails LLVM.jl's precompilation, so set it right before each run.
 
 ## Decisions (Tim, 2026-10-17)
 

@@ -42,6 +42,9 @@ end
     @test !d13.has_cancellation_lowering && dm.has_cancellation_lowering
     @test (d10.except_enter, d11.except_enter, d12.except_enter, d13.except_enter,
            dm.except_enter) == (:no_task, :task, :task_buffer, :none, :none)
+    @test (d10.cpu_features_rule, d13.cpu_features_rule, dm.cpu_features_rule) ==
+          (:tokens, :tokens, :subtarget)
+    @test !d13.has_cpu_supports && dm.has_cpu_supports
 
     @test (d10.alloc_initialization, d11.alloc_initialization, d12.alloc_initialization) ==
           (:none, :store, :memset)

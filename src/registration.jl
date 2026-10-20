@@ -57,6 +57,9 @@ function option_argument(default::Optional{T}, @nospecialize(v), key) where {T}
     end
     throw(ArgumentError("option $key must be $(T <: Unsigned ? "an address" : "an integer") or `nothing`"))
 end
+# keyword-only options (default `nothing`) take any value, which the definition's
+# `check` validates
+option_argument(::Nothing, @nospecialize(v), key) = v
 function option_argument(default, @nospecialize(v), key)
     v isa typeof(default) || throw(ArgumentError("option $key must be a $(typeof(default))"))
     return v
@@ -78,11 +81,14 @@ options that are not given. `extra`
 holds the defaults of the pass-specific options, which determine how they are parsed:
 a `Bool` option is written `name` or `no-name`, a `Symbol` option `name=value`, an
 `Int` option a non-negative integer, a `String` option any text, and a
-[`JuliaIR.Optional`](@ref) option a signed integer or an address. Unknown and repeated
-options are rejected.
+[`JuliaIR.Optional`](@ref) option a signed integer or an address. The options named in
+`keyword_only` can't be given in the text, only as keyword arguments of the pass's
+constructor (e.g. feature lists, which contain `,`, LLVM's separator of pipeline
+elements). Unknown and repeated options are rejected.
 """
 function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
-                       gc_barrier::Symbol=:stock, extra::NamedTuple=(;))
+                       gc_barrier::Symbol=:stock, extra::NamedTuple=(;),
+                       keyword_only=())
     extra_values = Dict{Symbol,Any}(pairs(extra))
     seen = Set{Symbol}()
     for opt in split(str, ';'; keepempty=false)
@@ -114,6 +120,8 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
             gc_barrier = Symbol(replace(value, '-' => '_'))
         elseif haskey(extra, name)
             default = extra[name]
+            name in keyword_only &&
+                throw(ArgumentError("option $key can't be given in a pipeline, only as a keyword argument of the pass's constructor"))
             if default isa Bool
                 value === nothing ||
                     throw(ArgumentError("option $key is a flag, write $key or no-$key"))
@@ -150,12 +158,14 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
     return PassOptions(dialect, values)
 end
 
-# the options as text, the inverse of `parse_options`
-function options_string(opts::PassOptions)
+# the options as text, the inverse of `parse_options` (without the keyword-only options,
+# which have no text form)
+function options_string(opts::PassOptions; keyword_only=())
     policies = options_string(opts.dialect)
     parts = isempty(policies) ? String[] : [policies]
     for (k, v) in pairs(opts.extra)
         v isa Optional && v.value === nothing && continue
+        k in keyword_only && continue
         push!(parts, v isa Bool ? (v ? option_key(k) : "no-" * option_key(k)) :
                      v isa Symbol ? "$(option_key(k))=$(replace(string(v), '_' => '-'))" :
                      v isa Optional{<:Unsigned} ? "$(option_key(k))=0x$(string(v.value; base=16))" :
@@ -241,24 +251,31 @@ struct PassDefinition
     impl::Any
     extra::NamedTuple
     cpp_name::String
+    # `check(extra)` throws an `ArgumentError` for invalid values of the pass-specific
+    # options, which `parse_options` can't tell (keyword-only options, combinations)
+    check::Any
 end
 
-PassDefinition(name, kind, required, impl, extra=(;)) =
-    PassDefinition(name, kind, required, impl, extra, "")
+PassDefinition(name, kind, required, impl, extra=(;), cpp_name="") =
+    PassDefinition(name, kind, required, impl, extra, cpp_name, nothing)
+
+keyword_only_options(def::PassDefinition) =
+    Tuple(k for (k, v) in pairs(def.extra) if v === nothing)
 
 # the same pass with another implementation (e.g. one that captures a pass argument that
 # can't be a pipeline option)
 with_impl(def::PassDefinition, impl) =
-    PassDefinition(def.name, def.kind, def.required, impl, def.extra, def.cpp_name)
+    PassDefinition(def.name, def.kind, def.required, impl, def.extra, def.cpp_name,
+                   def.check)
 
 # all passes, in the order they were defined
 const PASSES = PassDefinition[]
 
 function define_pass(name, kind, impl; required::Bool, extra::NamedTuple=(;),
-                     cpp_name::String)
+                     cpp_name::String, check=nothing)
     startswith(name, "jl-") || error("pass names must start with jl-")
     kind in (:module, :function, :loop) || error("invalid pass kind $kind")
-    def = PassDefinition(name, kind, required, impl, extra, cpp_name)
+    def = PassDefinition(name, kind, required, impl, extra, cpp_name, check)
     filter!(p -> p.name != name || p.kind != kind, PASSES)
     push!(PASSES, def)
     return def
@@ -270,8 +287,10 @@ function run_pass(def::PassDefinition, @nospecialize(ir), am, opts::PassOptions)
     return def.impl(ir, am, opts)
 end
 
-# the LLVM.jl pass for a definition, with the defaults for options not given in the
-# pipeline
+# The LLVM.jl pass for a definition, with the defaults for options not given in the
+# pipeline. Options whose default in the definition is `nothing` can only be given here
+# (keyword-only, see `parse_options`), of any type: the definition's `check` validates
+# them.
 function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
                      gc_barrier::Symbol=:stock, kwargs...)
     given = map(collect(pairs(kwargs))) do (k, v)
@@ -280,9 +299,11 @@ function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto
         k => option_argument(def.extra[k], v, "$k of pass $(def.name)")
     end
     extra = merge(def.extra, (; given...))
+    keyword_only = keyword_only_options(def)
     # validate the defaults now, rather than when the pass is first used
-    parse_options(""; fp16, bf16, gc_barrier, extra)
-    parse = str -> parse_options(str; fp16, bf16, gc_barrier, extra)
+    parse_options(""; fp16, bf16, gc_barrier, extra, keyword_only)
+    def.check === nothing || def.check(extra)
+    parse = str -> parse_options(str; fp16, bf16, gc_barrier, extra, keyword_only)
     callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
     constructor = def.kind === :module ? ModulePass :
                   def.kind === :function ? FunctionPass : LoopPass
@@ -298,16 +319,25 @@ The names of the passes of this package, as used in pipelines.
 passes() = unique(def.name for def in PASSES)
 
 """
-    JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock)
+    JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock,
+                      options=Dict())
 
 Register every pass of this package with the pass builder `pb`, so that they can be used
 by name in its pipeline. The keyword arguments are the defaults of the policy options for
-occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)).
+occurrences of the passes that do not specify them (see [`JuliaIR.Dialect`](@ref)), and
+`options` maps the names of passes to the defaults of their own options, as a
+`NamedTuple` of the keyword arguments of their constructors (e.g.
+`Dict("jl-cpu-features" => (; target_cpu="haswell"))`).
 """
 function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
-                   gc_barrier::Symbol=:stock)
+                   gc_barrier::Symbol=:stock, options::AbstractDict=Dict{String,NamedTuple}())
+    for name in keys(options)
+        any(def -> def.name == name, PASSES) ||
+            throw(ArgumentError("options for unknown pass $name"))
+    end
     for def in PASSES
-        LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier))
+        LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier,
+                                       get(options, def.name, (;))...))
     end
     return pb
 end

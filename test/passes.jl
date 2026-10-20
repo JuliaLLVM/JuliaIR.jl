@@ -1213,4 +1213,181 @@ end
     end
 end
 
+@testset "CPUFeatures" begin
+    subtarget = dialect.cpu_features_rule === :subtarget
+    @test JuliaIR.CPUFeaturesPass().required
+
+    # the target can only be given as keyword arguments
+    @test_throws "target_cpu must be a string" JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
+    @dispose pb=PassBuilder() begin
+        @test_throws "target_cpu must be a string" JuliaIR.register!(pb;
+            options=Dict("jl-cpu-features" => (; target_cpu=42)))
+    end
+    @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") pb=PassBuilder() begin
+        JuliaIR.register!(pb)
+        add!(pb, "jl-cpu-features<target-features=+fma>")
+        @test_throws PassException run!(pb, mod)
+    end
+
+    # a module that asks about FMA for f32 and f64, without and with target attributes
+    function fold(ir; triple="x86_64-unknown-linux-gnu", kwargs...)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                target triple = "$triple"
+                declare i1 @julia.cpu.have_fma.f32()
+                declare i1 @julia.cpu.have_fma.f64()
+                $ir""") begin
+            run!(JuliaIR.CPUFeaturesPass(; kwargs...), mod)
+            return [parse(Bool, m[1]) for m in eachmatch(r"ret i1 (true|false)", string(mod))]
+        end
+    end
+    plain = """
+        define i1 @f32() {
+          %r = call i1 @julia.cpu.have_fma.f32()
+          ret i1 %r
+        }
+        define i1 @f64() {
+          %r = call i1 @julia.cpu.have_fma.f64()
+          ret i1 %r
+        }"""
+    attributed = replace(plain, "() {" => "() \"target-features\"=\"+fma\" {")
+    x86 = try
+        LLVM.Target(; triple="x86_64-unknown-linux-gnu")
+        true
+    catch
+        false
+    end
+
+    @testset "preserved analyses" begin
+        opts = JuliaIR.parse_options(""; extra=JuliaIR.CPU_FEATURES.extra)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+                declare i1 @julia.cpu.have_fma.f64()
+                define i1 @f() "target-features"="+fma" {
+                  %r = call i1 @julia.cpu.have_fma.f64()
+                  ret i1 %r
+                }""") begin
+            @test JuliaIR.cpu_features!(mod, nothing, opts) == PreservedAnalyses(CFGAnalyses)
+            @test JuliaIR.cpu_features!(mod, nothing, opts) == PreservedAnalyses(AllAnalyses)
+            # the declaration is kept
+            @test haskey(mod.functions, "julia.cpu.have_fma.f64")
+        end
+    end
+
+    @testset "errors" begin
+        # the module is left alone, also the calls before the one that fails
+        ir = """
+            target triple = "x86_64-unknown-linux-gnu"
+            declare i1 @julia.cpu.have_fma.f64()
+            declare void @g(ptr)
+            define i1 @f() "target-features"="+fma" {
+              %r = call i1 @julia.cpu.have_fma.f64()
+              call void @g(ptr @julia.cpu.have_fma.f64)
+              ret i1 %r
+            }
+            """
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+            before = string(mod)
+            err = try
+                run!(JuliaIR.CPUFeaturesPass(), mod)
+                nothing
+            catch err
+                err
+            end
+            @test err isa PassException && err.ex isa JuliaIR.CPUFeaturesError
+            @test string(mod) == before
+        end
+    end
+
+    @testset "the JIT's target" begin
+        jit = JuliaIR.jit_target()
+        triple = unsafe_string(ccall(:JLJITGetTripleString, Cstring, (Ptr{Cvoid},),
+                                     ccall(:JLJITGetJuliaOJIT, Ptr{Cvoid}, ())))
+        @test jit.triple == triple
+        if subtarget
+            target = ccall(:jl_get_llvm_target, NTuple{2,Ptr{UInt8}}, (Cstring, Bool),
+                           unsafe_string(Base.JLOptions().cpu_target), false)
+            @test jit.cpu == unsafe_string(target[1])
+            @test jit.features == unsafe_string(target[2])
+        else
+            @test jit.cpu === nothing && jit.features === nothing
+        end
+
+        # what Julia's code for `have_fma` returns, which its C++ pass decides by the JIT's
+        # target up to Julia 1.13
+        have32() = Core.Intrinsics.have_fma(Float32)
+        have64() = Core.Intrinsics.have_fma(Float64)
+        facts = JuliaIR.native_probe(:jit_fma)
+        @test facts.jit_fma_f32 == have32()
+        @test facts.jit_fma_f64 == have64()
+
+        # facts are only read when a function has no target features
+        empty!(JuliaIR.NATIVE_FACTS)
+        @test fold(attributed) == (subtarget ? [x86, x86] : [true, true])
+        @test !haskey(JuliaIR.NATIVE_FACTS, :jit_fma)
+        if subtarget
+            # by default, the generic CPU, as by name (which has FMA on AArch64, but not
+            # on x86); the JIT's target with options
+            generic = LLVM.isaarch64(LLVM.Triple(triple))
+            @test fold(plain; triple) == [generic, generic]
+            @test fold(plain; triple, target_cpu=jit.cpu, target_features=jit.features) ==
+                  [have32(), have64()]
+            # a module without a triple is for the JIT's when options give the target
+            @test fold(plain; triple="", target_cpu=jit.cpu, target_features=jit.features) ==
+                  [have32(), have64()]
+            @test fold(plain; triple="") == [false, false]
+        else
+            @test fold(plain; triple) == [have32(), have64()]
+            @test haskey(JuliaIR.NATIVE_FACTS, :jit_fma)
+
+            # the JIT's answers only hold for modules of its architecture: its feature
+            # string has no x86 features on ARM, and the other way around
+            try
+                JuliaIR.NATIVE_FACTS[:jit_target] =
+                    (; triple="armv7l-unknown-linux-gnueabihf", cpu=nothing, features=nothing)
+                JuliaIR.NATIVE_FACTS[:jit_fma] = (; jit_fma_f32=true, jit_fma_f64=false)
+                @test fold(plain; triple="armv7l-unknown-linux-gnueabihf") == [true, false]
+                @test fold(plain; triple="x86_64-unknown-linux-gnu") == [false, false]
+                JuliaIR.NATIVE_FACTS[:jit_target] =
+                    (; triple="i686-pc-linux-gnu", cpu=nothing, features=nothing)
+                @test fold(plain; triple="x86_64-unknown-linux-gnu") == [true, false]
+                @test fold(plain; triple="armv7l-unknown-linux-gnueabihf") == [false, false]
+                @test fold(plain; triple="riscv64-unknown-linux-gnu") == [false, false]
+            finally
+                empty!(JuliaIR.NATIVE_FACTS)
+            end
+        end
+    end
+
+    @testset "options" begin
+        # the features of the options; the CPU only counts from Julia 1.14 on
+        @test fold(plain; target_features="+fma") == [x86 || !subtarget, x86 || !subtarget]
+        @test fold(plain; target_features="-fma") == [false, false]
+        @test fold(plain; target_cpu="haswell") == (subtarget ? [x86, x86] : fold(plain))
+        @test fold(plain; target_cpu="haswell", target_features="") == [x86 && subtarget, x86 && subtarget]
+        @test fold(attributed; target_features="-fma") == (subtarget ? [x86, x86] : [true, true])
+
+        # a target machine, which the C++ pass gets in Julia's pipeline
+        if x86
+            target = LLVM.Target(; triple="x86_64-unknown-linux-gnu")
+            @dispose tm=LLVM.TargetMachine(target, "x86_64-unknown-linux-gnu"; cpu="haswell") begin
+                # up to Julia 1.13, only its (empty) feature string counts
+                @test fold(plain; target_machine=tm) == [subtarget, subtarget]
+                @test fold(attributed; target_machine=tm) == [true, true]
+                # from Julia 1.14 on, a module without a triple is for the target
+                # machine's
+                @test fold(plain; triple="", target_machine=tm) == [subtarget, subtarget]
+            end
+            @dispose tm=LLVM.TargetMachine(target, "x86_64-unknown-linux-gnu";
+                                           features="+fma") begin
+                @test fold(plain; target_machine=tm) == [true, true]
+                @test_throws "can't be combined" JuliaIR.CPUFeaturesPass(; target_machine=tm,
+                                                                          target_cpu="haswell")
+            end
+        end
+    end
+
+    @test JuliaIR.always_have_fma("julia.cpu.have_fma.f64", LLVM.Triple("arm64-apple-darwin")) === true
+    @test JuliaIR.always_have_fma("julia.cpu.have_fma.f16", LLVM.Triple("aarch64-unknown-linux-gnu")) === false
+    @test JuliaIR.always_have_fma("julia.cpu.have_fma.f64", LLVM.Triple("x86_64-unknown-linux-gnu")) === nothing
+end
+
 end

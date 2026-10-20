@@ -51,6 +51,17 @@ using JuliaIR: Dialect, PassOptions, parse_options, options_string
         @test_throws TypeError JuliaIR.Optional{BigInt}()
     end
 
+    # options that can't be given in text, only as keyword arguments
+    let extra = (; target=nothing, strong=false)
+        @test_throws "can't be given in a pipeline" parse_options("target=x86";
+                                                                    extra, keyword_only=(:target,))
+        opts = parse_options("strong"; extra=(; target="x86", strong=false),
+                             keyword_only=(:target,))
+        @test opts.extra == (; target="x86", strong=true)
+        # they have no text form
+        @test options_string(opts; keyword_only=(:target,)) == "strong"
+    end
+
     # round trip
     for str in ["", "fp16=demote", "fp16=keep;bf16=demote",
                 "gc-barrier=snapshot-field-precise"]
@@ -135,6 +146,26 @@ test_ir = """
                (; offset=JuliaIR.Optional{Int}(), addr=JuliaIR.Optional{UInt}(0x10))]
         @test_throws "must be an address or `nothing`" JuliaIR.custom_pass(optional_pass; addr=-1)
         @test_throws "must be an integer or `nothing`" JuliaIR.custom_pass(optional_pass; offset="x")
+
+        # options whose default is `nothing` are keyword-only, of any type
+        kw_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
+                                         (; target=nothing))
+        empty!(calls)
+        run!(JuliaIR.custom_pass(kw_pass; target=:x86), mod)
+        @test calls == [("test", PassOptions(Dialect(VERSION), (; target=:x86)))]
+        @dispose pb=PassBuilder() begin
+            LLVM.register!(pb, JuliaIR.custom_pass(kw_pass))
+            add!(pb, "jl-test<target=x86>")
+            @test_throws PassException run!(pb, mod)
+        end
+
+        # a definition's check validates them when the pass is created
+        checked_pass = JuliaIR.PassDefinition("jl-test", :module, false, record_pass,
+                                              (; target=nothing), "",
+                                              extra -> extra.target isa Union{Nothing,Symbol} ||
+                                                  throw(ArgumentError("target must be a Symbol")))
+        @test !JuliaIR.custom_pass(checked_pass; target=:x86).required
+        @test_throws "target must be a Symbol" JuliaIR.custom_pass(checked_pass; target="x86")
     end
 end
 
@@ -216,6 +247,19 @@ end
         @test length(pb.custom_passes) == length(JuliaIR.PASSES)
         # FinalLowerGC is registered as a module and as a function pass
         @test count(p -> p.name == "jl-final-lower-gc", pb.custom_passes) == 2
+    end
+    # defaults for the options of a pass
+    @dispose pb=PassBuilder() begin
+        options = Dict("jl-gc-invariant-verifier" => (; strong=true))
+        @test JuliaIR.register!(pb; options) === pb
+    end
+    @dispose pb=PassBuilder() begin
+        @test_throws "must be a Bool" JuliaIR.register!(pb;
+            options=Dict("jl-gc-invariant-verifier" => (; strong=:yes)))
+    end
+    @dispose pb=PassBuilder() begin
+        @test_throws "options for unknown pass" JuliaIR.register!(pb;
+            options=Dict("jl-nonexistent" => (; strong=true)))
     end
 end
 

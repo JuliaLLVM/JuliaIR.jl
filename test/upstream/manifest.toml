@@ -194,7 +194,7 @@ reason = "its RUN lines use typed pointers, but the file already has the checks 
 
 [fixtures."parsing.ll"]
 kind = "mixed"
-ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerPTLSPass", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
+ports = ["RemoveNI", "AllocOpt", "CombineMulAdd", "CPUFeatures", "DemoteFloat16", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM", "LowerPTLSPass", "LowerSIMDLoop", "PropagateJuliaAddrspaces", "RemoveJuliaAddrspaces"]
 status = "run"
 reason = "parses every pass name of Julia's pipeline; the ported ones are mapped to the ports"
 ledger_empty = ["jl-lower-simdloop"]  # the module has no loops
@@ -204,6 +204,30 @@ status = "override"
 patch = "derived/1.10/parsing.ll.patch"
 reason = "its only RUN line uses typed pointers; the derived copy parses into an opaque context instead, which does not change what is tested"
 
+
+## CPU features (CPUFeatures)
+
+[fixtures."cpu-features.ll"]
+kind = "port"
+ports = ["CPUFeatures"]
+status = "run"
+
+[fixtures."cpu-features-riscv.ll"]
+kind = "port"
+ports = ["CPUFeatures"]
+status = "run"
+reason = "needs a RISC-V host (`REQUIRES: riscv64`)"
+
+[fixtures."cpu-features-supports.ll"]
+kind = "port"
+ports = ["CPUFeatures"]
+status = "run"
+
+[fixtures."cpu-features-supports-aarch64.ll"]
+kind = "port"
+ports = ["CPUFeatures"]
+status = "run"
+reason = "needs an AArch64 host (`REQUIRES: aarch64`)"
 
 ## GC frame lowering (LateLowerGCFrame, FinalLowerGC), with Julia's C++ passes where the
 ## RUN lines name them (JuliaMultiVersioning)
@@ -289,26 +313,6 @@ cpp = "its RUN lines rely on LLVM 15 parsing Julia 1.10's typed IR into a typed 
 
 ## CPU-only passes
 
-[fixtures."cpu-features.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CPUFeatures is CPU-only"
-
-[fixtures."cpu-features-riscv.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CPUFeatures is CPU-only"
-
-[fixtures."cpu-features-supports.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CPUFeatures is CPU-only"
-
-[fixtures."cpu-features-supports-aarch64.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "CPUFeatures is CPU-only"
-
 [fixtures."lower-handlers.ll"]
 kind = "port"
 ports = ["LowerExcHandlers"]
@@ -330,9 +334,10 @@ status = "exclude"
 reason = "JuliaMultiVersioning is CPU-only"
 
 [fixtures."multiversioning-x86.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "JuliaMultiVersioning and CPUFeatures are CPU-only"
+kind = "mixed"
+ports = ["CPUFeatures"]
+status = "run"
+reason = "Julia's JuliaMultiVersioning followed by CPUFeatures (only on Julia's LLVM)"
 
 [fixtures."pipeline-prints.ll"]
 kind = "cpu"

@@ -73,6 +73,17 @@ struct Dialect
     CancellationLowering (Julia 1.14 and later)."
     has_cancellation_lowering::Bool
 
+    # CPUFeatures
+    "How CPUFeatures decides whether a target has FMA: `:tokens` (by looking for
+    `+fma`, `+fma4`, `+vfp4` or `+vfp4sp` in the function's `target-features`, or else
+    in the JIT's feature string; Julia 1.13 and older) or `:subtarget` (by asking LLVM's
+    subtarget tables about the function's `target-cpu` and `target-features`, or the
+    target machine's CPU and features; Julia 1.14 and later, which also know RISC-V)."
+    cpu_features_rule::Symbol
+    "Whether `julia.cpu.supports.*` intrinsics exist (`Base.@cpu_supports`, lowered by
+    CPUFeatures; Julia 1.14 and later)."
+    has_cpu_supports::Bool
+
     # allocations
     "Whether `julia.gc_alloc_obj` calls carry `allockind` and return alignment
     attributes at the call site (instead of only on the declaration)."
@@ -309,6 +320,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    minor == v"1.12" ? :task_buffer : :none, # except_enter
                    minor <= v"1.11",                      # has_combine_muladd
                    minor >= v"1.14",                      # has_cancellation_lowering
+                   minor >= v"1.14" ? :subtarget : :tokens, # cpu_features_rule
+                   minor >= v"1.14",                      # has_cpu_supports
                    minor >= v"1.11",                      # alloc_callsite_attrs
                    minor == v"1.10" ? :none :
                    minor == v"1.11" ? :store : :memset,   # alloc_initialization

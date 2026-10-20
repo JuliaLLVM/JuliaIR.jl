@@ -81,3 +81,13 @@ and the getter and key are addresses in the process. Code that embeds them, like
 [LowerPTLS](lower_ptls.md)'s JIT mode, only works in the process that compiled it. Like
 every fact, they are read when a pass first needs them, never while the package is
 precompiled.
+
+## The JIT's target
+
+What Julia's JIT compiles for is not a runtime fact, but CPUFeatures needs it as the
+default target: its answers up to Julia 1.13 (read from the code Julia generates for
+`Core.Intrinsics.have_fma`), and its CPU, features and triple from Julia 1.14 on
+(`jl_get_llvm_target` and `JLJITGetTripleString`, see [`JuliaIR.jit_target`](@ref)). They
+are read the same way, once per process. The pass options that replace them describe a
+target rather than name a fact (`target_cpu`, `target_features`, `target_machine`); see
+[CPUFeatures](cpu_features.md).

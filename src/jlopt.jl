@@ -108,6 +108,8 @@ Base.@kwdef mutable struct JloptOptions
     output::String = "-"
     input::Union{Nothing,String} = nothing
     triple::Union{Nothing,String} = nothing
+    cpu::Union{Nothing,String} = nothing
+    features::Union{Nothing,String} = nothing
     map_passes::Bool = true
     llvm_options::Vector{String} = String[]
 end
@@ -124,6 +126,11 @@ const JLOPT_USAGE = """
       -S                        write textual IR instead of bitcode
       -o FILE                   write the output to FILE (default: stdout)
       -mtriple=TRIPLE           override the module's target triple
+      -mcpu=CPU, -mattr=FEATURES
+                                the CPU and features (e.g. +avx2,-fma) of the target
+                                machine, as in opt; also the target that CPUFeatures
+                                (jl-cpu-features) folds for (which, unlike Julia's C++
+                                pass by name in opt, then uses them)
       -map-julia-passes=0       don't replace Julia's C++ passes by the ports (default:
                                 \$JULIAIR_MAP_PASSES, or 1)
       -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
@@ -167,6 +174,10 @@ function parse_jlopt_args(args::Vector{String})
             opts.output = m[1]
         elseif (m = match(r"^--?mtriple=(.*)$", arg)) !== nothing
             opts.triple = m[1]
+        elseif (m = match(r"^--?mcpu=(.*)$", arg)) !== nothing
+            opts.cpu = m[1]
+        elseif (m = match(r"^--?mattr=(.*)$", arg)) !== nothing
+            opts.features = m[1]
         elseif (m = match(r"^--?map-julia-passes=([01])$", arg)) !== nothing
             opts.map_passes = m[1] == "1"
         elseif occursin(LLVM_OPTIONS, arg)
@@ -253,10 +264,13 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
             opts.triple === nothing || (mod.triple = opts.triple)
             # like opt, refuse broken input, and verify the output
             verify(mod)
-            tm = target_machine(mod)
+            tm = target_machine(mod; cpu=something(opts.cpu, ""),
+                                features=something(opts.features, ""))
+            # the target that CPUFeatures folds for, if given
+            cpu_target = (; target_cpu=opts.cpu, target_features=opts.features)
             try
                 @dispose pb=PassBuilder() begin
-                    register!(pb)
+                    register!(pb; options=Dict(CPU_FEATURES.name => cpu_target))
                     add!(pb, pipeline)
                     run!(pb, mod, tm)
                 end
@@ -272,9 +286,10 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     return
 end
 
-# Like `opt`, optimize for the module's target if it has one (with the default CPU and
-# features), which determines e.g. the cost model of the vectorizer.
-function target_machine(mod::LLVM.Module)
+# Like `opt`, optimize for the module's target if it has one (with the CPU and features
+# of `-mcpu` and `-mattr`, the default ones otherwise), which determines e.g. the cost
+# model of the vectorizer.
+function target_machine(mod::LLVM.Module; cpu::String="", features::String="")
     triple = mod.triple
     isempty(triple) && return nothing
     LLVM.InitializeAllTargetInfos()
@@ -288,7 +303,7 @@ function target_machine(mod::LLVM.Module)
                 sprint(showerror, err))
         return nothing
     end
-    return LLVM.TargetMachine(target, triple)
+    return LLVM.TargetMachine(target, triple; cpu, features)
 end
 
 function write_output(mod::LLVM.Module, opts::JloptOptions, stdout::IO)
@@ -325,7 +340,8 @@ function jlopt_main(args::Vector{String})
             flush(Base.stderr)
             ccall(:abort, Cvoid, ())
         end
-        if ex isa UnsupportedInputError || ex isa RuntimeError || ex isa DeclarationError
+        if ex isa UnsupportedInputError || ex isa RuntimeError || ex isa CPUFeaturesError ||
+           ex isa DeclarationError
             showerror(Base.stderr, ex)
             println(Base.stderr)
             return 1
