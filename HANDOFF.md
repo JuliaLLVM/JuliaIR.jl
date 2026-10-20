@@ -34,6 +34,7 @@ read it first, including its Log). This file says where things are and how to co
 | S20 CPUFeatures (`jl-cpu-features`), keyword-only pass options | done, branch `tb/s20-cpufeatures` (on S16) | see `git log` |
 | S21 JuliaMultiVersioning (`jl-multiversioning`) | done, branch `tb/s21-multiversioning` (on S20) | see `git log` |
 | S9 JuliaLICM (`jl-licm`) | done, branch `tb/s9-julia-licm` (on S21) | see `git log` |
+| S36 ledger appends with O_APPEND (concurrent processes garbled lines) | done, branch `tb/s36-ledger-append` (on S9) | see `git log` |
 
 S4 details: `src/allocations.jl` (escape analysis, shared with the future JuliaLICM port)
 and `src/passes/alloc_opt.jl`. Every upstream AllocOpt fixture passes in mode A on every

@@ -227,14 +227,24 @@ end
 # every invocation of a pass appends a line to it, so that tests can prove that the port
 # ran (and not, e.g., Julia's C++ pass of a similar name). Not printed to stdout or
 # stderr, which some tests check.
+#
+# Several processes (e.g. test workers) may append to the same ledger. `open(path, "a")`
+# doesn't open with O_APPEND but seeks to the end once, so a concurrent writer can
+# overwrite a line. Each line is instead one unbuffered write to a file opened with
+# O_APPEND (FILE_APPEND_DATA on Windows), which a local file system appends as a whole
+# unless the write comes up short (e.g. on a full disk). Network file systems (e.g. NFS)
+# don't guarantee that.
 const LEDGER = Ref("")
 
 function ledger_write(fields...)
     isempty(LEDGER[]) && return
     line = join((getpid(), fields...), '\t') * '\n'
-    # one write per line, so that lines of concurrent processes don't interleave
-    open(LEDGER[], "a") do io
-        write(io, line)
+    fs = Base.Filesystem
+    file = fs.open(LEDGER[], fs.JL_O_WRONLY | fs.JL_O_CREAT | fs.JL_O_APPEND, 0o666)
+    try
+        write(file, line)
+    finally
+        close(file)
     end
     return
 end

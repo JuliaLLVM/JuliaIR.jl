@@ -43,6 +43,11 @@ the LLVM version), and `jlopt` appends one with the pipeline it runs:
 ; LEDGER: pass jl-remove-ni julia=
 ```
 
+Several processes may share a ledger, e.g. the workers of a test suite: each line is
+appended with a single write to a file opened in append mode, so lines of concurrent
+processes neither interleave nor overwrite each other on a local file system. Network file
+systems such as NFS don't guarantee this.
+
 ## `jlopt`
 
 `bin/jlopt` is an `opt`-compatible driver: it parses its input into a context with opaque
