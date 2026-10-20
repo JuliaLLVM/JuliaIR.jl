@@ -55,6 +55,47 @@ end
         run!(JuliaIR.DemoteFloat16Pass(; fp16=:demote), mod)
         @test occursin("%r = fptrunc float", string(mod))
     end
+
+    # On Julia 1.10 and 1.11, a function without `target-features` keeps `half` if the
+    # JIT compiles it natively, as in Julia's pipeline: here an AArch64 JIT with FP16,
+    # whose probes are faked.
+    if JuliaIR.Dialect(VERSION).fp16_rule !== :attributes
+        ir = """
+            target triple = "aarch64-unknown-linux-gnu"
+            define half @f(half %a) {
+              %r = fadd half %a, %a
+              ret half %r
+            }"""
+        facts = JuliaIR.NATIVE_FACTS
+        saved = copy(facts)
+        try
+            facts[:jit_target] = (; triple="aarch64-unknown-linux-gnu", cpu=nothing,
+                                  features=nothing)
+            facts[:jit_fp16] = true
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+                run!(JuliaIR.DemoteFloat16Pass(), mod)
+                @test occursin("%r = fadd half", string(mod))
+                # unless the JIT is ignored, like in `opt`
+                run!(JuliaIR.DemoteFloat16Pass(; jit_features=false), mod)
+                @test occursin("%r = fptrunc float", string(mod))
+            end
+            # or the module is for another architecture
+            facts[:jit_target] = (; triple="x86_64-unknown-linux-gnu", cpu=nothing,
+                                  features=nothing)
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+                run!(JuliaIR.DemoteFloat16Pass(), mod)
+                @test occursin("%r = fptrunc float", string(mod))
+            end
+        finally
+            empty!(facts)
+            merge!(facts, saved)
+        end
+
+        # the probe agrees with the code Julia generates
+        ir = sprint(io -> InteractiveUtils.code_llvm(io, *, Tuple{Float16,Float16};
+                                                     debuginfo=:none))
+        @test JuliaIR.native_probe(:jit_fp16) == occursin("fmul half", ir)
+    end
 end
 
 @testset "GCInvariantVerifier" begin

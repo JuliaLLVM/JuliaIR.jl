@@ -97,11 +97,11 @@ Differences with Julia's C++ passes:
   `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
   value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass
   turns it into `llvm.memset`).
-- DemoteFloat16 never uses the host's CPU features (on Julia 1.10 and 1.11, the C++ pass
-  falls back to them for functions without `target-features`); the `fp16` and `bf16`
-  options override the Julia version's rule. It leaves alone instructions that have no
-  operand to demote (the C++ pass recreates every instruction with a 16-bit result,
-  dropping its name), and names the replacement like the original.
+- DemoteFloat16's `fp16` and `bf16` options override the Julia version's rule, and its
+  `jit_features=false` option ignores the JIT's features for functions without
+  `target-features` (Julia 1.10, 1.11), like the C++ pass in `opt`. It leaves alone
+  instructions that have no operand to demote (the C++ pass recreates every instruction
+  with a 16-bit result, dropping its name), and names the replacement like the original.
 - GCInvariantVerifier throws a `JuliaIR.GCInvariantError` listing every violation
   instead of printing them and aborting (`jlopt` prints the error and aborts, like
   `opt`). It reads the address space of vectors of pointers from their elements on

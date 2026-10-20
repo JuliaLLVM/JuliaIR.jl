@@ -4,11 +4,9 @@
 # keep intermediate results in `float`, breaking e.g. Dekker arithmetic). Port of Julia's
 # `src/llvm-demote-float16.cpp`; which functions it demotes depends on the dialect
 # (`fp16_rule`) unless the `fp16`/`bf16` policies say so explicitly. Unlike the C++ pass,
-# the port never consults the host's CPU features (on Julia 1.10 and 1.11, the C++ pass
-# uses the JIT's features for functions without `target-features`; in `opt`, and here,
-# such functions have none), leaves instructions alone that have nothing to demote (the
-# C++ pass recreates every instruction with a 16-bit result type, also when that type is
-# kept), and gives the replacement the name of the original.
+# the port leaves instructions alone that have nothing to demote (the C++ pass recreates
+# every instruction with a 16-bit result type, also when that type is kept), and gives
+# the replacement the name of the original.
 
 const DEMOTED_OPCODES = (API.LLVMFNeg, API.LLVMFAdd, API.LLVMFSub, API.LLVMFMul,
                          API.LLVMFDiv, API.LLVMFRem, API.LLVMFCmp)
@@ -22,7 +20,7 @@ end
 
 # whether a type is kept (`true`) or demoted, according to the policy or to the rule of
 # the Julia version
-function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect)
+function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect, jit_features::Bool)
     dialect.fp16 === :keep && return true
     dialect.fp16 === :demote && return false
     if dialect.fp16_rule === :attributes
@@ -31,8 +29,12 @@ function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect)
         # half uses excessive precision on PowerPC (llvm/llvm-project#97975)
         return !LLVM.isppc(LLVM.Triple(triple))
     else
-        features = something(string_attribute(f, "target-features"), "")
+        features = string_attribute(f, "target-features")
         tt = LLVM.Triple(triple)
+        # without the attribute, the C++ pass searches the JIT's feature string (none in
+        # `opt`)
+        features === nothing && jit_features && jit_keeps_fp16(tt, dialect) && return true
+        features = something(features, "")
         if LLVM.isaarch64(tt)
             (occursin("+fp16fml", features) || occursin("+fullfp16", features)) &&
                 return true
@@ -40,6 +42,23 @@ function keeps_fp16(f::LLVM.Function, triple::String, dialect::Dialect)
             occursin("+avx512fp16", features) && return true
         end
         return string_attribute(f, "julia.hasfp16") !== nothing
+    end
+end
+
+# What the C++ pass of Julia 1.10 and 1.11 decides with the JIT's feature string, which
+# Julia doesn't export: like for the code Julia generates for `Float16` arithmetic, if
+# the module is for the JIT's architecture (the string only has features of that one).
+# For IR of another Julia version than the running one, there is no JIT to ask.
+function jit_keeps_fp16(tt::LLVM.Triple, dialect::Dialect)
+    dialect.minor == dialect_minor(VERSION) || return false
+    (LLVM.isaarch64(tt) || tt.arch === :x86_64) || return false
+    try
+        jit = LLVM.Triple(native_probe(:jit_target).triple)
+        same_arch = LLVM.isaarch64(tt) ? LLVM.isaarch64(jit) : jit.arch === :x86_64
+        return same_arch && native_probe(:jit_fp16)
+    catch err
+        err isa RuntimeError || rethrow()
+        throw(RuntimeError("cannot tell whether the JIT of the running $(running_julia()) has native Float16 arithmetic: $(err.msg); ignore its features with the option no-jit-features"))
     end
 end
 
@@ -82,7 +101,7 @@ typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
 function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     dialect = opts.dialect
     triple = f.parent.triple
-    keep_fp16 = keeps_fp16(f, triple, dialect)
+    keep_fp16 = keeps_fp16(f, triple, dialect, opts.extra.jit_features)
     keep_bf16 = keeps_bf16(f, dialect)
     keep_fp16 && keep_bf16 && return PreservedAnalyses(AllAnalyses)
 
@@ -144,10 +163,11 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
 end
 
 const DEMOTE_FLOAT16 = define_pass("jl-demote-float16", :function, demote_float16!;
-                                   required=true, cpp_name="DemoteFloat16")
+                                   required=true, extra=(; jit_features=true),
+                                   cpp_name="DemoteFloat16")
 
 """
-    JuliaIR.DemoteFloat16Pass(; fp16=:auto, bf16=:auto)
+    JuliaIR.DemoteFloat16Pass(; fp16=:auto, bf16=:auto, jit_features=true)
 
 Perform floating-point arithmetic on `half` (`fp16`) and `bfloat` (`bf16`) values in
 `float`, truncating every result, so that the IEEE semantics of the 16-bit types are
@@ -157,6 +177,12 @@ apply to every function, `:auto` follows the rule of the Julia version, which re
 function's `target-features` (Julia 1.10, 1.11) or `julia.hasfp16`/`julia.hasbf16`
 attributes (1.12 and later; without them, `half` is demoted only on PowerPC and `bfloat`
 is kept). Operations with all fast-math flags are left alone.
+
+For a function without `target-features`, Julia 1.10 and 1.11 use the features of
+Julia's JIT, as the C++ pass does in Julia's pipeline: `half` is kept if the JIT
+compiles `Float16` arithmetic natively and the module is for its architecture. That
+only applies to IR of the running Julia version; `jit_features=false`
+(`no-jit-features` in a pipeline) ignores the JIT, like the C++ pass in `opt`.
 
 Meant to run late in the pipeline, not followed by `instcombine` (which would fold the
 conversions away); `gvn` can clean up redundant conversions. Like Julia's C++ pass, it
