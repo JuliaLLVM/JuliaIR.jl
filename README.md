@@ -26,7 +26,8 @@ a GC frame, as on GPUs (`jl-late-gc-cleanup`).
   supported this way.
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions, e.g. a separately built library like
-  libLLVMGPU.
+  libLLVMGPU. They are tested on both: on the LLVM of each supported Julia version, and
+  with each version's IR on the newest LLVM (currently a standalone LLVM 23).
 - **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.

@@ -11,8 +11,9 @@ differential test against Julia's C++ passes, which is not part of `Pkg.test()`.
   `jlopt` driver, and the passes' Julia-level behaviour;
 - a [lit](https://llvm.org/docs/CommandGuide/lit.html) suite in `test/lit`: `.ll` files
   with `RUN:` lines in the format of LLVM's and Julia's own tests, in which `opt` is
-  `bin/jlopt`. lit, `FileCheck` and LLVM's other test tools come from
-  `LLVM_utils_unified_jll`; `python3` must be available;
+  `bin/jlopt`. lit comes from `LLVM_utils_unified_jll`, and so do `FileCheck` and LLVM's
+  other test tools when the passes run on Julia's LLVM (with another library, see below);
+  `python3` must be available;
 - tests of the harness for Julia's own pass tests (below), on a synthetic checkout.
 
 The passes process the IR of the running Julia, so each Julia version tests its own
@@ -140,6 +141,25 @@ library LLVM.jl has loaded.
 julia +1.12 --project=test test/upstream/run.jl julia-src --mode B
 ```
 
+The library is selected with LLVM.jl's `libLLVM` preference, in the `LocalPreferences.toml`
+of every environment that loads LLVM.jl (the package's for `Pkg.test()`, `test/` for the
+harness): a standalone library built by LLVM.jl's `deps/build_standalone.jl`:
+
+```toml
+[LLVM]
+libLLVM = "/path/to/libLLVM-standalone-23.so"
+```
+
+The lit tests then need the LLVM tools (`FileCheck`, `llvm-dis`, ...) of that library's
+version, as those of Julia's LLVM can't read the bitcode that a newer one writes:
+`JULIAIR_LLVM_TOOLS` names their directory, e.g. the `tools` directory of the
+LLVM_full_jll artifact that the library was built from. Without the preference, the
+command above is a dry run on Julia's own LLVM; the harness's report names the library.
+The package tests run under the preference too (`Pkg.test()`, with the same
+`JULIAIR_LLVM_TOOLS`); the tests that compare with Julia's C++ passes or its type
+lowering, which only exist in Julia's LLVM, are skipped there (`julia_llvm_in_use()` in
+the testsets, the lit feature `julia-llvm` in RUN lines).
+
 Two things differ from mode A, the default run of the previous section:
 
 - A standalone LLVM doesn't have Julia's C++ passes. RUN lines whose pipeline names one
@@ -160,6 +180,15 @@ As in mode A, every patch must be needed: the harness also runs each patched fix
 without its mode-B patch, and a fixture with a mode-A override with the mode-B patch
 alone, and fails if either passes. A patch file for a fixture that the pin doesn't have
 is an error.
+
+CI runs mode B for every pin of the `upstream` job, on Linux, in the `mode-b` jobs. The
+`standalone-llvm` job builds the standalone LLVM 23 with the `deps/build_standalone.jl`
+of the LLVM.jl release that the package resolves to (and caches it, so that it is rebuilt
+only when that release, the LLVM version or the runner image change), and packs it
+together with the LLVM 23 tools that the tests need. Each `mode-b` job runs the package tests (`Pkg.test()`, after checking
+that LLVM.jl loaded the standalone library) and then the harness with `--mode B`, both on
+that library. The job of the development version also checks that its Julia doesn't use
+an LLVM newer than the standalone one, in which case the latter needs to move on.
 
 ### Where the mode-B patches come from
 
@@ -184,6 +213,7 @@ opaque pointers use, except for input repairs, which say so. For LLVM 23:
 
 | rule | LLVM | change |
 |---|---|---|
+| `memoryssa-alias` | 16 | `print<memoryssa>` no longer prints the alias result of an access (`MayAlias`) |
 | `lifetime-size` | 22 | `llvm.lifetime.start/end` lost their size argument |
 | `masked-align` | 22 | the alignment of `llvm.masked.load/gather` became an `align` attribute |
 | `target-features-sign` | 22 | the verifier requires `+`/`-` in `"target-features"`; an input repair of `multiversioning-clone-only.ll` |
@@ -210,11 +240,18 @@ with the `FileCheck` next to it. The fixtures get their plain mode-B patches, no
 mode-A ones, which are about the ports. Bitcode output is passed on as it is (a newer LLVM
 upgrades it when reading it), and so is what `opt` prints on stderr: the harness lists
 the RUN lines whose checks read stderr (`print<memoryssa>`, diagnostics), which therefore
-see the pin's printing. A patch that isn't needed fails here too.
+see the pin's printing. A patch that isn't needed fails here too, except for a fixture
+whose RUN lines all check stderr (those of the `memoryssa-alias` rule): it passes with or
+without its patch, which the harness lists as not validated, and only mode B checks it.
 
 The oracle passes at every pin with the patches of `derived-B/llvm23`, and Julia 1.14
 and master, which already use LLVM 23, need none. Mode B validates the
 composed patches against the ports.
+
+In CI, the `oracle` jobs run it at every pin, with the `opt` of the `standalone-llvm` job,
+when a pull request or a push changes what it checks: `test/upstream` (the harness, the
+pins, the patches and their generator), `test/litsetup.jl`, `bin/jlopt` or the workflow;
+and when the workflow is started by hand.
 
 ## Differential test against Julia's C++ passes
 

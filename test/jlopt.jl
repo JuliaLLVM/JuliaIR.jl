@@ -101,9 +101,12 @@ ir = """
         try
             jlopt(["-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir), stdout=devnull)
             @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
-            jlopt(["-map-julia-passes=0", "-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir),
-                  stdout=devnull)
-            @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
+            # (only Julia's LLVM has Julia's passes)
+            if julia_llvm_in_use()
+                jlopt(["-map-julia-passes=0", "-passes=RemoveNI", "-S"]; stdin=IOBuffer(ir),
+                      stdout=devnull)
+                @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
+            end
         finally
             JuliaIR.LEDGER[] = old
         end

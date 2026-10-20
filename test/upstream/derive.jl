@@ -56,6 +56,15 @@ function decimal_literal(type, hex)
 end
 
 const RULES = [
+    Rule("memoryssa-alias", 16,
+         "LLVM 16 no longer prints the alias result of an optimized MemorySSA access " *
+         "(`MemoryUse(2) MayAlias`), as AA stopped tracking must-alias in mod/ref results " *
+         "(D130713, llvm/llvm-project@f96ea53e892e); Julia's fixture dropped it in 8e4221f676",
+         Dict("1.10/julia-simdloop-memoryssa.ll" => 3),
+         function (line, kind)
+             kind == :check || return line
+             return replace(line, r"(Memory(?:Use|Def)\([^()]*\)) (?:May|Must|Partial)Alias" => s"\1")
+         end),
     Rule("lifetime-size", 22,
          "LLVM 22 removed the size argument of llvm.lifetime.start/end " *
          "(llvm/llvm-project#150248); Julia's fixtures dropped it in f77337691e",

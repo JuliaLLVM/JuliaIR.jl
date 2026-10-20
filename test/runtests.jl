@@ -1,6 +1,9 @@
 using Test
 using JuliaIR
 
+# lit, and the predicates that tests share (e.g. `julia_llvm_in_use`)
+include("litsetup.jl")
+
 @testset "JuliaIR" begin
 
 include("dialect.jl")
@@ -11,6 +14,7 @@ include("passes.jl")
 include("multiversioning.jl")
 include("runtime.jl")
 include("type_lowering.jl")
+include("crossing.jl")
 include("lit.jl")
 include("upstream.jl")
 
