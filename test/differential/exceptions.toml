@@ -137,3 +137,151 @@ lines = '^! error: UnsupportedInputError: function \S+ contains constructs that 
 replace = '! ok'
 reason = "IR with GC frames (the output of LateLowerGCFrame) is outside the input contract of jl-late-gc-cleanup"
 decision = "S6 contract (docs/src/late_lower_gc_frame.md)"
+
+# Julia's pipeline: the deviations of the ports it runs apply (`inherits` in passes.jl);
+# these are those whose rewrite differs once the whole pipeline ran.
+
+[["julia<level=2>"]]
+input = "corpus/alloc_refpair*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@ijl_gc_\w*alloc\w*\('
+reason = "as AllocOpt's: the C++ of 1.10 to 1.12 keeps an allocation with references and atomic accesses, which the port (1.13's escape analysis) removes, so the C++ output still allocates after the GC lowering"
+decision = "S-D30"
+
+[["julia<level=2>"]]
+input = "corpus/preserve_ref*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@ijl_gc_\w*alloc\w*\('
+reason = "as for alloc_refpair: an allocation initialized with an atomic store"
+decision = "S-D30"
+
+[["julia<level=3>"]]
+input = "corpus/alloc_refpair*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@ijl_gc_\w*alloc\w*\('
+reason = "as AllocOpt's: the C++ of 1.10 to 1.12 keeps an allocation with references and atomic accesses, which the port (1.13's escape analysis) removes, so the C++ output still allocates after the GC lowering"
+decision = "S-D30"
+
+[["julia<level=3>"]]
+input = "corpus/preserve_ref*"
+julia = ["1.10", "1.11", "1.12"]
+side = "cpp"
+accept = '^  %\d+ = call [^@]*@ijl_gc_\w*alloc\w*\('
+reason = "as for alloc_refpair: an allocation initialized with an atomic store"
+decision = "S-D30"
+
+[["julia<level=2>"]]
+input = "llvmpasses/gc-writebarrier-volatile.ll"
+julia = ["1.12", "1.13"]
+side = "port"
+lines = '^declare void @julia\.write_barrier\(ptr, ptr\)$'
+reason = "as AllocOpt's: the port keeps a write barrier whose child is a removed allocation, where the C++ erases it; the barrier is lowered later, but its declaration stays"
+decision = "S-D3 (Log, S4, exception 1)"
+
+[["julia<level=3>"]]
+input = "llvmpasses/gc-writebarrier-volatile.ll"
+julia = ["1.12", "1.13"]
+side = "port"
+lines = '^declare void @julia\.write_barrier\(ptr, ptr\)$'
+reason = "as AllocOpt's: the port keeps a write barrier whose child is a removed allocation, where the C++ erases it; the barrier is lowered later, but its declaration stays"
+decision = "S-D3 (Log, S4, exception 1)"
+
+[["julia<level=0>"]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as LateLowerGCFrame's: the C++ orders the frame slots of allocas by address, which varies between runs; once FinalLowerGC lowered the frame, the order can't be canonicalized, and later passes may optimize the slot accesses differently"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=1>"]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as LateLowerGCFrame's: the C++ orders the frame slots of allocas by address, which varies between runs; once FinalLowerGC lowered the frame, the order can't be canonicalized, and later passes may optimize the slot accesses differently"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=2>"]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as LateLowerGCFrame's: the C++ orders the frame slots of allocas by address, which varies between runs; once FinalLowerGC lowered the frame, the order can't be canonicalized, and later passes may optimize the slot accesses differently"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=3>"]]
+input = "llvmpasses/late-lower-gc-s*.ll"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as LateLowerGCFrame's: the C++ orders the frame slots of allocas by address, which varies between runs; once FinalLowerGC lowered the frame, the order can't be canonicalized, and later passes may optimize the slot accesses differently"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+# The deviations of the ports that only run in the comparison of Julia's pipeline, which
+# inherits them (they have no comparison of their own here).
+
+[[FinalLowerGC]]
+julia = ["1.10", "1.11", "1.12", "1.13"]
+side = "port"
+lines = '^(  call void @llvm\.memset\.p0\.i64\(ptr )(?:noundef nonnull )?(align \d+ )(?:dereferenceable\(\d+\) )?(%\d+, i8 0, i64 \d+), i1 false\), !tbaa !\d+$'
+replace = '\1\2\3, i1 true)'
+reason = "the GC frame is zeroed by a non-volatile memset with the frame's TBAA tag, as from Julia 1.14 on (the C++ of 1.10 to 1.13 passes the tag as the volatility flag), which later passes may annotate"
+decision = "FinalLowerGC deviation (docs/src/final_lower_gc.md, JuliaLang/julia#62061)"
+
+[[LowerPTLSPass]]
+side = "port"
+accept = '^! error: LowerPTLSError: can.t read the thread pointer for target '
+reason = "the port refuses to read the thread pointer of a target it can't read it on; the C++ reaches llvm_unreachable, which release builds turn into x86 assembly"
+decision = "LowerPTLS deviation (docs/src/lower_ptls.md)"
+
+[[LowerPTLSPass]]
+input = "gpucompiler/*"
+julia = ["1.14", "1.15"]
+side = "both"
+lines = '^! (crashed \| .*|error: LowerPTLSError: can.t read the thread pointer for target .*)$'
+replace = '! no thread pointer'
+reason = "as above, where the C++'s llvm_unreachable crashes instead"
+decision = "LowerPTLS deviation (docs/src/lower_ptls.md)"
+
+[[RemoveJuliaAddrspaces]]
+julia = ["1.14", "1.15"]
+side = "port"
+lines = '^(@.* = external .*global .*), !julia\.constgv !\d+$'
+replace = '\1'
+reason = "the metadata of global declarations is kept (the code generator of Julia 1.14 attaches !julia.constgv to them); the C++ drops it"
+decision = "RemoveJuliaAddrspaces deviation D3 (docs/src/remove_addrspaces.md)"
+
+[[RemoveJuliaAddrspaces]]
+julia = ["1.14", "1.15"]
+side = "both"
+canonicalize = "metadata numbers"
+reason = "as above: the metadata the C++ drops renumbers the other nodes"
+decision = "RemoveJuliaAddrspaces deviation D3 (docs/src/remove_addrspaces.md)"
+
+[["julia<level=0>"]]
+input = "corpus/*push*"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=1>"]]
+input = "corpus/*push*"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=2>"]]
+input = "corpus/*push*"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
+
+[["julia<level=3>"]]
+input = "corpus/*push*"
+side = "cpp"
+accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
+reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
+decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"

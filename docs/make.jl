@@ -20,6 +20,7 @@ function main()
             "CPUFeatures" => "cpu_features.md",
             "JuliaMultiVersioning" => "multiversioning.md",
             "JuliaLICM" => "julia_licm.md",
+            "Pipeline" => "pipeline.md",
             "Runtime facts" => "runtime.md",
             "Type lowering" => "type_lowering.md",
             "Testing" => "testing.md",

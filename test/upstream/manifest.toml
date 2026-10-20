@@ -333,12 +333,13 @@ kind = "port"
 ports = ["LowerExcHandlers"]
 status = "run"
 
+## Julia's optimization pipeline
 
 [fixtures."pipeline-prints.ll"]
-kind = "cpu"
-status = "exclude"
-reason = "Julia's own optimization pipeline (`julia`)"
-cpp = "run in a Julia process, the `julia` pipeline prints unnamed blocks (`21:`) where upstream's opt keeps their names; not investigated, since the pipeline is not ported"
+kind = "port"
+ports = ["AllocOpt", "PropagateJuliaAddrspaces", "LowerSIMDLoop", "LowerExcHandlers", "GCInvariantVerifier", "RemoveNI", "LateLowerGCFrame", "DemoteFloat16", "CPUFeatures", "JuliaMultiVersioning", "JuliaLICM", "FinalLowerGC", "LowerPTLSPass", "RemoveJuliaAddrspaces"]
+status = "run"
+reason = "Julia's optimization pipeline (`julia`), rebuilt from the ports"
 
 
 ## Julia's code generator
@@ -410,23 +411,95 @@ reason = "tests Julia's code generator"
 
 [fixtures."pipeline-o0.jl"]
 kind = "emitter"
-status = "exclude"
-reason = "tests Julia's code generator and optimization pipeline"
+status = "derived"
+reason = "tests Julia's code generator and optimization pipeline; the derived copy runs Julia's pipeline on the unoptimized IR in jlopt (`julia<level=N>`, rebuilt from the ports) instead of in Julia's JIT"
+
+[fixtures."pipeline-o0.jl".pins."1.10"]
+patch = "derived/1.10/pipeline-o0.jl.patch"
+
+[fixtures."pipeline-o0.jl".pins."1.11"]
+patch = "derived/1.11/pipeline-o0.jl.patch"
+
+[fixtures."pipeline-o0.jl".pins."1.12"]
+patch = "derived/1.12/pipeline-o0.jl.patch"
+
+[fixtures."pipeline-o0.jl".pins."1.13"]
+patch = "derived/1.13/pipeline-o0.jl.patch"
+
+[fixtures."pipeline-o0.jl".pins."1.14"]
+patch = "derived/1.14/pipeline-o0.jl.patch"
+
+[fixtures."pipeline-o0.jl".pins."1.15"]
+patch = "derived/1.15/pipeline-o0.jl.patch"
 
 [fixtures."pipeline-o2.jl"]
 kind = "emitter"
-status = "exclude"
-reason = "tests Julia's code generator and optimization pipeline"
+status = "derived"
+reason = "tests Julia's code generator and optimization pipeline; the derived copy runs Julia's pipeline on the unoptimized IR in jlopt (`julia<level=N>`, rebuilt from the ports) instead of in Julia's JIT"
+
+[fixtures."pipeline-o2.jl".pins."1.10"]
+patch = "derived/1.10/pipeline-o2.jl.patch"
+
+[fixtures."pipeline-o2.jl".pins."1.11"]
+patch = "derived/1.11/pipeline-o2.jl.patch"
+
+[fixtures."pipeline-o2.jl".pins."1.12"]
+patch = "derived/1.12/pipeline-o2.jl.patch"
+
+[fixtures."pipeline-o2.jl".pins."1.13"]
+patch = "derived/1.13/pipeline-o2.jl.patch"
+
+[fixtures."pipeline-o2.jl".pins."1.14"]
+patch = "derived/1.14/pipeline-o2.jl.patch"
+
+[fixtures."pipeline-o2.jl".pins."1.15"]
+patch = "derived/1.15/pipeline-o2.jl.patch"
 
 [fixtures."pipeline-o2-allocs.jl"]
 kind = "emitter"
-status = "exclude"
-reason = "tests Julia's code generator and optimization pipeline"
+status = "derived"
+reason = "tests Julia's code generator and optimization pipeline; the derived copy runs Julia's pipeline on the unoptimized IR in jlopt (`julia<level=N>`, rebuilt from the ports) instead of in Julia's JIT"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.10"]
+patch = "derived/1.10/pipeline-o2-allocs.jl.patch"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.11"]
+patch = "derived/1.11/pipeline-o2-allocs.jl.patch"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.12"]
+patch = "derived/1.12/pipeline-o2-allocs.jl.patch"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.13"]
+patch = "derived/1.13/pipeline-o2-allocs.jl.patch"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.14"]
+patch = "derived/1.14/pipeline-o2-allocs.jl.patch"
+
+[fixtures."pipeline-o2-allocs.jl".pins."1.15"]
+patch = "derived/1.15/pipeline-o2-allocs.jl.patch"
 
 [fixtures."pipeline-o2-broadcast.jl"]
 kind = "emitter"
-status = "exclude"
-reason = "tests Julia's code generator and optimization pipeline"
+status = "derived"
+reason = "tests Julia's code generator and optimization pipeline; the derived copy runs Julia's pipeline on the unoptimized IR in jlopt (`julia<level=N>`, rebuilt from the ports) instead of in Julia's JIT"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.10"]
+patch = "derived/1.10/pipeline-o2-broadcast.jl.patch"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.11"]
+patch = "derived/1.11/pipeline-o2-broadcast.jl.patch"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.12"]
+patch = "derived/1.12/pipeline-o2-broadcast.jl.patch"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.13"]
+patch = "derived/1.13/pipeline-o2-broadcast.jl.patch"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.14"]
+patch = "derived/1.14/pipeline-o2-broadcast.jl.patch"
+
+[fixtures."pipeline-o2-broadcast.jl".pins."1.15"]
+patch = "derived/1.15/pipeline-o2-broadcast.jl.patch"
 
 
 ## not tests

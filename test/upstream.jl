@@ -68,9 +68,18 @@ end
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
 
     # mode B: lines that need Julia's C++ passes are skipped, those of the ports run
-    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
-    @test st == :skip && why == "no port of Julia's julia"
-    for name in setdiff(JULIA_CPP_PASSES, ported_passes())
+    # Julia's pipeline is rebuilt from the ports (lines with C++ passes in
+    # `CPP_FALLBACKS` would be skipped)
+    @test isempty(JuliaIR.CPP_FALLBACKS)
+    st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
+    @test st == :run
+    @test startswith(only(pipelines), "jl-remove-ni,BeforeOptimization,")
+    # but not on another LLVM than the pin's, whose own passes optimize differently
+    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B",
+                              other_llvm=true)
+    @test st == :skip && occursin("Julia's pipeline", why)
+    # (Julia's pipeline is rebuilt, as every pass in it is ported)
+    for name in setdiff(JULIA_CPP_PASSES, ported_passes(), ["julia"])
         @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
     end
     st, _, pipelines = classify_run(run("opt -passes='module(RemoveNI)' -S %s"); mode="B")
@@ -279,13 +288,11 @@ end
     released = deepcopy(manifest)
     released["pins"]["1.15"]["commit"] = "0"^40
     @test_throws "no pin for Julia 1.16" UpstreamHarness.pin_minor(released, v"1.16.0-DEV.1")
-    for (name, entry) in manifest["fixtures"]
-        get(entry, "status", "") in ("override", "derived") &&
+    # the patches exist (a fixture may have one per pin)
+    for name in keys(manifest["fixtures"]), minor in keys(manifest["pins"])
+        entry = UpstreamHarness.fixture_entry(manifest, name, minor)
+        entry["status"] in ("override", "derived") &&
             @test isfile(joinpath(@__DIR__, "upstream", entry["patch"]))
-        for (_, overrides) in get(entry, "pins", Dict())
-            get(overrides, "status", "") in ("override", "derived") &&
-                @test isfile(joinpath(@__DIR__, "upstream", overrides["patch"]))
-        end
     end
 end
 
@@ -585,23 +592,25 @@ mktempdir() do dir
         @test_throws "good.ll has no mode-A patch at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
     end
 
-    # Julia's C++ passes are skipped in mode B
+    # Julia's pipeline runs in mode B, as it is rebuilt from the ports only, unless the
+    # ports run on another LLVM than the pin's (whose own passes optimize differently)
     manifest = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
-    cpponly = mkpath(joinpath(dir, "cpponly", "test", "llvmpasses"))
-    write(joinpath(cpponly, "good.ll"), """
+    planned = mkpath(joinpath(dir, "planned", "test", "llvmpasses"))
+    write(joinpath(planned, "good.ll"), """
         ; RUN: opt -passes='julia<level=2>' -S %s | FileCheck %s
         """)
-    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+    f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(planned)), "good.ll", minor;
                                      cpp=false, mode="B", manifest_dir=dir)
-    @test !f.included
-    @test f.reason == "every RUN line skipped: no port of Julia's julia"
+    other_llvm = LLVM.version().major != Base.libllvm_version.major
+    @test f.included == !other_llvm
+    @test only(f.runs)[2] == (other_llvm ? :skip : :run)
 
     # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
     # whose RUN lines all check stderr sees the pin's printing only
     for (run, reprinted) in (("opt -passes=jl-remove-ni -S %s | FileCheck %s", true),
                              ("opt -passes='print<memoryssa>' -S -o /dev/null %s 2>&1 | FileCheck %s", false))
-        write(joinpath(cpponly, "good.ll"), "; RUN: $run\n")
-        f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(cpponly)), "good.ll", minor;
+        write(joinpath(planned, "good.ll"), "; RUN: $run\n")
+        f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(planned)), "good.ll", minor;
                                          cpp=true, manifest_dir=dir)
         @test UpstreamHarness.reprints(f.runs) == reprinted
     end

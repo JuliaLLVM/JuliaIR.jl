@@ -31,13 +31,17 @@ struct PassSpec
     # the C++ pass aborts the process on input it rejects (a verifier): compare the
     # messages it printed with those of the port's exception
     aborts::Bool
+    # passes whose recorded deviations (exceptions.toml) apply to this one too, which
+    # runs them (a pipeline)
+    inherits::Vector{String}
 end
 
 function PassSpec(name; cpp=name, port=nothing, kind=:function, inputs=r"", prefixes=["raw"],
                   prepare=Pair{String,Any}["" => identity], remarks=String[], cpp_runs=1,
-                  aborts=false)
+                  aborts=false, inherits=String[])
     port === nothing && (port = JuliaIR.cpp_mapping()[name])
-    PassSpec(name, cpp, port, kind, inputs, prefixes, prepare, remarks, cpp_runs, aborts)
+    PassSpec(name, cpp, port, kind, inputs, prefixes, prepare, remarks, cpp_runs, aborts,
+             inherits)
 end
 
 # the pipelines a pass runs in, labelled
@@ -59,7 +63,8 @@ end
 # when it didn't
 instcombine() = LLVM.version() >= v"18" ? "instcombine<no-verify-fixpoint>" : "instcombine"
 
-# whether this Julia's LLVM knows a pipeline (e.g. a C++ pass that later versions removed)
+# whether this Julia's LLVM knows a pipeline (e.g. a C++ pass that later versions
+# removed), with this package's passes, which a C++ side can include
 const AVAILABLE = Dict{String,Bool}()
 function available(pipeline::String)
     get!(AVAILABLE, pipeline) do
@@ -67,6 +72,7 @@ function available(pipeline::String)
             mod = LLVM.Module("probe")
             try
                 @dispose pb=PassBuilder() begin
+                    JuliaIR.register!(pb)
                     add!(pb, pipeline)
                     run!(pb, mod)
                 end
@@ -187,3 +193,37 @@ const PASS_SPECS = [
     # also changes functions without cancellation points (calls in IPO-safe functions)
     PassSpec("CancellationLowering"; prefixes=["raw", "optimized"]),
 ]
+
+# Julia's optimization pipeline (`julia<level=N>`), rebuilt from the ports, at every
+# optimization level.
+# The deviations of the ports it runs are its own; it runs LateLowerGCFrame (hence the
+# retries) and GCInvariantVerifier (which aborts).
+const PIPELINE_PASSES = ["RemoveNI", "AllocOpt", "PropagateJuliaAddrspaces", "DemoteFloat16",
+                         "GCInvariantVerifier", "LateLowerGCFrame", "CombineMulAdd",
+                         "LowerExcHandlers", "LowerSIMDLoop", "ExpandAtomicModify",
+                         "CancellationLowering", "RemoveJuliaAddrspaces", "JuliaLICM",
+                         "FinalLowerGC", "LowerPTLSPass", "CPUFeatures",
+                         "JuliaMultiVersioning"]
+#
+# Two deviations would hide everything else they touch, so the comparison aligns them:
+# - A module without a triple is for the host in LowerPTLS's port, where the C++ reaches
+#   `llvm_unreachable`: such modules get the host's triple first.
+# - Before Julia 1.14, FinalLowerGC's port zeroes the GC frame with a non-volatile memset,
+#   which at levels 2 and 3 lets later passes remove stores to the frame that the C++'s
+#   volatile one keeps: there, the C++ side is the rebuilt pipeline with Julia's C++
+#   passes, except for FinalLowerGC's port (levels 0 and 1, and the test of the pipeline's
+#   structure, check that rebuilt pipeline against Julia's).
+function host_triple!(mod::LLVM.Module)
+    isempty(mod.triple) && (mod.triple = LLVM.default_triple())
+    return mod
+end
+for level in 0:3
+    cpp = "julia<level=$level>"
+    if level >= 2 && JuliaIR.Dialect(VERSION).minor < v"1.14"
+        cpp = replace(JuliaIR.pipeline(; level, ports=false),
+                      r"\bFinalLowerGC\b" => "jl-final-lower-gc")
+    end
+    push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp, port=JuliaIR.pipeline(; level),
+                               kind=:module, prepare=Pair{String,Any}["" => host_triple!],
+                               cpp_runs=8, aborts=true, inherits=PIPELINE_PASSES))
+end

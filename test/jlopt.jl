@@ -17,6 +17,8 @@ using JuliaIR: jlopt, JloptError, parse_jlopt_args, legacy_pipeline, map_pipelin
     @test (opts.cpu, opts.features) == ("haswell", "+avx2,-fma")
     @test parse_jlopt_args(["-mattr="]).features == ""
     @test parse_jlopt_args(String[]).features === nothing
+    @test parse_jlopt_args(["-mattr=-avx512f", "-mattr=+avx2,+fma"]).features ==
+          "-avx512f,+avx2,+fma"
     @test parse_jlopt_args(["-verify-memoryssa"]).llvm_options == ["-verify-memoryssa"]
     @test parse_jlopt_args(["--print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]).llvm_options ==
           ["-print-before=BeforeLICM", "-print-before-all", "-force-vector-width=2"]
@@ -107,9 +109,58 @@ ir = """
                       stdout=devnull)
                 @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 1
             end
+
+            # and the same for Julia's pipeline, which is rebuilt with the ports
+            jlopt(["-passes=julia<level=0>", "-S"]; stdin=IOBuffer(ir), stdout=devnull)
+            @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 2
+            if julia_llvm_in_use()
+                jlopt(["-map-julia-passes=0", "-passes=julia<level=0>", "-S"];
+                      stdin=IOBuffer(ir), stdout=devnull)
+                @test count(contains("\tpass\tjl-remove-ni\t"), readlines(ledger)) == 2
+            end
         finally
             JuliaIR.LEDGER[] = old
         end
+    end
+
+    # the CPU and features: of the target machine, and of the functions (as `opt`, which
+    # appends the features to those a function has)
+    @test JuliaIR.resolve_cpu(nothing, "+avx") == (nothing, "+avx")
+    cpu, features = JuliaIR.resolve_cpu("native", "-avx")
+    @test cpu == LLVM.host_cpu_name() && endswith(features, ",-avx")
+    @test JuliaIR.resolve_cpu("native", nothing)[2] == LLVM.host_cpu_features()
+    @dispose ctx=Context() mod=parse(LLVM.Module, ir) begin
+        LLVM.triple!(mod, LLVM.default_triple())
+        @dispose tm=JuliaIR.target_machine(mod) begin
+            @test LLVM.cpu(tm) in ("", "generic")
+        end
+        @dispose tm=JuliaIR.target_machine(mod; cpu) begin
+            @test LLVM.cpu(tm) == LLVM.host_cpu_name()
+        end
+    end
+    attributed = """
+        define void @f() #0 {
+          ret void
+        }
+        define void @g() {
+          ret void
+        }
+        attributes #0 = { "target-cpu"="x86-64" "target-features"="+avx2" }"""
+    if :X86 in LLVM.backends()
+        out = sprint() do io
+            jlopt(["-mtriple=x86_64-unknown-linux-gnu", "-mcpu=skylake", "-mattr=-avx2",
+                   "-passes=jl-remove-ni", "-S"]; stdin=IOBuffer(attributed), stdout=io)
+        end
+        @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
+        @test occursin("\"target-cpu\"=\"skylake\" \"target-features\"=\"-avx2\"", out)
+    end
+
+    # output to a file, from the API with the standard output discarded
+    mktemp() do path, io
+        close(io)
+        jlopt(["-passes=jl-remove-ni", "-S", "-o", path];
+              stdin=IOBuffer(ir), stdout=devnull)
+        @test occursin("target datalayout", read(path, String))
     end
 
     # input that does not verify

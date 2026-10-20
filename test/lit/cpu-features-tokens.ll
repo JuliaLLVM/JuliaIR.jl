@@ -26,7 +26,8 @@
 ; RUN: opt -passes=CPUFeatures -S %t/none.ll | FileCheck %t/none.ll
 
 ; without target-features, the JIT's feature string (the options) is searched; the CPU
-; doesn't matter
+; doesn't matter. Like opt, jlopt also appends the options to the target-features that a
+; function has.
 ; RUN: opt -mattr=+avx2,+fma -passes=CPUFeatures -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,FMA
 ; RUN: opt -mattr=+fma4 -passes=CPUFeatures -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,FMA
 ; RUN: opt -mattr=-fma,+avx512f -passes=CPUFeatures -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,NOFMA
@@ -283,9 +284,9 @@ define i1 @jit() {
   ret i1 %r
 }
 
-; the attribute takes precedence
 ; CHECK-LABEL: @attribute(
-; CHECK-NEXT: ret i1 false
+; FMA-NEXT: ret i1 true
+; NOFMA-NEXT: ret i1 false
 define i1 @attribute() "target-features"="-fma" {
   %r = call i1 @julia.cpu.have_fma.f32()
   ret i1 %r

@@ -1,0 +1,13 @@
+--- a/pipeline-o2.jl
++++ b/pipeline-o2.jl
+@@ -8,5 +8,5 @@
+-# RUN: julia --startup-file=no -O2 --check-bounds=no %s %t -O && llvm-link -S %t/* | FileCheck %s --check-prefixes=ALL,BC_OFF
+-# RUN: julia --startup-file=no -O3 --check-bounds=no %s %t -O && llvm-link -S %t/* | FileCheck %s --check-prefixes=ALL,BC_OFF
+-
+-# RUN: julia --startup-file=no -O2 --check-bounds=auto %s %t -O && llvm-link -S %t/* | FileCheck %s --check-prefixes=ALL,BC_AUTO
+-# RUN: julia --startup-file=no -O3 --check-bounds=auto %s %t -O && llvm-link -S %t/* | FileCheck %s --check-prefixes=ALL,BC_AUTO
++# RUN: julia --startup-file=no -O2 --check-bounds=no %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=2>' -S | FileCheck %s --check-prefixes=ALL,BC_OFF
++# RUN: julia --startup-file=no -O3 --check-bounds=no %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=3>' -S | FileCheck %s --check-prefixes=ALL,BC_OFF
++
++# RUN: julia --startup-file=no -O2 --check-bounds=auto %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=2>' -S | FileCheck %s --check-prefixes=ALL,BC_AUTO
++# RUN: julia --startup-file=no -O3 --check-bounds=auto %s %t && llvm-link -S %t/* | opt -mcpu=native -passes='julia<level=3>' -S | FileCheck %s --check-prefixes=ALL,BC_AUTO

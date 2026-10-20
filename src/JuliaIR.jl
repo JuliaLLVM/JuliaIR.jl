@@ -35,6 +35,13 @@ include("passes/cpu_features.jl")
 include("passes/multiversioning.jl")
 include("passes/julia_licm.jl")
 
+include("pipeline/pipeline.jl")
+include("pipeline/julia-1.11.jl")
+include("pipeline/julia-1.10.jl")
+include("pipeline/julia-1.12.jl")
+include("pipeline/julia-1.13.jl")
+include("pipeline/julia-1.14.jl")
+
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
     empty!(NATIVE_FACTS)

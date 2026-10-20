@@ -166,7 +166,9 @@ Two things differ from mode A, the default run of the previous section:
   of them that isn't ported (`FinalLowerGC`, `JuliaMultiVersioning`, `julia`, ...) are
   skipped, and the harness lists them. Mode B skips them on Julia's own LLVM too, so
   that a run there (a dry run of mode B) tests the same lines. A pass name that no LLVM
-  knows is not skipped: the line fails.
+  knows is not skipped: the line fails. Julia's pipeline (`julia<...>`) is rebuilt from
+  the ports, but it also runs LLVM's own passes, which optimize differently on another
+  LLVM than the pin's: its RUN lines are skipped there too.
 - A newer LLVM prints the same IR differently: it upgrades old constructs when it reads
   a module, and prints some constants in a new syntax. The fixtures expect the spelling
   of the pin's LLVM, so they get a second layer of patches,
@@ -358,3 +360,13 @@ GPU-like inputs of `jl-late-gc-cleanup`), the names of its remarks, or that the 
 aborts on rejected input. A pass with options is compared in each configuration by a
 `PassSpec` per configuration, each with its own name (the key of its exceptions) and the
 pipeline elements of both sides with the options, like `GCInvariantVerifier<strong>`.
+
+Julia's whole pipeline is compared the same way, at each level: `julia<level=N>` with
+Julia's C++ passes against the pipeline that JuliaIR rebuilds from the ports. The
+deviations recorded for the ports it runs apply to it as well (`inherits`); its own
+entries in `exceptions.toml` cover those whose rewrite differs once the whole pipeline
+ran. Two deviations that would hide everything they touch are aligned instead: modules
+without a triple get the host's (LowerPTLS's port reads the host's thread pointer where
+the C++ reaches `llvm_unreachable`), and before Julia 1.14, levels 2 and 3 compare with
+the rebuilt pipeline of Julia's C++ passes but FinalLowerGC's port (whose non-volatile
+frame `memset` lets later passes remove stores to the frame).

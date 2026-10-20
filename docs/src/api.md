@@ -44,6 +44,19 @@ JuliaIR.MultiVersioningError
 ```
 
 
+## Julia's pipeline
+
+```@docs
+JuliaIR.JuliaPipeline
+JuliaIR.build_pipeline!
+JuliaIR.pipeline
+JuliaIR.optimize!
+JuliaIR.alias_analyses!
+JuliaIR.parse_pipeline_options
+JuliaIR.expand_julia_pipeline
+```
+
+
 ## Dialects and options
 
 ```@docs

@@ -76,7 +76,9 @@ The options can't be given in pipeline text, as feature strings contain commas, 
 separate the elements of a pipeline. Pass them to the constructor, or to
 [`JuliaIR.register!`](@ref) (`options=Dict("jl-cpu-features" => (; target_cpu=...))`); `jlopt`
 gives its `-mcpu` and `-mattr` flags to the pass that way (unlike `opt`, where these
-flags don't reach Julia's pass when it runs by name).
+flags don't reach Julia's pass when it runs by name). Like `opt`, `jlopt` also gives each
+function the CPU unless it has one, and appends the features to its own
+`target-features`, so a function's attributes and the flags both count.
 
 ## Dependence on the process and the library
 

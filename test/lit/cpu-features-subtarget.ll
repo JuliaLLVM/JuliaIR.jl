@@ -11,7 +11,9 @@
 ; RUN: opt -passes=CPUFeatures -S %t/supports.ll | FileCheck %t/supports.ll
 ; RUN: opt -passes=CPUFeatures -S %t/i686.ll | FileCheck %t/i686.ll
 
-; the options are the target machine's CPU and features, which attributes replace
+; the options are the target machine's CPU and features, which attributes replace; like
+; opt, jlopt also gives each function the CPU unless it has one, and appends the features
+; to those it has
 ; RUN: opt -passes=CPUFeatures -S %t/options.ll | FileCheck %t/options.ll --check-prefix=NONE
 ; RUN: opt -mcpu=haswell -passes=CPUFeatures -S %t/options.ll | FileCheck %t/options.ll --check-prefix=HASWELL
 ; RUN: opt -mattr=+fma -passes=CPUFeatures -S %t/options.ll | FileCheck %t/options.ll --check-prefix=FMA
@@ -185,13 +187,13 @@ define i1 @none() {
   ret i1 %r
 }
 
-; the attribute replaces the features, the CPU stays
+; the attribute's features, then those of the options; the CPU stays
 ; NONE-LABEL: @features(
 ; NONE-NEXT: ret i1 false
 ; HASWELL-LABEL: @features(
 ; HASWELL-NEXT: ret i1 false
 ; FMA-LABEL: @features(
-; FMA-NEXT: ret i1 false
+; FMA-NEXT: ret i1 true
 define i1 @features() "target-features"="-fma" {
   %r = call i1 @julia.cpu.have_fma.f64()
   ret i1 %r
@@ -202,7 +204,7 @@ define i1 @features() "target-features"="-fma" {
 ; HASWELL-LABEL: @features_avx2(
 ; HASWELL-NEXT: ret i1 true
 ; FMA-LABEL: @features_avx2(
-; FMA-NEXT: ret i1 false
+; FMA-NEXT: ret i1 true
 define i1 @features_avx2() "target-features"="+avx2" {
   %r = call i1 @julia.cpu.have_fma.f64()
   ret i1 %r

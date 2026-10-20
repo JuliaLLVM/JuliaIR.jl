@@ -223,12 +223,18 @@ function opt_invocations(cmd::AbstractString)
 end
 
 # What happens to a RUN line: `(status, reason, pipelines)`, where pipelines are those of
-# its `opt` invocations after mapping Julia's pass names to the ports. In mode B, Julia's
-# C++ passes are not available.
-function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A")
+# its `opt` invocations after mapping Julia's pass names and pipeline to the ports. In mode
+# B, Julia's C++ passes are not available.
+#
+# `other_llvm` is whether mode B runs on another LLVM than the pin's: Julia's pipeline
+# (`julia<...>`) then also runs that LLVM's own passes, whose output the fixture doesn't
+# expect.
+function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A",
+                      other_llvm::Bool=false)
     occursin(r"--?opaque-pointers=0", run.command) &&
         return (:skip, "typed pointers (S-D1)", String[])
     pipelines = String[]
+    julia_pipeline = false
     for args in opt_invocations(run.command)
         opts = try
             JuliaIR.parse_jlopt_args(args)
@@ -237,6 +243,7 @@ function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A")
             throw(HarnessError("RUN line $(run.index) cannot run with jlopt: $(err.msg)"))
         end
         pipeline = something(opts.pipeline, "")
+        julia_pipeline |= occursin(r"(^|[,(])julia(<|[,)]|$)", pipeline)
         map_passes && (pipeline = JuliaIR.port_pipeline(pipeline))
         push!(pipelines, pipeline)
     end
@@ -244,6 +251,8 @@ function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A")
         cpp = unique(name for pipeline in pipelines for name in cpp_only_passes(pipeline))
         isempty(cpp) ||
             return (:skip, "no port of Julia's $(join(cpp, ", "))", pipelines)
+        other_llvm && julia_pipeline &&
+            return (:skip, "Julia's pipeline, whose LLVM passes optimize differently on another LLVM", pipelines)
     end
     return (:run, "", pipelines)
 end
@@ -423,7 +432,8 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
         local runs = Tuple{RunLine,Symbol,String,Vector{String}}[]
         for run in run_lines(text)
             st, why, pipelines = try
-                classify_run(run; map_passes=!cpp, mode=cpp ? "A" : mode)
+                classify_run(run; map_passes=!cpp, mode=cpp ? "A" : mode,
+                             other_llvm=LLVM.version().major != Base.libllvm_version.major)
             catch err
                 err isa HarnessError || rethrow()
                 # only an error for fixtures that are run

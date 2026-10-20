@@ -87,9 +87,10 @@ end
 
 cpp_mapping() = Dict(def.cpp_name => def.name for def in PASSES if !isempty(def.cpp_name))
 
-# the pipeline that runs the ports in place of Julia's C++ passes
+# the pipeline that runs the ports in place of Julia's C++ passes and pipeline
 port_pipeline(pipeline::AbstractString) =
-    map_pipeline(nest_pipeline(pipeline, Dialect(VERSION)), cpp_mapping())
+    map_pipeline(nest_pipeline(expand_julia_pipeline(pipeline), Dialect(VERSION)),
+                 cpp_mapping())
 
 # raise an error that `opt` would report as a crash, for `not --crash` tests
 struct FatalPassError <: Exception
@@ -119,7 +120,8 @@ const JLOPT_USAGE = """
 
     Runs a pipeline of LLVM passes, including the passes of JuliaIR, on the module in
     `input` (textual IR or bitcode; `-` or nothing for stdin), like LLVM's `opt`. The
-    names of Julia's C++ passes that JuliaIR ports are replaced by the ports'.
+    names of Julia's C++ passes that JuliaIR ports are replaced by the ports', and
+    Julia's pipeline (`julia<level=N;...>`) by JuliaIR's rebuilt one.
 
       -passes=PIPELINE, --passes=PIPELINE, -p PIPELINE
                                 the pipeline, in the syntax of the new pass manager
@@ -128,11 +130,12 @@ const JLOPT_USAGE = """
       -mtriple=TRIPLE           override the module's target triple
       -mcpu=CPU, -mattr=FEATURES
                                 the CPU and features (e.g. +avx2,-fma) of the target
-                                machine, as in opt; also the target that CPUFeatures
+                                machine, as in opt (`-mcpu=native` is the host's CPU,
+                                with its features); also the target that CPUFeatures
                                 (jl-cpu-features) folds for (which, unlike Julia's C++
                                 pass by name in opt, then uses them)
-      -map-julia-passes=0       don't replace Julia's C++ passes by the ports (default:
-                                \$JULIAIR_MAP_PASSES, or 1)
+      -map-julia-passes=0       don't replace Julia's C++ passes and pipeline by the ports
+                                (default: \$JULIAIR_MAP_PASSES, or 1)
       -verify-memoryssa, -print-before=PASS, -print-after=PASS, -print-before-all,
       -print-after-all, -print-module-scope, -force-vector-width=N
                                 LLVM options, set for the whole process
@@ -177,7 +180,8 @@ function parse_jlopt_args(args::Vector{String})
         elseif (m = match(r"^--?mcpu=(.*)$", arg)) !== nothing
             opts.cpu = m[1]
         elseif (m = match(r"^--?mattr=(.*)$", arg)) !== nothing
-            opts.features = m[1]
+            # (a list, which repeated options extend)
+            opts.features = join(filter(!isempty, [something(opts.features, ""), m[1]]), ",")
         elseif (m = match(r"^--?map-julia-passes=([01])$", arg)) !== nothing
             opts.map_passes = m[1] == "1"
         elseif occursin(LLVM_OPTIONS, arg)
@@ -246,7 +250,6 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     opts = parse_jlopt_args(args)
     opts.pipeline === nothing && throw(JloptError("no pipeline given; use -passes=..."))
     pipeline = opts.map_passes ? port_pipeline(opts.pipeline) : opts.pipeline
-    isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
 
     input = something(opts.input, "-")
     data = if input == "-"
@@ -257,17 +260,43 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
     end
     name = input == "-" ? "<stdin>" : input
 
+    # LLVM's options also apply to the pipelines of Julia's JIT, which compiles the Julia
+    # code of the passes when they first run: with `-print-before` etc., those would print
+    # the IR of that code too. Running the pipeline once before setting the options
+    # compiles what the actual run needs.
+    if any(startswith(r"--?print-"), opts.llvm_options)
+        ledger = LEDGER[]
+        # (with a ledger, writing to it needs compiling too)
+        isempty(ledger) || (LEDGER[] = Sys.iswindows() ? "NUL" : "/dev/null")
+        try
+            run_jlopt(opts, pipeline, data, name, stdout; warmup=true)
+        catch
+        finally
+            LEDGER[] = ledger
+        end
+    end
     ledger_write("jlopt", pipeline)
+    isempty(opts.llvm_options) || LLVM.clopts(opts.llvm_options...)
+    run_jlopt(opts, pipeline, data, name, stdout)
+    return
+end
+
+# run the pipeline on the input and write the output, except in a warm-up run
+function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, stdout::IO;
+                   warmup::Bool=false)
     @dispose ctx=Context(; opaque_pointers=true) begin
         mod = parse_input(data, name)
         try
             opts.triple === nothing || (mod.triple = opts.triple)
             # like opt, refuse broken input, and verify the output
             verify(mod)
-            tm = target_machine(mod; cpu=something(opts.cpu, ""),
-                                features=something(opts.features, ""))
+            cpu, features = resolve_cpu(opts.cpu, opts.features)
+            tm = target_machine(mod; cpu=something(cpu, ""),
+                                features=something(features, ""))
+            tm === nothing ||
+                set_function_attributes!(mod, something(cpu, ""), something(features, ""))
             # the target that CPUFeatures folds for, if given
-            cpu_target = (; target_cpu=opts.cpu, target_features=opts.features)
+            cpu_target = (; target_cpu=cpu, target_features=features)
             try
                 @dispose pb=PassBuilder() begin
                     register!(pb; options=Dict(CPU_FEATURES.name => cpu_target))
@@ -278,12 +307,25 @@ function jlopt(args::Vector{String}; stdin::IO=stdin, stdout::IO=stdout)
                 tm === nothing || dispose(tm)
             end
             verify(mod)
-            write_output(mod, opts, stdout)
+            if warmup
+                # what writing the output compiles, without writing it
+                opts.text ? string(mod) : convert(Vector{UInt8}, mod)
+            else
+                write_output(mod, opts, stdout)
+            end
         finally
             dispose(mod)
         end
     end
     return
+end
+
+# The CPU and features of `-mcpu` and `-mattr`, resolved like `opt` does: the CPU `native`
+# is the host's, with the host's features before those given.
+function resolve_cpu(cpu::Union{Nothing,String}, features::Union{Nothing,String})
+    cpu == "native" || return cpu, features
+    return LLVM.host_cpu_name(),
+           join(filter(!isempty, [LLVM.host_cpu_features(), something(features, "")]), ",")
 end
 
 # Like `opt`, optimize for the module's target if it has one (with the CPU and features
@@ -304,6 +346,25 @@ function target_machine(mod::LLVM.Module; cpu::String="", features::String="")
         return nothing
     end
     return LLVM.TargetMachine(target, triple; cpu, features)
+end
+
+# Like `opt` (`codegen::setFunctionAttributes`), give every function the CPU unless it has
+# one, and append the features to its own: the functions' attributes take precedence over
+# the target machine's.
+function set_function_attributes!(mod::LLVM.Module, cpu::String, features::String)
+    for f in LLVM.functions(mod)
+        attrs = f.function_attributes
+        if !isempty(cpu) && !haskey(attrs, "target-cpu")
+            push!(attrs, StringAttribute("target-cpu", cpu))
+        end
+        if !isempty(features)
+            old = haskey(attrs, "target-features") ? attrs["target-features"].value : ""
+            delete!(attrs, "target-features")
+            push!(attrs, StringAttribute("target-features",
+                                         isempty(old) ? features : old * "," * features))
+        end
+    end
+    return mod
 end
 
 function write_output(mod::LLVM.Module, opts::JloptOptions, stdout::IO)
