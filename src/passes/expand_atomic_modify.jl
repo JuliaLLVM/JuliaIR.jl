@@ -299,10 +299,11 @@ The error thrown by ExpandAtomicModify (`jl-expand-atomic-modify`) for a
 IR): its operation is not a function, its values are not integers, floating-point
 numbers or pointers, its ordering or synchronization scope is not a constant or the
 ordering is invalid, it needs a compare-exchange loop but its pointer has no alignment,
-or the inlined operation no longer corresponds to the `atomicrmw` it was matched to
-(e.g., because inlining it into a `strictfp` function made it a constrained
-floating-point intrinsic). The function is left unchanged by the errors of the first
-three kinds, which are checked before any call is lowered.
+its operation returns the old value unchanged for a value that is not an integer, or the
+inlined operation no longer corresponds to the `atomicrmw` it was matched to (e.g.,
+because inlining it into a `strictfp` function made it a constrained floating-point
+intrinsic). The function is left unchanged by the errors of the first three kinds, which
+are checked before any call is lowered.
 """
 struct AtomicModifyError <: Exception
     function_name::String

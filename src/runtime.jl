@@ -14,7 +14,7 @@ const RUNTIME_FACTS = (
     tls_safepoint = "the offset of `safepoint` in `jl_tls_states_t`",
     tls_gc_state = "the offset of `gc_state` in `jl_tls_states_t`",
     handler_size = "the size of an exception handler (`jl_handler_t`)",
-    handler_align = "the alignment of an exception handler (`jl_handler_t`)",
+    handler_align = "the alignment of an exception handler's stack buffer (`jl_handler_t`)",
     setjmp = "the name of the runtime's `setjmp` (`jl_setjmp_name`)",
     reset_ctx_size = "the size of a reset context (`jl_reset_ctx_t`)",
     reset_ctx_align = "the alignment of a reset context (`jl_reset_ctx_t`)",
@@ -369,8 +369,7 @@ function constant_integer(v::LLVM.Value)
     return nothing
 end
 
-# The probes of generated code. The code is parsed into a context of the library LLVM.jl
-# uses, which may be newer than Julia's LLVM.
+# Probe generated code in Julia's own LLVM library, regardless of the pass's library.
 probe_safepoint() = (GC.safepoint(); nothing)
 probe_typeof(@nospecialize(x)) = typeof(x)
 
