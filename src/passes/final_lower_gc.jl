@@ -412,11 +412,12 @@ function final_lower_gc_module!(mod::LLVM.Module, am, opts::PassOptions)
             # Julia 1.10 declares the runtime functions in every module, and keeps them
             # from being removed while it runs (`doInitialization`, `doFinalization`)
             declared = declare_runtime_functions!(p)
-            union!(mod.compiler_used, declared)
+            added = setdiff(declared, mod.compiler_used)
+            union!(mod.compiler_used, added)
             for f in functions
                 final_lower_gc_function!(p, f; declare=false)
             end
-            setdiff!(mod.compiler_used, declared)
+            setdiff!(mod.compiler_used, added)
             return PreservedAnalyses(CFGAnalyses)
         end
         results = [final_lower_gc_function!(p, f; declare=true) for f in functions]

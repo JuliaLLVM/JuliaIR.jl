@@ -99,6 +99,9 @@ Fixes of later Julia versions, applied to the IR of every version:
 
 Deliberate differences:
 
+- Julia 1.10's module pass preserves existing runtime entries in `llvm.compiler.used`.
+  It removes only the entries it added temporarily; the C++ pass removes both.
+
 - An existing runtime declaration with an incompatible type raises
   [`JuliaIR.DeclarationError`](@ref) before the pass changes the module. The same check
   applies to calls of `julia.queue_gc_root`. The C++ pass calls the existing function with the wrong arguments, which
