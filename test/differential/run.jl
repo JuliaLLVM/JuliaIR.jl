@@ -562,30 +562,42 @@ const CANONICALIZATIONS = Dict{String,Function}()
 # which and each gets as much room: name each slot value by its first use and replace its
 # index by its extent, the distance to the next slot or the end of the frame, listed after
 # the function's header. A port whose slots have the C++'s extents has disjoint ranges in
-# the frame that are as large as the C++'s, whatever their order. If the indices of a
-# frame aren't distinct and within it, the function is left as it is, so that the
-# difference shows.
+# the frame that are as large as the C++'s, whatever their order. Only slots whose index is
+# fetched once are renamed (allocas, sret roots, tracked stores); the slot of a colored root
+# is fetched at each of its stores and keeps its index, bounding the extents of the others.
+# In an over-aligned frame (`align N`), the padding before an over-aligned alloca counts
+# towards the extent of the slot before it, which then depends on the order: there, only
+# the indices in use are listed. If an index is outside its frame, the function is left as
+# it is, so that the difference shows.
 function canonical_frame_slots(lines)
     out = String.(lines)
     starts = findall(l -> startswith(l, "define "), out)
     for (k, from) in enumerate(starts)
         body = from:(k < length(starts) ? starts[k+1] - 1 : length(out))
         sizes = Dict{String,Int}()
-        slots = Dict{String,Tuple{String,Int}}()    # slot value => (frame, index)
+        aligned = Set{String}()
+        fetched = Dict{String,Tuple{String,Int}}()  # slot value => (frame, index)
         valid = true
         for i in body
-            m = match(r"^  (%\d+) = call ptr @julia\.new_gc_frame\(i32 (\d+)\)$", out[i])
-            m === nothing || (sizes[m[1]] = parse(Int, m[2]))
+            m = match(r"^  (%\d+) = call (align \d+ )?ptr @julia\.new_gc_frame\(i32 (\d+)\)$",
+                      out[i])
+            if m !== nothing
+                sizes[m[1]] = parse(Int, m[3])
+                m[2] === nothing || push!(aligned, m[1])
+            end
             m = match(r"^  (%\d+) = call ptr @julia\.get_gc_frame_slot\(ptr (%\d+), i32 (\d+)\)$",
                       out[i])
             m === nothing && continue
             slot = (String(m[2]), parse(Int, m[3]))
-            valid &= slot[2] < get(sizes, slot[1], 0) && !(slot in values(slots))
-            slots[m[1]] = slot
+            valid &= slot[2] < get(sizes, slot[1], 0)
+            fetched[m[1]] = slot
         end
+        uses = Dict{Tuple{String,Int},Int}()
+        foreach(s -> uses[s] = get(uses, s, 0) + 1, values(fetched))
+        slots = filter(((_, s),) -> uses[s] == 1, fetched)
         (valid && !isempty(slots)) || continue
         function extent((frame, index))
-            next = [i for (f, i) in values(slots) if f == frame && i > index]
+            next = [i for (f, i) in values(fetched) if f == frame && i > index]
             return (isempty(next) ? sizes[frame] : minimum(next)) - index
         end
         names = Dict{String,String}()
@@ -600,7 +612,11 @@ function canonical_frame_slots(lines)
         end
         unused = sort([v for v in keys(slots) if !haskey(names, v)]; by=v -> slots[v])
         foreach(name, unused)
-        listing = sort(["$(names[v]) = $(slots[v][1]) + $(extent(slots[v]))" for v in keys(slots)])
+        function entry(v)
+            frame, index = slots[v]
+            frame in aligned ? "$frame[$index]" : "$(names[v]) = $frame + $(extent(slots[v]))"
+        end
+        listing = sort(map(entry, collect(keys(slots))))
         out[from] *= "\n; frame slots: " * join(listing, ", ")
     end
     return out

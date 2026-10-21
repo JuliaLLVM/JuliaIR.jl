@@ -100,10 +100,9 @@ reason = "the GC state byte is accessed with an alignment it has (the C++ of 1.1
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateLowerGCFrame]]
-input = "llvmpasses/late-lower-gc-s*.ll"
 side = "both"
 canonicalize = "frame slots"
-reason = "the frame slots of allocas are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
+reason = "the frame slots of allocas and sret roots are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
 decision = "S6b deviation (docs/src/late_lower_gc_frame.md)"
 
 [[LateGCCleanup]]
