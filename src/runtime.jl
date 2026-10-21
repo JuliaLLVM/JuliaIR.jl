@@ -42,6 +42,9 @@ function fact_option(name::Symbol)
                       requirement="arguments or cfuncdata")
     name === :tls_offset && return option(Union{Nothing,Int}, nothing)
     name in (:pgcstack_getter, :pgcstack_key) && return option(Union{Nothing,UInt}, nothing)
+    name in (:handler_align, :reset_ctx_align) &&
+        return option(Union{Nothing,Int}, nothing; valid=ispow2,
+                      requirement="a positive power of two")
     return option(Union{Nothing,Int}, nothing; valid=(>=(0)),
                   requirement="a non-negative integer")
 end
