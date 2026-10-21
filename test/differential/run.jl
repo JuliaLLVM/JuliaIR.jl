@@ -699,6 +699,25 @@ function canonical_frame_push(lines)
 end
 CANONICALIZATIONS["GC frame push order"] = canonical_frame_push
 
+# late-lower-gc.ll has two 64-byte-aligned frames with 16 and 20 pointers. Optimizers
+# strengthen their non-volatile memsets to align 64 but leave the C++ volatile ones at
+# align 16. Check the exact allocation, pointer and byte count before normalizing.
+function canonical_frame_zero_alignment(lines)
+    out = String.(lines)
+    for i in 2:length(out)
+        alloca = match(r"^  (%\d+) = alloca \[(16|20) x ptr\], align 64$", out[i-1])
+        alloca === nothing && continue
+        memset = match(r"^(  call void @llvm\.memset\.p0\.i64\(ptr align )(\d+)( (%\d+), i8 0, i64 (\d+), i1 (?:true|false)\).*)$", out[i])
+        memset === nothing && continue
+        memset[4] == alloca[1] || continue
+        parse(Int, memset[5]) == 8 * parse(Int, alloca[2]) || continue
+        parse(Int, memset[2]) in (16, 64) || continue
+        out[i] = memset[1] * "16" * memset[3]
+    end
+    return out
+end
+CANONICALIZATIONS["GC frame zero alignment"] = canonical_frame_zero_alignment
+
 # Metadata nodes are numbered in the order LLVM meets them, so a node that one side adds
 # or drops renumbers the others: number them by their first reference instead (in the IR,
 # then in the nodes in that order), and list them in that order. References are only

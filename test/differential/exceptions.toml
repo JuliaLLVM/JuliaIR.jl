@@ -223,6 +223,13 @@ accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
 reason = "as LateLowerGCFrame's: the C++ orders the frame slots of allocas by address, which varies between runs; once FinalLowerGC lowered the frame, the order can't be canonicalized, and later passes may optimize the slot accesses differently"
 decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
+[["julia<level=1>"]]
+input = "llvmpasses/late-lower-gc.ll"
+side = "both"
+canonicalize = "GC frame zero alignment"
+reason = "the non-volatile frame memset gains the alloca's stronger alignment during optimization, while the C++ pass's volatile memset keeps align 16; the canonicalizer checks that the alloca proves the stronger alignment"
+decision = "docs/src/final_lower_gc.md: non-volatile frame initialization"
+
 # The deviations of the ports that only run in the comparison of Julia's pipeline, which
 # inherits them (they have no comparison of their own here).
 

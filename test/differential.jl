@@ -107,6 +107,22 @@ end
     @test canonical_frame_push(volatile)[2] == "  %2 = load volatile ptr, ptr %0, align 8"
 end
 
+@testset "GC frame zero alignment" begin
+    original = ["  %2 = alloca [20 x ptr], align 64",
+                "  call void @llvm.memset.p0.i64(ptr align 16 %2, i8 0, i64 160, i1 true)"]
+    aligned = [original[1], replace(original[2], "align 16" => "align 64")]
+    @test canonical_frame_zero_alignment(aligned) == original
+    @test canonical_frame_zero_alignment(original) == original
+    for invalid in ([replace(aligned[1], "align 64" => "align 16"), aligned[2]],
+                    [aligned[1], replace(aligned[2], "align 64" => "align 128")],
+                    [aligned[1], replace(aligned[2], "%2" => "%3")],
+                    [aligned[1], replace(aligned[2], "align 64" => "align 3")])
+        @test canonical_frame_zero_alignment(invalid) == invalid
+    end
+    changed_size = [aligned[1], replace(aligned[2], "i64 160" => "i64 168")]
+    @test canonical_frame_zero_alignment(changed_size) == changed_size
+end
+
 @testset "GPU cleanup preparation" begin
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
         declare void @julia.safepoint(ptr)
