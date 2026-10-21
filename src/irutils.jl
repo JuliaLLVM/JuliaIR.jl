@@ -65,9 +65,6 @@ end
 
 ## composite types
 
-const ValueRef = API.LLVMValueRef
-vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
-
 is_vector_type(@nospecialize(t::LLVMType)) = t isa Union{VectorType,ScalableVectorType}
 is_composite(@nospecialize(t::LLVMType)) =
     t isa Union{StructType,ArrayType,VectorType,ScalableVectorType}

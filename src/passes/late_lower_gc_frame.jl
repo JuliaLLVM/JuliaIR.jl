@@ -59,7 +59,7 @@ end
 # calls returning an argument
 function strip_in_bounds_offsets(@nospecialize(v::Value))
     is_pointer_value(v) || return v
-    visited = Set{ValueRef}((vref(v),))
+    visited = Set{Value}((v,))
     while true
         op = operator_opcode(v)
         if op == LLVM.Opcode.GetElementPtr
@@ -78,8 +78,8 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
         else
             return v
         end
-        vref(v) in visited && return v
-        push!(visited, vref(v))
+        v in visited && return v
+        push!(visited, v)
     end
 end
 
@@ -181,7 +181,7 @@ function splat_value(@nospecialize(v::Value))
         first_elt === nothing && return nothing
         for i in 1:n-1
             e = aggregate_element(v, i)
-            (e === nothing || vref(e) != vref(first_elt)) && return nothing
+            (e === nothing || e != first_elt) && return nothing
         end
         return first_elt
     end
@@ -211,7 +211,7 @@ function find_scalar_element(@nospecialize(v::Value), elt::Int)
         idx = v.operands[3]
         idx isa LLVM.ConstantInt || return nothing
         convert(Int, idx) == elt && return v.operands[2]
-        vref(v.operands[1]) == vref(v) && return nothing
+        v.operands[1] == v && return nothing
         return find_scalar_element(v.operands[1], elt)
     end
     if v isa LLVM.ShuffleVectorInst && t isa VectorType
@@ -294,12 +294,12 @@ mutable struct State
     max_ptr_number::Int
     max_safepoint_number::Int
     # numbers of IR values, including derived ones
-    all_ptr_numbering::Dict{ValueRef,Int}
-    all_composite_numbering::Dict{ValueRef,Vector{Int}}
+    all_ptr_numbering::Dict{Value,Int}
+    all_composite_numbering::Dict{Value,Vector{Int}}
     reverse_ptr_numbering::Dict{Int,Value}
     # for each value, the values live at some safepoint with it (0-based numbers)
     neighbors::Vector{BitSet}
-    bb_states::Dict{ValueRef,BBState}
+    bb_states::Dict{BasicBlock,BBState}
     # if all values a value refines to are rooted, it is too (-1: externally rooted,
     # -2: permanently rooted)
     refinements::Dict{Int,Vector{Int}}
@@ -313,25 +313,25 @@ mutable struct State
     callee_roots::Vector{Vector{Int}}
     # allocas that are sunk into the GC frame, with their number of roots, in order
     array_allocas::Vector{Instruction}
-    array_alloca_roots::Dict{ValueRef,Int}
+    array_alloca_roots::Dict{Value,Int}
     # the allocas of single tracked pointers (`gc_root_allocas_first`)
     root_allocas::Vector{Instruction}
     tracked_stores::Vector{Tuple{Instruction,Int}}
 end
 
 State(f::LLVM.Function) =
-    State(f, -1, -1, Dict{ValueRef,Int}(), Dict{ValueRef,Vector{Int}}(), Dict{Int,Value}(),
-          BitSet[], Dict{ValueRef,BBState}(), Dict{Int,Vector{Int}}(),
+    State(f, -1, -1, Dict{Value,Int}(), Dict{Value,Vector{Int}}(), Dict{Int,Value}(),
+          BitSet[], Dict{BasicBlock,BBState}(), Dict{Int,Vector{Int}}(),
           Pair{Instruction,Vector{Int}}[], Instruction[], Int[], BitSet[], Vector{Int}[],
-          Vector{Int}[], Instruction[], Dict{ValueRef,Int}(), Instruction[],
+          Vector{Int}[], Instruction[], Dict{Value,Int}(), Instruction[],
           Tuple{Instruction,Int}[])
 
-bb_state(S::State, bb::BasicBlock) = get!(BBState, S.bb_states, vref(bb))
+bb_state(S::State, bb::BasicBlock) = get!(BBState, S.bb_states, bb)
 
-has_array_alloca(S::State, ai::Instruction) = haskey(S.array_alloca_roots, vref(ai))
+has_array_alloca(S::State, ai::Instruction) = haskey(S.array_alloca_roots, ai)
 function set_array_alloca!(S::State, ai::Instruction, n::Int)
-    haskey(S.array_alloca_roots, vref(ai)) || push!(S.array_allocas, ai)
-    S.array_alloca_roots[vref(ai)] = n
+    haskey(S.array_alloca_roots, ai) || push!(S.array_allocas, ai)
+    S.array_alloca_roots[ai] = n
 end
 
 # the functions of Julia's runtime interface in a module (`JuliaPassContext`)
@@ -457,9 +457,9 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
     while true
         if use_cache
             if is_pointer_value(cur)
-                haskey(S.all_ptr_numbering, vref(cur)) && return (cur, fld_idx)
+                haskey(S.all_ptr_numbering, cur) && return (cur, fld_idx)
             else
-                haskey(S.all_composite_numbering, vref(cur)) && return (cur, fld_idx)
+                haskey(S.all_composite_numbering, cur) && return (cur, fld_idx)
             end
         end
         if cur isa LLVM.BitCastInst
@@ -605,15 +605,15 @@ function get_ptr_for_number(p::LateLowerGCFrame, S::State, num::Int, insert_befo
     val = S.reverse_ptr_numbering[num]
     idx = -1
     if !is_pointer_value(val)
-        all_nums = S.all_composite_numbering[vref(val)]
+        all_nums = S.all_composite_numbering[val]
         idx = findfirst(==(num), all_nums) - 1
     end
     return maybe_extract_scalar(p, S, (val, idx), insert_before)
 end
 
 is_numbered(S::State, @nospecialize(v::Value)) =
-    is_pointer_value(v) ? haskey(S.all_ptr_numbering, vref(v)) :
-                          haskey(S.all_composite_numbering, vref(v))
+    is_pointer_value(v) ? haskey(S.all_ptr_numbering, v) :
+                          haskey(S.all_composite_numbering, v)
 
 function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
     is_numbered(S, si) && return  # already visited here
@@ -647,10 +647,10 @@ function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
         position_before!(p.builder, si; debug=false)
         select_base = new_select!(p.builder, cond, true_elem, false_elem, "gclift")
         number = (S.max_ptr_number += 1)
-        S.all_ptr_numbering[vref(select_base)] = number
+        S.all_ptr_numbering[select_base] = number
         S.reverse_ptr_numbering[number] = select_base
         if sty isa PointerType
-            S.all_ptr_numbering[vref(si)] = number
+            S.all_ptr_numbering[si] = number
         else
             numbers[i+1] = number
         end
@@ -660,16 +660,16 @@ function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
         @assert num_roots == 1
         numbers = fill(numbers[1], sty.length)
     end
-    sty isa PointerType || (S.all_composite_numbering[vref(si)] = numbers)
+    sty isa PointerType || (S.all_composite_numbering[si] = numbers)
     return
 end
 
 function lift_extract_element!(p::LateLowerGCFrame, S::State, eei::Instruction)
-    haskey(S.all_ptr_numbering, vref(eei)) && return
+    haskey(S.all_ptr_numbering, eei) && return
     base = maybe_extract_scalar(p, S, find_base_value(p, S, eei.operands[1], false), eei)
-    haskey(S.all_ptr_numbering, vref(eei)) && return  # handled recursively
+    haskey(S.all_ptr_numbering, eei) && return  # handled recursively
     if is_pointer_value(base)
-        S.all_ptr_numbering[vref(eei)] = number!(p, S, base)
+        S.all_ptr_numbering[eei] = number!(p, S, base)
         return
     end
     bases = maybe_extract_vector(p, S, base, eei)
@@ -680,7 +680,7 @@ function lift_extract_element!(p::LateLowerGCFrame, S::State, eei::Instruction)
         base_vec = insert_element!(builder, base_vec, b, ConstantInt(LLVM.Int64Type(), i - 1))
     end
     lift = extract_element!(builder, base_vec, eei.operands[2], "gclift")
-    S.all_ptr_numbering[vref(eei)] = number!(p, S, lift)
+    S.all_ptr_numbering[eei] = number!(p, S, lift)
     return
 end
 
@@ -698,16 +698,16 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
         position_before!(p.builder, phi; debug=false)
         lift = phi!(p.builder, p.gc.T_prjlvalue, "gclift")
         number = (S.max_ptr_number += 1)
-        S.all_ptr_numbering[vref(lift)] = number
+        S.all_ptr_numbering[lift] = number
         S.reverse_ptr_numbering[number] = lift
         if pty isa PointerType
-            S.all_ptr_numbering[vref(phi)] = number
+            S.all_ptr_numbering[phi] = number
         else
             numbers[i] = number
         end
         push!(lifted, lift)
     end
-    pty isa PointerType || (S.all_composite_numbering[vref(phi)] = numbers)
+    pty isa PointerType || (S.all_composite_numbering[phi] = numbers)
     for (incoming, incoming_bb) in collect(phi.incoming)
         terminator = incoming_bb.terminator
         base = maybe_extract_scalar(p, S, find_base_value(p, S, incoming, false), terminator)
@@ -721,7 +721,7 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
 end
 
 function number_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
-    n = get(S.all_ptr_numbering, vref(cur), nothing)
+    n = get(S.all_ptr_numbering, cur, nothing)
     n === nothing || return n
     if cur isa LLVM.Constant
         number = -2  # permanently rooted
@@ -732,13 +732,13 @@ function number_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
         number = -1  # externally rooted somehow, hopefully
     elseif cur isa LLVM.SelectInst && !is_tracked_value(cur)
         lift_select!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.PHIInst && !is_tracked_value(cur)
         lift_phi!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.ExtractElementInst && !is_tracked_value(cur)
         lift_extract_element!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.ExtractValueInst
         numbers = number_all_base!(p, S, cur)
         @assert length(numbers) == 1
@@ -747,14 +747,14 @@ function number_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
         number = (S.max_ptr_number += 1)
         S.reverse_ptr_numbering[number] = cur
     end
-    S.all_ptr_numbering[vref(cur)] = number
+    S.all_ptr_numbering[cur] = number
     return number
 end
 
 function number!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
     cur, idx = find_base_value(p, S, v)
     number = idx == -1 ? number_base!(p, S, cur) : number_all_base!(p, S, cur)[idx+1]
-    vref(v) != vref(cur) && (S.all_ptr_numbering[vref(v)] = number)
+    v != cur && (S.all_ptr_numbering[v] = number)
     return number
 end
 
@@ -765,10 +765,10 @@ starts_with(elem::Vector{Int}, idxs::Vector{Int}) =
 # assign pointer numbers to a def instruction
 function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
     if is_pointer_value(cur)
-        n = get(S.all_ptr_numbering, vref(cur), nothing)
+        n = get(S.all_ptr_numbering, cur, nothing)
         n === nothing || return [n]
     else
-        ns = get(S.all_composite_numbering, vref(cur), nothing)
+        ns = get(S.all_composite_numbering, cur, nothing)
         ns === nothing || return ns
     end
     numbers = Int[]
@@ -835,8 +835,8 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
         else
             error("LateLowerGCFrame: unexpected generating operation for derived values: $(string(cur))")
         end
-        numbers = is_pointer_value(cur) ? [S.all_ptr_numbering[vref(cur)]] :
-                                          S.all_composite_numbering[vref(cur)]
+        numbers = is_pointer_value(cur) ? [S.all_ptr_numbering[cur]] :
+                                          S.all_composite_numbering[cur]
     else
         # numbered sequentially
         for _ in 1:tracked.count
@@ -847,9 +847,9 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
     end
     if is_pointer_value(cur)
         @assert length(numbers) == 1
-        S.all_ptr_numbering[vref(cur)] = numbers[1]
+        S.all_ptr_numbering[cur] = numbers[1]
     else
-        S.all_composite_numbering[vref(cur)] = numbers
+        S.all_composite_numbering[cur] = numbers
     end
     return numbers
 end
@@ -857,10 +857,10 @@ end
 # the pointer number of every GC-tracked value inside `v`
 function number_all!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
     if is_pointer_value(v)
-        n = get(S.all_ptr_numbering, vref(v), nothing)
+        n = get(S.all_ptr_numbering, v, nothing)
         n === nothing || return [n]
     else
-        ns = get(S.all_composite_numbering, vref(v), nothing)
+        ns = get(S.all_composite_numbering, v, nothing)
         ns === nothing || return ns
     end
     tracked = CountTrackedPointers(v.value_type)
@@ -879,11 +879,11 @@ function number_all!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
             numbers = fill(number, tracked.count)
         end
     end
-    if vref(cur) != vref(v)
+    if cur != v
         if is_pointer_value(v)
-            S.all_ptr_numbering[vref(v)] = number
+            S.all_ptr_numbering[v] = number
         else
-            S.all_composite_numbering[vref(v)] = numbers
+            S.all_composite_numbering[v] = numbers
         end
     end
     return numbers
@@ -1034,11 +1034,11 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     end
     if v isa LLVM.PHIInst
         if seen === nothing
-            seen = Set{ValueRef}((vref(v),))
-        elseif vref(v) in seen
+            seen = Set{Value}((v,))
+        elseif v in seen
             return true
         else
-            push!(seen, vref(v))
+            push!(seen, v)
         end
         for (incoming, _) in collect(v.incoming)
             is_load_from_const_gv_value(p, incoming, task_local, seen) || return false
@@ -1218,7 +1218,7 @@ function find_alloca_bases(@nospecialize(v::Value))
         return allocas
     end
     worklist = Value[v]
-    visited = Set{ValueRef}((vref(v),))
+    visited = Set{Value}((v,))
     while !isempty(worklist)
         w = pop!(worklist)
         stripped = strip_in_bounds_offsets(w)
@@ -1226,15 +1226,15 @@ function find_alloca_bases(@nospecialize(v::Value))
             any(a -> a == stripped, allocas) || push!(allocas, stripped)
         elseif w isa LLVM.PHIInst
             for (incoming, _) in collect(w.incoming)
-                if !(vref(incoming) in visited)
-                    push!(visited, vref(incoming))
+                if !(incoming in visited)
+                    push!(visited, incoming)
                     push!(worklist, incoming)
                 end
             end
         elseif w isa LLVM.SelectInst
             for op in (w.operands[2], w.operands[3])
-                if !(vref(op) in visited)
-                    push!(visited, vref(op))
+                if !(op in visited)
+                    push!(visited, op)
                     push!(worklist, op)
                 end
             end
@@ -1323,7 +1323,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
                 elt = LLVM.allocated_type(ai)
                 if !(is_static_alloca(ai) && is_tracked_pointer_type(elt))
                     # a maximum, since calls may be cloned
-                    live_roots = get(S.array_alloca_roots, vref(ai), 0)
+                    live_roots = get(S.array_alloca_roots, ai, 0)
                     set_array_alloca!(S, ai, max(live_roots, return_roots))
                 end
             end
@@ -1621,20 +1621,20 @@ end
 # the reachable blocks in post order
 function post_order(f::LLVM.Function)
     order = BasicBlock[]
-    visited = Set{ValueRef}()
+    visited = Set{BasicBlock}()
     entry = first(f.blocks)
     stack = [(entry, 1)]
-    push!(visited, vref(entry))
-    succs = Dict{ValueRef,Vector{BasicBlock}}()
-    successors_of(bb) = get!(() -> collect(bb.successors), succs, vref(bb))
+    push!(visited, entry)
+    succs = Dict{BasicBlock,Vector{BasicBlock}}()
+    successors_of(bb) = get!(() -> collect(bb.successors), succs, bb)
     while !isempty(stack)
         bb, i = stack[end]
         ss = successors_of(bb)
         if i <= length(ss)
             stack[end] = (bb, i + 1)
             s = ss[i]
-            if !(vref(s) in visited)
-                push!(visited, vref(s))
+            if !(s in visited)
+                push!(visited, s)
                 push!(stack, (s, 1))
             end
         else
@@ -1836,7 +1836,7 @@ slot_name(p::LateLowerGCFrame, prefix::String, slot::Integer) =
 # the values live in from all predecessors, at their last safepoint
 function add_in_predecessor_live_outs!(S::State, bb::BasicBlock, live_in::BitSet)
     first_pred = true
-    visited = Set{ValueRef}()
+    visited = Set{BasicBlock}()
     worklist = BasicBlock[bb]
     entry = first(S.f.blocks)
     while !isempty(worklist)
@@ -1847,8 +1847,8 @@ function add_in_predecessor_live_outs!(S::State, bb::BasicBlock, live_in::BitSet
             return
         end
         for pred in bb.predecessors
-            vref(pred) in visited && continue
-            push!(visited, vref(pred))
+            pred in visited && continue
+            push!(visited, pred)
             pred_state = bb_state(S, pred)
             if !pred_state.has_safepoint
                 push!(worklist, pred)
@@ -2031,13 +2031,13 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     end
     # The C++ iterates over a hash map keyed by the allocas' addresses, which roughly
     # follows the order in which they were created; this uses their order in the function.
-    position = Dict{ValueRef,Int}()
+    position = Dict{Value,Int}()
     for (i, inst) in enumerate(entry.instructions)
-        inst isa LLVM.AllocaInst && (position[vref(inst)] = i)
+        inst isa LLVM.AllocaInst && (position[inst] = i)
     end
-    array_allocas = sort(S.array_allocas; by=ai -> get(position, vref(ai), typemax(Int)))
+    array_allocas = sort(S.array_allocas; by=ai -> get(position, ai, typemax(Int)))
     for ai in array_allocas
-        n = S.array_alloca_roots[vref(ai)]
+        n = S.array_alloca_roots[ai]
         replace_alloca(ai)
         alloca_slot += n
     end
@@ -2133,10 +2133,10 @@ end
 function update_ptr_numbering!(S::Union{Nothing,State}, @nospecialize(from::Value),
                                @nospecialize(to))
     S === nothing && return
-    num = get(S.all_ptr_numbering, vref(from), nothing)
+    num = get(S.all_ptr_numbering, from, nothing)
     num === nothing && return
-    delete!(S.all_ptr_numbering, vref(from))
-    to === nothing || (S.all_ptr_numbering[vref(to)] = num)
+    delete!(S.all_ptr_numbering, from)
+    to === nothing || (S.all_ptr_numbering[to] = num)
     return
 end
 
@@ -2512,7 +2512,7 @@ end
 function is_perm_rooted(S, @nospecialize(v::Value))
     v isa LLVM.Constant && return true
     S === nothing && return false
-    num = get(S.all_ptr_numbering, vref(v), nothing)
+    num = get(S.all_ptr_numbering, v, nothing)
     num === nothing && return false
     refined = get(S.refinements, num, nothing)
     (refined === nothing || isempty(refined)) && return false
@@ -2533,7 +2533,7 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
         parent = ci.arguments[1]
         # the insertion-barrier optimization, invalid for snapshot barriers (1.14 and later)
         if !(lowering === :deferred && snapshot) &&
-           all(child -> vref(child) == vref(parent) || is_perm_rooted(S, child),
+           all(child -> child == parent || is_perm_rooted(S, child),
                write_barrier_children(p.fns, ci))
             erase!(ci)
             continue
