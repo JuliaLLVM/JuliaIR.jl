@@ -235,7 +235,7 @@ function parse_input(data::Vector{UInt8}, name::String)
         throw(JloptError("$name: $(err.info)"))
     end
     mod.name = name
-    if !bitcode && !occursin(r"^source_filename"m, text)
+    if !bitcode && !occursin(r"^\s*source_filename\s*="m, text)
         mod.source_filename = name
     end
     return mod

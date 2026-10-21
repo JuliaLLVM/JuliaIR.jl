@@ -68,8 +68,8 @@ end
     # Option values may name symbols that happen to be pass names.
     @test map_pipeline("function(AllocOpt<name=AllocOpt>,GCInvariantVerifier<strong>)", mapping) ==
           "function(jl-alloc-opt<name=AllocOpt>,jl-gc-invariant-verifier<strong>)"
-    @test map_pipeline("jl-lower-exc-handlers<setjmp-name=AllocOpt>,AllocOpt", mapping) ==
-          "jl-lower-exc-handlers<setjmp-name=AllocOpt>,jl-alloc-opt"
+    @test map_pipeline("jl-lower-exc-handlers<setjmp=AllocOpt>,AllocOpt", mapping) ==
+          "jl-lower-exc-handlers<setjmp=AllocOpt>,jl-alloc-opt"
     # every ported pass is mapped from the name of the C++ pass
     @test JuliaIR.cpp_mapping()["RemoveNI"] == "jl-remove-ni"
 
@@ -97,6 +97,10 @@ ir = """
     @dispose ctx=Context(; opaque_pointers=true) begin
         @dispose mod=JuliaIR.parse_input(Vector{UInt8}(codeunits(ir)), "λ.ll") begin
             @test occursin("source_filename = \"\\CE\\BB.ll\"", string(mod))
+        end
+        text = "  source_filename = \"original.jl\"\n" * ir
+        @dispose mod=JuliaIR.parse_input(Vector{UInt8}(codeunits(text)), "input.ll") begin
+            @test occursin("source_filename = \"original.jl\"", string(mod))
         end
     end
     out = sprint() do io
