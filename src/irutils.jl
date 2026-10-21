@@ -34,7 +34,7 @@ function alloca_addrspace(layout::String)
 end
 
 # like C++'s `CallInst::Create(call, bundles, pos)`: the same call with other operand
-# bundles (and without metadata), inserted at `pos` (by default before the call), named
+# bundles (keeping only debug metadata), inserted at `pos` (by default before the call), named
 # `name`, which C++ passes as the call's own name
 function clone_call!(builder::IRBuilder, call::Instruction,
                      bundles::Vector{OperandBundle}=OperandBundle[];

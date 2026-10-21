@@ -109,8 +109,9 @@ The rebuilt pipeline prints like Julia's (as `print_pipeline` shows them), excep
 
 `test/pipeline.jl` compares the printed pipeline with Julia's `julia<...>` element at
 every level, alone and with each option toggled, both with Julia's C++ passes and with
-the ports, and checks on a few functions that the rebuilt pipeline with Julia's C++ passes optimizes exactly
-like Julia's. The upstream fixture `pipeline-prints.ll` runs in `jlopt`, as do derived
+the ports. On a few functions, it also checks that the rebuilt pipeline with Julia's C++
+passes produces the same IR as Julia's pipeline. The upstream fixture `pipeline-prints.ll`
+runs in `jlopt`, as do derived
 copies of `pipeline-o*.jl`, which run the pipeline on the unoptimized IR of Julia's code
 generator in `jlopt` (for the host CPU, like Julia's JIT) instead of in Julia. The
 differential test compares the whole pipeline at every level with Julia's on the modules

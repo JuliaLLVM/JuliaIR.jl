@@ -158,7 +158,7 @@ function sink_preserve_end!(p::JuliaLICM, call::Instruction)
         "sinking preserve end ", "PreserveEnd" => call
     end
     for point in points[2:end]
-        # like C++'s `CallInst::Create(call, {}, point)`: without bundles and metadata
+        # Like C++'s `CallInst::Create(call, {}, point)`: no bundles, only debug metadata.
         clone = clone_call!(p.builder, call; pos=LLVM.before(point))
         create_access!(p, clone, call)
         remark!(p.ar, :passed, LICM_REMARKS, "Sunk", call) do
@@ -320,12 +320,12 @@ const JULIA_LICM = define_pass("jl-licm", :loop, julia_licm!; required=false,
 """
     JuliaIR.JuliaLICMPass(; gc_barrier=:stock)
 
-Move what LLVM's LICM can't out of loops (`jl-licm` in a pipeline; a loop pass, for
-`loop(...)` and `loop-mssa(...)` pipelines, which it keeps MemorySSA valid in): the
+Hoist Julia's GC operations out of loops (`jl-licm` in a pipeline). This loop pass
+supports `loop(...)` and `loop-mssa(...)` pipelines and updates MemorySSA. It moves the
 `llvm.julia.gc_preserve_begin` calls whose operands are defined before the loop (with
 their `llvm.julia.gc_preserve_end` calls sunk to the exits of the loop), write barriers
 whose operands are or can be made loop invariant, and the GC allocations that don't escape
-the loop, which are then cleared before it. For the IR of Julia 1.14 and later, a field
+the loop. Hoisted allocations are cleared in the preheader. For Julia 1.14 and later, a field
 write barrier whose slots vary in the loop is hoisted as an object barrier. The
 `gc_barrier` option is the GC's barrier configuration from Julia 1.14 on: no barrier is
 hoisted with snapshot barriers, and no field barrier demoted with field-precise ones. Like
