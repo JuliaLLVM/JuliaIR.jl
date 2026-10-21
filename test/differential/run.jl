@@ -622,6 +622,45 @@ function canonical_frame_slots(lines)
 end
 CANONICALIZATIONS["frame slots"] = canonical_frame_slots
 
+# late-lower-gc.ll's overaligned_gc_padding has two four-pointer allocas, aligned to
+# 64 bytes. Slots 6 and 14 in its 18-slot frame are disjoint and large enough for both
+# (the two header words make their byte offsets 64 and 128). Match the complete known
+# body before allowing their permutation; arbitrary aligned frames remain unchanged.
+function canonical_padding_fixture(lines)
+    header = "define void @overaligned_gc_padding(<4 x ptr addrspace(10)> %0) {"
+    start = findfirst(==(header), lines)
+    start === nothing && return lines
+    function body(index, first, nonnull)
+        second = 7 - first
+        attr = nonnull ? "nonnull " : ""
+        split("""
+            $header
+              %2 = call align 64 ptr @julia.new_gc_frame(i32 18)
+              %3 = call ptr @julia.get_gc_frame_slot(ptr %2, i32 $index)
+              %4 = call ptr @julia.get_gc_frame_slot(ptr %2, i32 $(20-index))
+              %5 = call ptr @julia.get_pgcstack()
+              call void @julia.push_gc_frame(ptr %2, i32 18)
+              store <4 x ptr addrspace(10)> %0, ptr %$first, align 64
+              store <4 x ptr addrspace(10)> %0, ptr %$second, align 64
+              call void @aligned_short_root_array(ptr $(attr)align 64 %$first)
+              call void @aligned_short_root_array(ptr $(attr)align 64 %$second)
+              call void @julia.pop_gc_frame(ptr %2)
+              ret void
+            }""", '\n')
+    end
+    for nonnull in (false, true), index in (6, 14), first in (3, 4)
+        candidate = body(index, first, nonnull)
+        span = start:start+length(candidate)-1
+        last(span) <= length(lines) || continue
+        lines[span] == candidate || continue
+        out = String.(lines)
+        out[span] = body(14, 3, nonnull)
+        return out
+    end
+    return lines
+end
+CANONICALIZATIONS["overaligned padding fixture"] = canonical_padding_fixture
+
 # Metadata nodes are numbered in the order LLVM meets them, so a node that one side adds
 # or drops renumbers the others: number them by their first reference instead (in the IR,
 # then in the nodes in that order), and list them in that order. References are only

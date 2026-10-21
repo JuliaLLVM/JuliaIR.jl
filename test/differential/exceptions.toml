@@ -105,6 +105,13 @@ canonicalize = "frame slots"
 reason = "the frame slots of allocas and sret roots are in the order of the function; the C++ orders them by address (a pointer-keyed map), so its order changes between runs"
 decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
+[[LateLowerGCFrame]]
+input = "llvmpasses/late-lower-gc.ll"
+side = "both"
+canonicalize = "overaligned padding fixture"
+reason = "overaligned_gc_padding has two four-pointer buffers with identical alignment and uses; the canonicalizer checks its complete body and the exact disjoint slot ranges before allowing their permutation"
+decision = "https://github.com/JuliaLLVM/JuliaIR.jl/issues/48"
+
 [[LateGCCleanup]]
 julia = ["1.12", "1.13", "1.14"]
 side = "cpp"
