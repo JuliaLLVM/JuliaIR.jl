@@ -48,7 +48,7 @@ jobs:
   # nightly builds (master, and release branches before their first tag), at the commit
   # they were built from
   upstream:
-    name: Julia ${{ matrix.version }} - upstream llvmpasses
+    name: Julia ${{ matrix.version }} - Julia's pass tests
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -109,7 +109,7 @@ jobs:
   # only built when the cache misses, i.e. when the LLVM.jl release, the LLVM version or
   # the runner image change.
   standalone-llvm:
-    name: Standalone LLVM 23
+    name: Build a standalone LLVM 23
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -215,7 +215,7 @@ jobs:
   # verifier rejects); the LTS has the oldest IR of a supported release, and the nightly
   # `test` and `upstream` jobs cover new IR on LLVM 23. Any pin of `upstream` can be added.
   mode-b:
-    name: Julia ${{ matrix.version }} on LLVM 23 - mode B
+    name: Julia ${{ matrix.version }} - tests on a standalone LLVM 23
     needs: standalone-llvm
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -290,7 +290,7 @@ jobs:
   # that the patches describe LLVM 23 rather than the ports, so it runs when they or the
   # harness change. Only for the LTS, like `mode-b`.
   oracle:
-    name: Julia ${{ matrix.version }} - upgrade oracle for LLVM 23
+    name: Julia ${{ matrix.version }} - check the fixture patches for LLVM 23
     needs: standalone-llvm
     if: needs.standalone-llvm.outputs.oracle == 'true'
     runs-on: ubuntu-latest
