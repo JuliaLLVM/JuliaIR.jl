@@ -123,10 +123,18 @@ end
 # What GPUCompiler does before Julia's LateLowerGCFrame, to the extent that it takes the
 # C++ pass onto its cleanup-only path (no GC frame): no GC stack, and none of the
 # intrinsics that `jl-late-gc-cleanup` rejects (GPUCompiler lowers allocations itself, and
-# its runtime has no write barriers or type tags). Both sides then see plain calls.
+# its runtime has no write barriers or type tags). Runtime safepoints are removed;
+# the other runtime operations become plain calls on both sides.
 const GPU_RENAMED = r"^julia\.(get_pgcstack(_or_new)?|gc_alloc_obj|\w*write_barrier[\w.]*|typeof|blackbox)$"
 function gpu_like!(mod::LLVM.Module)
     for f in collect(LLVM.functions(mod))
+        if LLVM.name(f) == "julia.safepoint"
+            for use in collect(LLVM.uses(f))
+                call = LLVM.user(use)
+                call isa LLVM.CallInst && call.called_operand == f || continue
+                LLVM.erase!(call)
+            end
+        end
         if occursin(GPU_RENAMED, LLVM.name(f))
             LLVM.name!(f, "gpu." * chopprefix(LLVM.name(f), "julia."))
         end

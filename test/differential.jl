@@ -72,4 +72,27 @@ include("differential/run.jl")
     changed_string = replace.(renumbered, "literal !3" => "literal !8")
     @test canonical_metadata_numbers(original) != canonical_metadata_numbers(changed_string)
 end
+
+@testset "GPU cleanup preparation" begin
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+        declare void @julia.safepoint(ptr)
+        declare void @device_call(ptr)
+        define void @kernel(ptr %page) {
+            call void @julia.safepoint(ptr %page)
+            call void @device_call(ptr %page)
+            call void @julia.safepoint(ptr %page)
+            ret void
+        }
+        """) begin
+        gpu_like!(mod)
+        @test isempty(mod.functions["julia.safepoint"].uses)
+        @test length(collect(mod.functions["device_call"].uses)) == 1
+        @test isempty(JuliaIR.unsupported_constructs(mod.functions["kernel"],
+                                                    JuliaIR.Dialect(VERSION)))
+        run!(JuliaIR.LateGCCleanupPass(), mod)
+        @test length(collect(mod.functions["device_call"].uses)) == 1
+        @test LLVM.verify(mod) === nothing
+    end
+end
+
 end
