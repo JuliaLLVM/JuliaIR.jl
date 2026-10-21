@@ -113,19 +113,18 @@ function encode_flags(t::MultiVersioningTarget, dialect::Dialect)
         flags = (t.clone_all ? JL_TARGET_CLONE_ALL : UInt32(0)) |
                 (t.opt_size ? JL_TARGET_OPTSIZE : UInt32(0)) |
                 (t.min_size ? JL_TARGET_MINSIZE : UInt32(0))
-        for c in t.clone
-            c === :bfloat16 && !dialect.mv_bf16 &&
-                throw(ArgumentError("Julia $(dialect.julia) doesn't clone functions for bfloat16"))
-            flags |= Dict(JL_TARGET_CATEGORIES)[c]
+        :bfloat16 in t.clone && !dialect.mv_bf16 &&
+            throw(ArgumentError("Julia $(dialect.julia) doesn't clone functions for bfloat16"))
+        for (category, bit) in JL_TARGET_CATEGORIES
+            category in t.clone && (flags |= bit)
         end
         return flags
     else
         flags = (t.clone_all ? PACKED_CLONE_ALL : UInt32(0)) |
                 (t.opt_size ? PACKED_OPT_SIZE : UInt32(0)) |
                 (t.min_size ? PACKED_MIN_SIZE : UInt32(0))
-        for c in t.clone
-            c in PACKED_ALWAYS && continue
-            flags |= Dict(PACKED_CATEGORIES)[c]
+        for (category, bit) in PACKED_CATEGORIES
+            category in t.clone && (flags |= bit)
         end
         return flags
     end
@@ -606,7 +605,7 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
     # the functions that targets that clone everything need a version of
     for (i, t) in enumerate(targets)
         i > 1 && t.clone_all || continue
-        uncloned(f) = !get(sets.clones, f, falses(i))[i]
+        uncloned(f) = !haskey(sets.clones, f) || !sets.clones[f][i]
         for f in mod.functions
             (!isdeclaration(f) || haskey(sets.clones, f) || f in fvars) && uncloned(f) &&
                 throw(MultiVersioningError("$(f.name) is not cloned for target $(i-1) ($(t.cpu)), which clones every function"))
