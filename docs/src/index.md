@@ -218,7 +218,10 @@ Differences with Julia's C++ passes:
 - ExpandAtomicModify places the `atomicrmw xchg` that replaces an operation that ignores
   the old value after the inlined code that computes the new one, for the IR of every
   Julia version (Julia 1.14): Julia 1.13 places it before that code, which is invalid
-  IR. Where the C++ pass crashes or emits invalid IR, the port throws a
+  IR. An `unordered` modification lowered to `atomicrmw` is `monotonic`, like the
+  compare-exchange loop (the C++ pass emits an invalid `unordered` `atomicrmw`; Julia's
+  code generator already promotes the ordering, so only other IR reaches this). Where
+  the C++ pass crashes or emits invalid IR, the port throws a
   `JuliaIR.AtomicModifyError` instead: for values other than integers, floating-point
   numbers and pointers, a non-constant ordering, a compare-exchange loop for a pointer
   without alignment, an operation that returns the old value unchanged for a

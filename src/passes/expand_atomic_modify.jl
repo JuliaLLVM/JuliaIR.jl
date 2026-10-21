@@ -376,7 +376,10 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
     rmw_op, _ = match_rmw_op(op.parameters[1], nothing)
     if rmw_op !== false
         position_rb!(rb, LLVM.before(modify_op))
-        rmw = atomic_rmw!(builder, LLVM.AtomicRMWBinOp.Xchg, ptr, UndefValue(T), ordering;
+        # LLVM requires at least monotonic ordering for both atomicrmw and cmpxchg.
+        rmw_ordering = ordering == LLVM.AtomicOrdering.Unordered ?
+                       LLVM.AtomicOrdering.Monotonic : ordering
+        rmw = atomic_rmw!(builder, LLVM.AtomicRMWBinOp.Xchg, ptr, UndefValue(T), rmw_ordering;
                           scope, align)
         inserted!(rb, rmw)
         copy_metadata!(rmw, modify)
