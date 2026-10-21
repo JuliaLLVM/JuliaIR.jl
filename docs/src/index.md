@@ -174,6 +174,8 @@ Differences with Julia's C++ passes:
   For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
   instead of the alloca address space (Julia 1.14), and not walking the uses of
   constant data (Julia 1.14).
+- AllocOpt supports accesses of a zero-sized type to a split allocation (the C++ pass
+  divides their offset by their size, which crashes).
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
   address space 10), where the C++ pass uses the host's pointer size. For IR that Julia

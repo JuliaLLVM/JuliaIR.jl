@@ -735,9 +735,9 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
     end
     function slot_gep(slot::SplitSlot, offset, elty)
         offset -= slot.offset
+        offset == 0 && return slot.slot
         size = abi_size(opt.dl, elty)
-        if offset % size == 0
-            offset == 0 && return slot.slot
+        if size != 0 && offset % size == 0
             return inbounds_gep!(builder, elty, slot.slot,
                                  [ConstantInt(LLVM.Int32Type(), offset ÷ size)])
         else
