@@ -105,9 +105,9 @@ jobs:
           path: differential
 
   # A standalone LLVM 23 (LLVM.jl's `deps/build_standalone.jl`: LLVM_full_jll linked with
-  # LLVMExtra), with the LLVM 23 tools that the tests need next to it, for the mode-B and
-  # oracle jobs. It is only built when the cache misses, i.e. when the LLVM.jl release,
-  # the LLVM version or the runner image change.
+  # LLVMExtra), with the LLVM 23 tools next to it, for the mode-B and oracle jobs. It is
+  # only built when the cache misses, i.e. when the LLVM.jl release, the LLVM version or
+  # the runner image change.
   standalone-llvm:
     name: Standalone LLVM 23
     runs-on: ubuntu-latest
@@ -157,7 +157,7 @@ jobs:
         id: key
         env:
           LLVM_JL: ${{ steps.llvm-jl.outputs.version }}
-        run: echo "key=standalone-llvm$LLVM_VERSION-r2-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+        run: echo "key=standalone-llvm$LLVM_VERSION-r4-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: cache
         with:
@@ -184,7 +184,11 @@ jobs:
           using LLVM_full_jll
           src = LLVM_full_jll.artifact_dir
           mkpath("standalone/tools")
-          for tool in ("opt", "FileCheck", "not", "count", "llvm-dis", "llvm-as")
+          # all of LLVM's tools (not those of clang, which make up most of the directory), as
+          # the tests and Julia's fixtures use any of them
+          for tool in readdir(joinpath(src, "tools"))
+              tool in ("opt", "llc", "FileCheck", "not", "count", "split-file") ||
+                  startswith(tool, "llvm-") || continue
               cp(joinpath(src, "tools", tool), joinpath("standalone/tools", tool))
           end
           for lib in readdir(joinpath(src, "lib"))
