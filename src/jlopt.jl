@@ -302,7 +302,9 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
             cpu, features = resolve_cpu(opts.cpu, opts.features)
             tm = target_machine(mod; cpu=something(cpu, ""),
                                 features=something(features, ""))
-            tm === nothing ||
+            # like opt, also without a target machine (when LLVM lacks the module's
+            # target), as long as the triple has an architecture
+            LLVM.Triple(mod.triple).arch === :unknown ||
                 set_function_attributes!(mod, something(cpu, ""), something(features, ""))
             # the target that CPUFeatures folds for, if given
             cpu_target = (; target_cpu=cpu, target_features=features)

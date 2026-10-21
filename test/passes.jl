@@ -1653,7 +1653,8 @@ end
             @test fold(plain; triple="") == [false, false]
         else
             @test fold(plain; triple) == [have32(), have64()]
-            @test haskey(JuliaIR.NATIVE_FACTS, :jit_fma)
+            # (AArch64 always has FMA, without asking the JIT)
+            @test haskey(JuliaIR.NATIVE_FACTS, :jit_fma) == !LLVM.isaarch64(LLVM.Triple(triple))
 
             # the JIT's answers only hold for modules of its architecture: its feature
             # string has no x86 features on ARM, and the other way around

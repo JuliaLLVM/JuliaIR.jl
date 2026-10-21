@@ -126,8 +126,11 @@ ir = """
     # the CPU and features: of the target machine, and of the functions (as `opt`, which
     # appends the features to those a function has)
     @test JuliaIR.resolve_cpu(nothing, "+avx") == (nothing, "+avx")
+    # (LLVM doesn't know the host's features everywhere, e.g. on macOS on ARM)
+    host = LLVM.host_cpu_features()
     cpu, features = JuliaIR.resolve_cpu("native", "-avx")
-    @test cpu == LLVM.host_cpu_name() && endswith(features, ",-avx")
+    @test cpu == LLVM.host_cpu_name()
+    @test features == (isempty(host) ? "-avx" : "$host,-avx")
     @test JuliaIR.resolve_cpu("native", nothing)[2] == LLVM.host_cpu_features()
     @dispose ctx=Context() mod=parse(LLVM.Module, ir) begin
         LLVM.triple!(mod, LLVM.default_triple())
@@ -153,6 +156,17 @@ ir = """
         end
         @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
         @test occursin("\"target-cpu\"=\"skylake\" \"target-features\"=\"-avx2\"", out)
+    end
+    # the same without a target machine, when LLVM lacks the module's target
+    if :Sparc ∉ LLVM.backends()
+        out = sprint() do io
+            redirect_stderr(devnull) do
+                jlopt(["-mtriple=sparcv9-unknown-linux-gnu", "-mcpu=v9", "-mattr=-avx2",
+                       "-passes=jl-remove-ni", "-S"]; stdin=IOBuffer(attributed), stdout=io)
+            end
+        end
+        @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
+        @test occursin("\"target-cpu\"=\"v9\" \"target-features\"=\"-avx2\"", out)
     end
 
     # output to a file, from the API with the standard output discarded

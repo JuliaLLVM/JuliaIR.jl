@@ -48,9 +48,9 @@ jobs:
   # nightly builds (master, and release branches before their first tag), at the commit
   # they were built from
   upstream:
-    name: Julia ${{ matrix.version }} - upstream llvmpasses
+    name: Julia ${{ matrix.version }} - Julia's pass tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -105,11 +105,11 @@ jobs:
           path: differential
 
   # A standalone LLVM 23 (LLVM.jl's `deps/build_standalone.jl`: LLVM_full_jll linked with
-  # LLVMExtra), with the LLVM 23 tools that the tests need next to it, for the mode-B and
-  # oracle jobs. It is only built when the cache misses, i.e. when the LLVM.jl release,
-  # the LLVM version or the runner image change.
+  # LLVMExtra), with the LLVM 23 tools next to it, for the mode-B and oracle jobs. It is
+  # only built when the cache misses, i.e. when the LLVM.jl release, the LLVM version or
+  # the runner image change.
   standalone-llvm:
-    name: Standalone LLVM 23
+    name: Build a standalone LLVM 23
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -157,7 +157,7 @@ jobs:
         id: key
         env:
           LLVM_JL: ${{ steps.llvm-jl.outputs.version }}
-        run: echo "key=standalone-llvm$LLVM_VERSION-r2-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+        run: echo "key=standalone-llvm$LLVM_VERSION-r4-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: cache
         with:
@@ -184,7 +184,11 @@ jobs:
           using LLVM_full_jll
           src = LLVM_full_jll.artifact_dir
           mkpath("standalone/tools")
-          for tool in ("opt", "FileCheck", "not", "count", "llvm-dis", "llvm-as")
+          # all of LLVM's tools (not those of clang, which make up most of the directory), as
+          # the tests and Julia's fixtures use any of them
+          for tool in readdir(joinpath(src, "tools"))
+              tool in ("opt", "llc", "FileCheck", "not", "count", "split-file") ||
+                  startswith(tool, "llvm-") || continue
               cp(joinpath(src, "tools", tool), joinpath("standalone/tools", tool))
           end
           for lib in readdir(joinpath(src, "lib"))
@@ -211,7 +215,7 @@ jobs:
   # verifier rejects); the LTS has the oldest IR of a supported release, and the nightly
   # `test` and `upstream` jobs cover new IR on LLVM 23. Any pin of `upstream` can be added.
   mode-b:
-    name: Julia ${{ matrix.version }} on LLVM 23 - mode B
+    name: Julia ${{ matrix.version }} - tests on a standalone LLVM 23
     needs: standalone-llvm
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -286,7 +290,7 @@ jobs:
   # that the patches describe LLVM 23 rather than the ports, so it runs when they or the
   # harness change. Only for the LTS, like `mode-b`.
   oracle:
-    name: Julia ${{ matrix.version }} - upgrade oracle for LLVM 23
+    name: Julia ${{ matrix.version }} - check the fixture patches for LLVM 23
     needs: standalone-llvm
     if: needs.standalone-llvm.outputs.oracle == 'true'
     runs-on: ubuntu-latest

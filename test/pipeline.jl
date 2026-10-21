@@ -16,10 +16,12 @@ end
 
 # What can't be told apart in a printed pipeline: the C++ adds pass managers that are
 # empty, which pipeline text can't express, 1.14's IRCE with cleanup is a pass of the
-# C++ pipeline without a name of its own, and the early-only `vector-combine` (tested
-# below) is printed as the other.
+# C++ pipeline without a name of its own (printed by its type name, which GCC and Clang
+# spell differently), and the early-only `vector-combine` (tested below) is printed as
+# the other.
 function normalize_cpp(s)
-    s = replace(s, "{anonymous}::IRCEWithCleanupPass" => "jl-irce-with-cleanup")
+    s = replace(s, r"(\{anonymous\}|\(anonymous namespace\))::IRCEWithCleanupPass" =>
+                   "jl-irce-with-cleanup")
     while true
         t = replace(s, r"(^|,)(cgscc|function)\(\)(?=,|\)|$)" => "")
         t = replace(t, r"^," => "", "(," => "(")
@@ -152,7 +154,10 @@ end
     @testset "$(nameof(f)) at level $level" for (f, types) in ((sum_loop, (Vector{Float64},)),
                                                               (boxed, (Int,))),
                                                 level in 0:3
-        ir = unoptimized_ir(f, types)
+        # (without `optnone`, which Julia gives its `jfptr` wrappers: on Windows, Julia's
+        # C++ pipeline doesn't skip such functions when run from another PassBuilder, so
+        # it would be compared with a pipeline that does)
+        ir = replace(unoptimized_ir(f, types), " optnone" => "")
         @dispose ctx=Context(; opaque_pointers=true) begin
             function optimized(text)
                 mod = parse(LLVM.Module, ir)
