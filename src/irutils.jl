@@ -11,24 +11,17 @@ end
 
 is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 
-# Pointer types, by their reference, without wrapping the type of every value.
-function scalar_typeref(ty::API.LLVMTypeRef)
-    kind = API.LLVMGetTypeKind(ty)
-    vector = kind == LLVM.TypeKind.Vector || kind == LLVM.TypeKind.ScalableVector
-    return vector ? API.LLVMGetElementType(ty) : ty
-end
+# the scalar type of a vector type, or the type itself
+scalar_type(@nospecialize(t::LLVMType)) =
+    t isa Union{VectorType,ScalableVectorType} ? t.element_type : t
 
 # whether a value is a pointer, or a pointer or vector of pointers
-is_pointer(@nospecialize(v::Value)) =
-    API.LLVMGetTypeKind(API.LLVMTypeOf(v)) == LLVM.TypeKind.Pointer
-is_pointer_like(@nospecialize(v::Value)) =
-    API.LLVMGetTypeKind(scalar_typeref(API.LLVMTypeOf(v))) == LLVM.TypeKind.Pointer
+is_pointer(@nospecialize(v::Value)) = v.value_type isa PointerType
+is_pointer_like(@nospecialize(v::Value)) = scalar_type(v.value_type) isa PointerType
 
 # the address space of a pointer or vector of pointers, or of their type
-pointer_addrspace(@nospecialize(v::Value)) =
-    Int(API.LLVMGetPointerAddressSpace(scalar_typeref(API.LLVMTypeOf(v))))
-pointer_addrspace(@nospecialize(ty::LLVMType)) =
-    Int(API.LLVMGetPointerAddressSpace(scalar_typeref(Base.unsafe_convert(API.LLVMTypeRef, ty))))
+pointer_addrspace(@nospecialize(v::Value)) = pointer_addrspace(v.value_type)
+pointer_addrspace(@nospecialize(ty::LLVMType)) = scalar_type(ty).addrspace
 
 # the address space of allocas, from the data layout string (`A<n>`)
 alloca_addrspace(mod::LLVM.Module) = alloca_addrspace(string(mod.datalayout))
@@ -70,51 +63,31 @@ function clone_call!(builder::IRBuilder, call::Instruction,
 end
 
 
-## types, by reference
+## composite types
 
-const TypeRef = API.LLVMTypeRef
 const ValueRef = API.LLVMValueRef
-
-type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
 vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
 
-is_pointer_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Pointer
-is_vector_type(t::TypeRef) = type_kind(t) in (LLVM.TypeKind.Vector,
-                                              LLVM.TypeKind.ScalableVector)
-is_struct_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Struct
-is_array_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Array
-type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
-
-function array_length(t::TypeRef)
-    return LLVM.version() >= v"17" ? Int(API.LLVMGetArrayLength2(t)) :
-                                     Int(API.LLVMGetArrayLength(t))
-end
+is_vector_type(@nospecialize(t::LLVMType)) = t isa Union{VectorType,ScalableVectorType}
+is_composite(@nospecialize(t::LLVMType)) =
+    t isa Union{StructType,ArrayType,VectorType,ScalableVectorType}
 
 # the number of elements of a struct, array or vector type (the minimum for scalable
 # vectors), like `getCompositeNumElements`
-function composite_num_elements(t::TypeRef)
-    is_struct_type(t) && return Int(API.LLVMCountStructElementTypes(t))
-    is_array_type(t) && return array_length(t)
-    return Int(API.LLVMGetVectorSize(t))
-end
+composite_num_elements(t::StructType) = length(t.elements)
+composite_num_elements(t::Union{ArrayType,VectorType}) = t.length
+composite_num_elements(t::ScalableVectorType) = t.min_length
 
 # the type of element `i` (0-based) of a struct, array or vector type
-composite_element_type(t::TypeRef, i::Integer) =
-    is_struct_type(t) ? API.LLVMStructGetTypeAtIndex(t, i) : API.LLVMGetElementType(t)
+composite_element_type(t::StructType, i::Integer) = t.elements[i+1]
+composite_element_type(@nospecialize(t::LLVMType), i::Integer) = t.element_type
 
 # the types contained in a struct, array or vector type (`Type::subtypes`)
-function subtypes(t::TypeRef)
-    is_struct_type(t) || return [API.LLVMGetElementType(t)]
-    return [API.LLVMStructGetTypeAtIndex(t, i) for i in 0:composite_num_elements(t)-1]
-end
-
-is_composite(t::TypeRef) = is_struct_type(t) || is_array_type(t) || is_vector_type(t)
+subtypes(t::StructType) = collect(t.elements)
+subtypes(@nospecialize(t::LLVMType)) = LLVMType[t.element_type]
 
 
 ## values, calls and attributes
-
-# the type of a value, by its reference
-typeref(@nospecialize(v::Value)) = API.LLVMTypeOf(v)
 
 # the instructions that have to come first in their block, after any PHIs
 const EHPad = Union{LLVM.LandingPadInst, LLVM.CatchPadInst, LLVM.CleanupPadInst,
@@ -236,33 +209,27 @@ end
 # a constant (the root, then the expressions and aggregates on the way), the use by which
 # it uses the previous frame's constant (none for the root), and, while the constant's bits
 # appear unchanged in it (`samebits`: aggregates, and pointer and bit casts that keep the
-# size), at which byte
-# offset. The next use of every frame is read before the current one is handed out, so the
-# user may change or drop the current use before the walk continues.
+# size), at which byte offset. The uses of a frame's constant are listed when the walk
+# enters the frame, so the user may change or drop the current use before the walk
+# continues.
 struct UseFrame
-    use::API.LLVMUseRef
-    val::API.LLVMValueRef
+    use::Union{Nothing,Use}
+    val::Constant
     offset::Int
     samebits::Bool
-    cur::API.LLVMUseRef
-    next::API.LLVMUseRef
+    uses::Vector{Use}
+    i::Int  # the current use
 end
 
-function UseFrame(use::API.LLVMUseRef, val::API.LLVMValueRef, offset::Integer, samebits::Bool)
-    cur = API.LLVMGetFirstUse(val)
-    next = cur == C_NULL ? cur : API.LLVMGetNextUse(cur)
-    return UseFrame(use, val, offset, samebits, cur, next)
-end
+UseFrame(use::Union{Nothing,Use}, val::Constant, offset::Integer, samebits::Bool) =
+    UseFrame(use, val, offset, samebits, collect(val.uses), 1)
 
-function advance(f::UseFrame)
-    cur = f.next
-    next = cur == C_NULL ? cur : API.LLVMGetNextUse(cur)
-    return UseFrame(f.use, f.val, f.offset, f.samebits, cur, next)
-end
+current(f::UseFrame) = f.i <= length(f.uses) ? f.uses[f.i] : nothing
+advance(f::UseFrame) = UseFrame(f.use, f.val, f.offset, f.samebits, f.uses, f.i + 1)
 
 mutable struct ConstantUses
     stack::Vector{UseFrame}
-    datalayout::API.LLVMTargetDataRef
+    datalayout::DataLayout
     # whether the walk stops at instructions, or at global values
     instructions::Bool
 end
@@ -271,8 +238,7 @@ end
 # `for walk = constant_uses(c, mod, T); !isdone(walk); next!(walk) ... use_info(walk) ... end`
 function constant_uses(@nospecialize(c::Constant), mod::LLVM.Module, ::Type{T}) where {T}
     T === Instruction || T === GlobalValue || throw(ArgumentError("unsupported user type $T"))
-    walk = ConstantUses([UseFrame(API.LLVMUseRef(C_NULL), c.ref, 0, true)],
-                        API.LLVMGetModuleDataLayout(mod), T === Instruction)
+    walk = ConstantUses([UseFrame(nothing, c, 0, true)], mod.datalayout, T === Instruction)
     forward!(walk)
     return walk
 end
@@ -282,8 +248,8 @@ isdone(walk::ConstantUses) = isempty(walk.stack)
 # the current use, its user, and where the constant is in it (`get_info`)
 function use_info(walk::ConstantUses)
     top = walk.stack[end]
-    return (; use=top.cur, user=Value(API.LLVMGetUser(top.cur)), offset=top.offset,
-            samebits=top.samebits)
+    use = current(top)::Use
+    return (; use, user=use.user, offset=top.offset, samebits=top.samebits)
 end
 
 function next!(walk::ConstantUses)
@@ -292,47 +258,41 @@ function next!(walk::ConstantUses)
     return walk
 end
 
-is_aggregate(ref::API.LLVMValueRef) =
-    API.LLVMIsAConstantStruct(ref) != C_NULL || API.LLVMIsAConstantArray(ref) != C_NULL ||
-    API.LLVMIsAConstantVector(ref) != C_NULL
-
 function forward!(walk::ConstantUses)
     stack = walk.stack
     while !isempty(stack)
         frame = stack[end]
-        use = frame.cur
-        if use == C_NULL
+        use = current(frame)
+        if use === nothing
             pop!(stack)
             continue
         end
-        user = API.LLVMGetUser(use)
-        if walk.instructions ? API.LLVMIsAInstruction(user) != C_NULL :
-                               API.LLVMIsAGlobalValue(user) != C_NULL
+        user = use.user
+        if walk.instructions ? user isa Instruction : user isa GlobalValue
             return
         end
         stack[end] = advance(frame)
-        if is_aggregate(user)
+        if user isa ConstantAggregate
             if !frame.samebits
                 push!(stack, UseFrame(use, user, 0, false))
                 continue
             end
-            idx = API.LLVMExtraGetOperandNo(use)
-            ty = API.LLVMTypeOf(user)
-            offset = if API.LLVMIsAConstantStruct(user) != C_NULL
-                API.LLVMOffsetOfElement(walk.datalayout, ty, idx)
+            ty = user.value_type
+            offset = if ty isa StructType
+                offsetof(walk.datalayout, ty, use.operand_index)
             else
-                API.LLVMABISizeOfType(walk.datalayout, API.LLVMGetElementType(ty)) * idx
+                abi_size(walk.datalayout, ty.element_type) * (use.operand_index - 1)
             end
-            push!(stack, UseFrame(use, user, frame.offset + Int(offset), true))
-        elseif API.LLVMIsAConstantExpr(user) != C_NULL
-            opcode = API.LLVMGetConstOpcode(user)
+            push!(stack, UseFrame(use, user, frame.offset + offset, true))
+        elseif user isa ConstantExpr
+            opcode = user.opcode
             # Unlike Julia's walk, a cast to a narrower or wider type doesn't keep the bits
             # (e.g., `ptrtoint` to `i32` of a 64-bit pointer): the image loader would write
             # a full pointer there, over whatever follows.
             keeps_bits = opcode in (LLVM.Opcode.PtrToInt, LLVM.Opcode.IntToPtr,
                                     LLVM.Opcode.AddrSpaceCast, LLVM.Opcode.BitCast) &&
-                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(user)) ==
-                API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(frame.val))
+                bit_size(walk.datalayout, user.value_type) ==
+                bit_size(walk.datalayout, frame.val.value_type)
             push!(stack, frame.samebits && keeps_bits ?
                          UseFrame(use, user, frame.offset, true) :
                          UseFrame(use, user, 0, false))

@@ -28,8 +28,8 @@ const GC_FRAME_HEADER_SLOTS = 2
 ## tracked pointers
 
 # a scalar pointer type in one of Julia's address spaces (10 to 13)
-is_special_ptr(t::TypeRef) =
-    is_pointer_type(t) && AS_TRACKED <= type_addrspace(t) <= AS_LOADED
+is_special_ptr(@nospecialize(t::LLVMType)) =
+    t isa PointerType && AS_TRACKED <= t.addrspace <= AS_LOADED
 
 # how many pointers in Julia's address spaces a type holds (`count`), whether it holds
 # anything else (`all == false`), and whether any of them isn't tracked (`derived`)
@@ -39,13 +39,13 @@ struct CountTrackedPointers
     derived::Bool
 end
 
-function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
+function CountTrackedPointers(@nospecialize(t::LLVMType), ignore_loaded::Bool=false)
     count = 0
     all = true
     derived = false
-    if is_pointer_type(t)
+    if t isa PointerType
         if is_special_ptr(t)
-            as = type_addrspace(t)
+            as = t.addrspace
             if !(ignore_loaded && as == AS_LOADED)
                 count += 1
                 as != AS_TRACKED && (derived = true)
@@ -58,22 +58,17 @@ function CountTrackedPointers(t::TypeRef, ignore_loaded::Bool=false)
             all &= sub.all
             derived |= sub.derived
         end
-        if is_array_type(t)
-            count *= array_length(t)
-        elseif is_vector_type(t)
-            count *= Int(API.LLVMGetVectorSize(t))
+        if t isa ArrayType || is_vector_type(t)
+            count *= composite_num_elements(t)
         end
     end
     count == 0 && (all = false)
     return CountTrackedPointers(count, all, derived)
 end
 
-CountTrackedPointers(@nospecialize(t::LLVMType), ignore_loaded::Bool=false) =
-    CountTrackedPointers(Base.unsafe_convert(TypeRef, t), ignore_loaded)
-
-function has_loaded_ty(t::TypeRef)
-    if is_pointer_type(t)
-        return type_addrspace(t) == AS_LOADED
+function has_loaded_ty(@nospecialize(t::LLVMType))
+    if t isa PointerType
+        return t.addrspace == AS_LOADED
     elseif is_composite(t)
         return any(has_loaded_ty, subtypes(t))
     end
@@ -81,11 +76,11 @@ function has_loaded_ty(t::TypeRef)
 end
 
 # the index paths of the special pointers inside a type, like `TrackCompositeType`
-function track_composite_type(t::TypeRef)
+function track_composite_type(@nospecialize(t::LLVMType))
     numberings = Vector{Vector{Int}}()
     idxs = Int[]
     function walk(t)
-        if is_pointer_type(t)
+        if t isa PointerType
             is_special_ptr(t) && push!(numberings, copy(idxs))
         elseif is_composite(t)
             for idx in 0:composite_num_elements(t)-1

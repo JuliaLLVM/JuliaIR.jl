@@ -72,21 +72,10 @@ function keeps_bf16(f::LLVM.Function, dialect::Dialect)
     end
 end
 
-# The kind of the scalar type of `ty`, and a type of the same shape with `float` scalars.
-# Types are handled as references: LLVM.jl doesn't wrap scalable vector types.
-function scalar_type_kind(ty::API.LLVMTypeRef)
-    kind = API.LLVMGetTypeKind(ty)
-    if kind == LLVM.TypeKind.Vector || kind == LLVM.TypeKind.ScalableVector
-        kind = API.LLVMGetTypeKind(API.LLVMGetElementType(ty))
-    end
-    return kind
-end
-
-function float_type(ty::API.LLVMTypeRef, T_float::API.LLVMTypeRef)
-    kind = API.LLVMGetTypeKind(ty)
-    kind == LLVM.TypeKind.Vector && return API.LLVMVectorType(T_float, API.LLVMGetVectorSize(ty))
-    kind == LLVM.TypeKind.ScalableVector &&
-        return API.LLVMScalableVectorType(T_float, API.LLVMGetVectorSize(ty))
+# a type of the same shape as `ty`, with `float` scalars
+function float_type(@nospecialize(ty::LLVMType), T_float::LLVMType)
+    ty isa VectorType && return VectorType(T_float, ty.length)
+    ty isa ScalableVectorType && return ScalableVectorType(T_float, ty.min_length)
     return T_float
 end
 
@@ -97,11 +86,10 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     keep_bf16 = keeps_bf16(f, dialect)
     keep_fp16 && keep_bf16 && return PreservedAnalyses(AllAnalyses)
 
-    T_float = API.LLVMFloatTypeInContext(context(f))
+    T_float = FloatType()
     function demoted(@nospecialize(v::Value))
-        kind = scalar_type_kind(typeref(v))
-        return (!keep_fp16 && kind == LLVM.TypeKind.Half) ||
-               (!keep_bf16 && kind == LLVM.TypeKind.BFloat)
+        T = scalar_type(v.value_type)
+        return (!keep_fp16 && T isa HalfType) || (!keep_bf16 && T isa BFloatType)
     end
 
     erase = Instruction[]
@@ -118,7 +106,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
             builder.debug_location = inst.debug_location
             args = map(ops) do op
                 demoted(op) || return op
-                Value(API.LLVMBuildFPExt(builder, op, float_type(typeref(op), T_float), ""))
+                fpext!(builder, op, float_type(op.value_type, T_float))
             end
             new = if opcode == LLVM.Opcode.FNeg
                 fneg!(builder, args[1])
@@ -141,8 +129,8 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
                 copy_metadata!(new, inst)
                 new.fast_math = inst.fast_math
             end
-            if typeref(new) != typeref(inst)
-                new = Value(API.LLVMBuildFPTrunc(builder, new, typeref(inst), ""))
+            if new.value_type != inst.value_type
+                new = fptrunc!(builder, new, inst.value_type)
             end
             new isa Instruction && take_name!(new, inst)
             replace_uses!(inst, new)

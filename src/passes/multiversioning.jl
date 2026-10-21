@@ -627,7 +627,7 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
                     f in sets.reloc ||
                         throw(MultiVersioningError("$(f.name) is called by $(user_f.name), which is cloned, but has no julia.mv.reloc attribute"))
                     # the load from the slot would have to come before the pad
-                    load_position(user, Use(use_info(walk).use)) isa EHPad &&
+                    load_position(user, use_info(walk).use) isa EHPad &&
                         throw(MultiVersioningError("$(f.name) can't be loaded from its relocation slot in $(user_f.name), which is cloned: the load would come before an exception handling instruction"))
                 end
                 next!(walk)
@@ -987,10 +987,10 @@ end
 # function (`rewrite_gv_init`): that puts the global in a writable section, and the image
 # loader writes the address of the right version there.
 function rewrite_gv_init(stack::Vector{UseFrame})
-    res = null(Value(stack[1].val).value_type)
+    res = null(stack[1].val.value_type)
     for frame in @view stack[2:end]
-        val = Value(frame.val)::Constant
-        idx = Use(frame.use).operand_index
+        val = frame.val
+        idx = frame.use.operand_index
         args = Constant[i == idx ? res : op for (i, op) in enumerate(val.operands)]
         res = rebuild_constant(val, args)
     end
@@ -1057,8 +1057,8 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
                           pos::LLVM.InsertionPoint)
     builder = ctx.builder
     for frame in @view stack[2:end]
-        val = Value(frame.val)::Constant
-        idx = Use(frame.use).operand_index
+        val = frame.val
+        idx = frame.use.operand_index
         if val isa ConstantExpr
             old = val.operands[idx]
             inst = Instruction(pos, val)
@@ -1102,7 +1102,7 @@ function replace_uses_with_load!(ctx::CloneCtx, f::LLVM.Function, slot_of)
             user = info.user::Instruction
             slot = slot_of(user)
             if slot !== nothing
-                use = Use(info.use)
+                use = info.use
                 pos = LLVM.before(load_position(user, use))
                 position!(builder, pos)
                 builder.debug_location = nothing
