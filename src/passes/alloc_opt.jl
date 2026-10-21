@@ -827,7 +827,8 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                     size = UInt32(convert(UInt64, user.arguments[3]))
                     for idx in find_slot(offset):nslots
                         slot = slots[idx]
-                        (slot.offset + slot.size <= offset || slot.offset >= offset + size) && break
+                        slot.offset + slot.size <= offset && continue
+                        slot.offset >= offset + size && break
                         if slot.isref
                             ptr = if val == 0
                                 null(opt.T_prjlvalue)
