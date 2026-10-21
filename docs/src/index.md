@@ -183,7 +183,8 @@ Differences with Julia's C++ passes:
 - Bugs that no Julia version has fixed yet: PropagateJuliaAddrspaces declares
   `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
   value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass
-  turns it into `llvm.memset`).
+  turns it into `llvm.memset`). RemoveNI also removes a `ni:` component at the start of
+  the data layout (the C++ pass only finds one preceded by `-`).
 - DemoteFloat16's `fp16` and `bf16` options override the Julia version's rule, and its
   `jit_features=false` option ignores the JIT's features for functions without
   `target-features` (Julia 1.10, 1.11), like the C++ pass in `opt`. It leaves alone
