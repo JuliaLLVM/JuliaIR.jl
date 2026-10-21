@@ -92,3 +92,5 @@ not. The `setjmp` name is the running Julia's whatever the triple.
 - Pointers are loaded and stored with the pointer alignment of the module's data layout;
   Julia's pass uses the host's pointer size (8 on 64-bit hosts, also for a 32-bit
   module). For IR that Julia generates for its own host, the result is the same.
+- A buffer in a nonzero stack address space is cast to a generic pointer before it is
+  published in the task or passed to `setjmp`.

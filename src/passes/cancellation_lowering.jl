@@ -193,6 +193,10 @@ function lower_point!(p::CancellationLowering, point::Instruction,
         position_before!(builder, first(first(p.f.blocks).instructions); debug=true)
         buffer = alloca!(builder, LLVM.ArrayType(T_int8, rt.reset_ctx_size), "cancel_ucontext";
                          align=rt.reset_ctx_align)
+        # The task and setjmp use generic pointers, even with a separate stack address space.
+        if LLVM.addrspace(buffer.value_type) != AS_GENERIC
+            buffer = addrspacecast!(builder, buffer, T_ptr, "cancel_ucontext_generic")
+        end
     end
 
     check_bb = LLVM.parent(point)
