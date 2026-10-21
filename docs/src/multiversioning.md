@@ -31,16 +31,13 @@ vector; by default `nothing`, the module's), and the pass records them in the fl
 1. **Annotation.** Julia annotates its modules before it runs the pass (which marks them
    with the `julia.mv.annotated` flag); for other modules, the pass does it. Each function
    that is cloned gets a `julia.mv.clones` attribute, the set of targets to clone it for:
-   every target
-   that clones everything, and the targets one of whose categories the function has
+   targets that clone everything, and targets whose categories the function matches
    (loops, vector arguments or results, fast or fused floating-point math, queries of
    CPU features, `half` or `bfloat` values, as the target says), together with the
-   functions in between such functions in the call graph. Functions that a target which
-   doesn't clone everything clones and that instructions use, or that aliases name, get a
-   *relocation slot*
-   (`julia.mv.reloc`); other functions in global initializers are marked
-   `julia.mv.fvar`. With the `julia.mv.skipcloning`
-   flag, the pass stops here.
+   functions between them in the call graph. A function gets a *relocation slot*
+   (`julia.mv.reloc`) if instructions use it and a selective target clones it, or if an
+   alias names it. Other functions in global initializers are marked `julia.mv.fvar`.
+   With the `julia.mv.skipcloning` flag, the pass stops here.
 2. **Cloning.** Each function is cloned for its targets (`f.1`, `f.2`, ... after the
    targets' indices), with the target's CPU and features, `optsize` or `minsize` if the
    target says so (unless the function is `optnone`), and a `julia.mv.clone` attribute
@@ -69,7 +66,7 @@ vector; by default `nothing`, the module's), and the pass records them in the fl
 
 ## Differences from the C++ pass
 
-The port changes what the C++ pass does where it is wrong (S-D3, S-D22):
+The port fixes these issues in Julia's C++ pass:
 
 - **Call-graph expansion.** The C++ pass extends the set of functions to clone in the
   order of their addresses in memory, without revisiting functions, so that whether a
@@ -109,7 +106,7 @@ copies of `alwaysinline` functions that the partitions of an image get from each
 Run before it, the pass rejects them when they are relocated: they need a slot, but aren't
 in the partition's function table (the C++ pass reads a garbage index for them).
 
-What the port keeps: functions without a `julia.mv.clones` attribute call the first
-target's version of the functions they call, also when a target has a clone of it; and variadic functions'
-trampolines use `musttail` calls on every architecture, like Julia's release builds
-(builds with assertions reject them on ARM and PowerPC).
+Functions without a `julia.mv.clones` attribute call the first target's versions, even
+when other targets have clones. Variadic trampolines use `musttail` calls on every
+architecture, as in Julia's release builds; assertion builds reject them on ARM and
+PowerPC.

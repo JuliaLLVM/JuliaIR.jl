@@ -411,7 +411,7 @@ end
 # relocation slots, every function that is called by and calls one of them. Unlike the C++
 # pass, which visits the functions in the order of their addresses while it extends the
 # set, so that the result depends on where the functions happen to be in memory, the set
-# is extended until it includes every such function (S-D22(1)).
+# is extended until it includes every such function.
 function annotate_module_clones(mod::LLVM.Module, am, targets::Vector{MultiVersioningTarget},
                                 dialect::Dialect)
     triple = LLVM.Triple(mod.triple)
@@ -499,7 +499,7 @@ end
 
 # Whether the module already has the `julia.mv.veccall` flag that the annotation adds. The
 # C++ pass adds a second flag, which makes the module invalid; the port keeps an identical
-# one, and rejects others (S-D22(6)).
+# one, and rejects others.
 function check_veccall_flag(mod::LLVM.Module)
     flag = module_flag(mod, "julia.mv.veccall")
     flag === nothing && return false
@@ -568,8 +568,8 @@ function check_index_table(mod::LLVM.Module, name::String, n::Int)
         throw(MultiVersioningError("the table $name is not an array of at least $n 32-bit indices"))
 end
 
-# The checks for what the C++ pass asserts or crashes on, before the module is changed
-# (S-D22). Returns whether to clone the module, rather than only annotate it, which
+# The checks for what the C++ pass asserts or crashes on, before the module is changed.
+# Returns whether to clone the module, rather than only annotate it, which
 # `external` does for modules without a usable `jl_fvars` table.
 function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
                        sets::CloneSets, dialect::Dialect, external::Bool)
@@ -752,7 +752,7 @@ end
 
 # The elements of a table like `jl_fvars` (an array of pointers), with casts stripped. With
 # `external`, entries that aren't function definitions are left out, as happens in reduced
-# test cases (the C++ pass drops every entry after the first such one; S-D22(5)).
+# test cases (the C++ pass drops every entry after the first such one).
 function table_elements(gv::GlobalVariable, external::Bool)
     init = gv.initializer
     isnull(init) &&
@@ -818,7 +818,7 @@ end
 # initializing the runtime if `autoinit`. The call has the calling convention and the
 # return and parameter attributes of `f`, except `julia.return_roots` (the trampoline has
 # no GC frame, and its caller roots what it passes on). Julia 1.13 introduced that; the
-# port does it for every version (S-D22(2)), as calls that don't match the ABI of `f`, e.g.
+# port does it for every version, as calls that don't match the ABI of `f`, e.g.
 # for `byval` and `sret` parameters, pass their arguments wrong.
 function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariable;
                             autoinit::Bool=false)
@@ -849,7 +849,7 @@ function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariabl
         push!(call.argument_attributes[i], attr)
     end
     # musttail isn't supported on ARM and PowerPC, which the C++ asserts; release builds
-    # emit it anyway, which the port follows (S-D22(7))
+    # emit it anyway, which the port follows
     call.tailcall_kind = isvararg(ft) ? LLVM.TailCallKind.MustTail : LLVM.TailCallKind.Tail
     ft.return_type == LLVM.VoidType() ? ret!(builder) : ret!(builder, call)
     return trampoline
@@ -1143,7 +1143,7 @@ const JL_SYSIMG_TAG_MASK = UInt32(1) << 31
 
 # A 32-bit offset from `base` to a pointer or address (`get_ptrdiff32`). Julia 1.10 decides
 # whether to truncate from the pointer size of the host; the port decides from the module's,
-# like later versions do (S-D3).
+# like later versions do.
 function ptrdiff32(ctx::CloneCtx, ptr::Constant, base::Constant)
     ptr.value_type isa LLVM.PointerType && (ptr = const_ptrtoint(ptr, ctx.T_size))
     diff = const_sub(ptr, base)
