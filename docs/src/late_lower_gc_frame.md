@@ -167,8 +167,8 @@ Deliberate differences, on the IR of every Julia version:
   function. The C++ pass iterates over a hash map keyed by the allocas' addresses, so its
   order changes from run to run (upstream's tests check these slots with `CHECK-DAG`).
 - What the C++ pass takes from the host (`sizeof(void*)`, for alignments and for the
-  size of frame slots) comes from the module's data layout; this is the same for every
-  target Julia supports.
+  size of frame slots) comes from the module's data layout. This also supports targets
+  with a different pointer size.
 - The C++ pass declares `ijl_gc_small_alloc` in every module it runs on (Julia 1.12 and
   later); `jl-late-gc-cleanup` does not, since GPU modules don't link Julia's runtime.
 - For calls marked `julia.safepoint` (Julia 1.14 and later), the memory effects of the

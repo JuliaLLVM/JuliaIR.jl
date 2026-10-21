@@ -1,9 +1,7 @@
-# FinalLowerGC: port of Julia's final GC lowering pass (`src/llvm-final-gc-lowering.cpp`,
-# and from Julia 1.14 on `llvm-final-gc-lowering-stock.cpp`). It lowers what
-# LateLowerGCFrame leaves behind to code for Julia's runtime: the GC frame intrinsics,
-# allocations, root queuing and safepoints, and from Julia 1.14 on also the write barriers.
-# The functions keep the names of the C++ ones; differences between Julia versions are
-# fields of `Dialect`, deviations from the C++ are documented in
+# Lower GC frames, allocations, root queuing and safepoints to Julia runtime operations.
+# Julia 1.14 also lowers write barriers here. Port of `llvm-final-gc-lowering.cpp`
+# and, from Julia 1.14, `llvm-final-gc-lowering-stock.cpp`.
+# Version differences live in `Dialect`; deliberate changes are documented in
 # docs/src/final_lower_gc.md.
 
 mutable struct FinalLowerGC
@@ -150,9 +148,8 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     # for targets whose allocas aren't in the generic address space
     gcframe = addrspacecast!(builder, frame_alloca, LLVM.PointerType(AS_GENERIC))
     take_name!(gcframe, target)
-    # the frame is zeroed with a non-volatile memset that only aliases the frame (Julia
-    # 1.14 and later; up to 1.13, a volatile one without TBAA, which keeps it from being
-    # removed)
+    # Use Julia 1.14's non-volatile memset and frame TBAA on every dialect.
+    # Earlier versions accidentally passed the TBAA tag as the volatility flag.
     size = pointer_size(p.gc) * (nroots + 2)
     memset = memset!(builder, gcframe, ConstantInt(LLVM.Int8Type(), 0),
                      ConstantInt(LLVM.Int64Type(), size), 16)
