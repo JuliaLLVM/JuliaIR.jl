@@ -183,7 +183,7 @@ decision = "docs/src/index.md: AllocOpt escape analysis"
 input = "llvmpasses/gc-writebarrier-volatile.ll"
 julia = ["1.12", "1.13"]
 side = "port"
-lines = '^declare void @julia\.write_barrier\(ptr, ptr\)$'
+lines = '^declare void @julia\.write_barrier\(ptr, ptr\)(?: local_unnamed_addr)?$'
 reason = "as AllocOpt's: the port keeps a write barrier whose child is a removed allocation, where the C++ erases it; the barrier is lowered later, but its declaration stays"
 decision = "docs/src/index.md: AllocOpt write barriers"
 
@@ -191,7 +191,7 @@ decision = "docs/src/index.md: AllocOpt write barriers"
 input = "llvmpasses/gc-writebarrier-volatile.ll"
 julia = ["1.12", "1.13"]
 side = "port"
-lines = '^declare void @julia\.write_barrier\(ptr, ptr\)$'
+lines = '^declare void @julia\.write_barrier\(ptr, ptr\)(?: local_unnamed_addr)?$'
 reason = "as AllocOpt's: the port keeps a write barrier whose child is a removed allocation, where the C++ erases it; the barrier is lowered later, but its declaration stays"
 decision = "docs/src/index.md: AllocOpt write barriers"
 
