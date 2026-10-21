@@ -98,7 +98,7 @@ write_barrier_names(dialect::Dialect) =
 
 function has_use(mod::LLVM.Module, name::String)
     f = get(mod.functions, name, nothing)
-    return f !== nothing && API.LLVMGetFirstUse(f) != C_NULL
+    return f !== nothing && !isempty(f.uses)
 end
 
 # whether any function of the module uses a GC intrinsic (Julia 1.13 and later)

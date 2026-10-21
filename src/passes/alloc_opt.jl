@@ -934,7 +934,7 @@ struct AllocOptModuleFacts
 end
 
 function AllocOptModuleFacts(mod::LLVM.Module)
-    layout = datalayout_string(mod)
+    layout = string(mod.datalayout)
     ptr = LLVM.PointerType(alloca_addrspace(layout))
     start_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.start"), LLVMType[ptr])
     end_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.end"), LLVMType[ptr])

@@ -61,4 +61,31 @@ using LLVM, LLVM.IR
     end
 end
 
+@testset "aggregate_element" begin
+    @dispose ctx=Context(; opaque_pointers=true) begin
+        T_i8, T_i64 = LLVM.Int8Type(), LLVM.Int64Type()
+        elt(c, i) = JuliaIR.aggregate_element(c, i)
+
+        data = ConstantDataArray(Int32[1, 2])
+        @test convert(Int, elt(data, 1)) == 2
+        @test elt(data, 2) === nothing
+
+        agg = ConstantStruct([ConstantInt(Int8(1)), ConstantInt(Int64(2))])
+        @test convert(Int, elt(agg, 1)) == 2
+        @test elt(agg, 2) === nothing
+
+        zero_struct = null(LLVM.StructType([T_i8, T_i64]))
+        @test elt(zero_struct, 1) == null(T_i64)
+
+        # scalable vectors have the minimum number of elements
+        scalable = LLVM.ScalableVectorType(T_i64, 2)
+        @test elt(null(scalable), 1) == null(T_i64)
+        @test elt(null(scalable), 2) === nothing
+        @test elt(PoisonValue(scalable), 0) === nothing
+
+        undef = elt(UndefValue(LLVM.ArrayType(T_i8, 3)), 2)
+        @test undef == UndefValue(T_i8) && !(undef isa PoisonValue)
+    end
+end
+
 end

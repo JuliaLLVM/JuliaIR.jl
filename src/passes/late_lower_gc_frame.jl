@@ -63,14 +63,14 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     while true
         op = operator_opcode(v)
         if op == LLVM.Opcode.GetElementPtr
-            API.LLVMIsInBounds(v) != 0 || return v
-            v = Value(API.LLVMGetOperand(v, 0))
+            v.inbounds || return v
+            v = v.operands[1]
         elseif op == LLVM.Opcode.BitCast
-            new = Value(API.LLVMGetOperand(v, 0))
+            new = v.operands[1]
             is_pointer_value(new) || return v
             v = new
         elseif op == LLVM.Opcode.AddrSpaceCast
-            v = Value(API.LLVMGetOperand(v, 0))
+            v = v.operands[1]
         elseif v isa LLVM.CallBase
             ret = returned_argument(v)
             ret === nothing && return v
@@ -112,14 +112,14 @@ only_reads_memory(e::MemoryEffects) =
 only_accesses_arg_pointees(e::MemoryEffects) =
     all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
 
-# the element `i` of a constant aggregate, or nothing
+# the element `i` (0-based) of a constant aggregate, or nothing
+# (`Constant::getAggregateElement`). Which constants have elements depends on the version
+# of LLVM (e.g., scalable `zeroinitializer`, and vector splats since LLVM 20), and LLVM.jl's
+# `c.elements` only covers some of them, so this calls the C API.
 function aggregate_element(c::LLVM.Constant, i::Integer)
     ref = API.LLVMGetAggregateElement(c, i)
     return ref == C_NULL ? nothing : Value(ref)
 end
-
-shuffle_mask(inst::Instruction) =
-    [Int(API.LLVMGetMaskValue(inst, i)) for i in 0:Int(API.LLVMGetNumMaskElements(inst))-1]
 
 # shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
 const UNDEF_MASK_ELEM = -1
@@ -191,7 +191,7 @@ function splat_value(@nospecialize(v::Value))
         if ins isa LLVM.InsertElementInst
             idx = ins.operands[3]
             if idx isa LLVM.ConstantInt && convert(Int, idx) == 0 &&
-               all(m -> m == 0 || m == UNDEF_MASK_ELEM, shuffle_mask(v))
+               all(m -> m == 0 || m == UNDEF_MASK_ELEM, v.shuffle_mask)
                 return ins.operands[2]
             end
         end
@@ -216,7 +216,7 @@ function find_scalar_element(@nospecialize(v::Value), elt::Int)
     end
     if v isa LLVM.ShuffleVectorInst && type_kind(t) == LLVM.TypeKind.Vector
         lhs_width = composite_num_elements(typeref(v.operands[1]))
-        in_elt = shuffle_mask(v)[elt+1]
+        in_elt = v.shuffle_mask[elt+1]
         in_elt < 0 && return Value(API.LLVMGetPoison(elt_type))
         in_elt < lhs_width && return find_scalar_element(v.operands[1], in_elt)
         return find_scalar_element(v.operands[2], in_elt - lhs_width)
@@ -675,7 +675,7 @@ function lift_extract_element!(p::LateLowerGCFrame, S::State, eei::Instruction)
     bases = maybe_extract_vector(p, S, base, eei)
     builder = p.builder
     position_before!(builder, eei; debug=true)
-    base_vec = Value(API.LLVMGetPoison(LLVM.VectorType(p.gc.T_prjlvalue, length(bases))))
+    base_vec = PoisonValue(LLVM.VectorType(p.gc.T_prjlvalue, length(bases)))
     for (i, b) in enumerate(bases)
         base_vec = insert_element!(builder, base_vec, b, ConstantInt(LLVM.Int64Type(), i - 1))
     end
@@ -780,7 +780,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
     elseif cur isa LLVM.ShuffleVectorInst
         numbers1 = number_all!(p, S, cur.operands[1])
         numbers2 = number_all!(p, S, cur.operands[2])
-        for idx in shuffle_mask(cur)
+        for idx in cur.shuffle_mask
             if idx < 0
                 push!(numbers, -1)
             elseif idx < length(numbers1)
@@ -999,11 +999,7 @@ end
 
 function is_const_gv(gv::LLVM.GlobalVariable)
     LLVM.isconstant(gv) && return true
-    kind = API.LLVMGetMDKindIDInContext(context(gv), "julia.constgv", length("julia.constgv"))
-    for (k, _) in gv.metadata
-        k == kind && return true
-    end
-    return false
+    return haskey(gv.metadata, "julia.constgv")
 end
 
 # Whether this can be traced through constant loads to a constant global, or an otherwise
@@ -1030,8 +1026,7 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     v isa LLVM.GlobalVariable && return is_const_gv(v)
     is_constant_data(v) && return true  # null pointer
     if v isa LLVM.ConstantExpr  # literal pointers
-        return API.LLVMGetConstOpcode(v) == LLVM.Opcode.IntToPtr &&
-               is_constant_data(Value(API.LLVMGetOperand(v, 0)))
+        return v.opcode == LLVM.Opcode.IntToPtr && is_constant_data(v.operands[1])
     end
     if v isa LLVM.SelectInst
         return is_load_from_const_gv_value(p, v.operands[2], task_local, seen) &&
@@ -1611,8 +1606,7 @@ function local_scan(p::LateLowerGCFrame, f::LLVM.Function)
         BBS = bb_state(S, bb)
         # backwards, so that instructions inserted before the current one (lifted
         # selects and phis) are scanned too
-        last_ref = API.LLVMGetLastInstruction(bb)
-        inst = last_ref == C_NULL ? nothing : Instruction(last_ref)
+        inst = isempty(bb.instructions) ? nothing : last(bb.instructions)
         while inst !== nothing
             scan_instruction!(p, S, BBS, inst, phi_numbers)
             inst = inst.prev
@@ -1968,11 +1962,10 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     ptr isa LLVM.GetElementPtrInst && return nothing
     (ptr isa LLVM.AllocaInst && has_array_alloca(S, ptr)) || return false
     # stop at a pointer operation that can't be analyzed or isn't a null store
-    (vol || !(val isa LLVM.Constant) || !is_null_value(val)) && return nothing
+    (vol || !(val isa LLVM.Constant) || !isnull(val)) && return nothing
     return true
 end
 
-is_null_value(c::LLVM.Constant) = API.LLVMIsNull(c) != 0
 
 function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                                        pre_assigned::Int, S::State)
@@ -2182,8 +2175,8 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     # many casts as possible from the tag, which is mostly loaded as an integer
     tag = strip_pointer_casts_and_aliases(call.arguments[3])
     if tag isa LLVM.ConstantExpr
-        if API.LLVMGetConstOpcode(tag) == LLVM.Opcode.IntToPtr
-            tag = Value(API.LLVMGetOperand(tag, 0))
+        if tag.opcode == LLVM.Opcode.IntToPtr
+            tag = tag.operands[1]
         end
     elseif tag isa LLVM.LoadInst
         # Make sure the load is marked as aligned, since LLVM might have removed it. Not
@@ -2262,9 +2255,9 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
     elseif v isa LLVM.GlobalVariable
         align = LLVM.alignment(v)
         align > 0 && return align
-        API.LLVMTypeIsSized(LLVM.global_value_type(v)) != 0 || return 1
+        issized(LLVM.global_value_type(v)) || return 1
         if !LLVM.isdeclaration(v)
-            return Int(API.LLVMPreferredAlignmentOfGlobal(p.gc.dl, v))
+            return preferred_alignment(p.gc.dl, v)
         end
         return abi_alignment(p.gc.dl, LLVM.global_value_type(v))
     elseif v isa LLVM.AllocaInst
@@ -2287,12 +2280,12 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         # constant addresses: their trailing zeros, up to LLVM's maximum alignment
         c = strip_pointer_casts(v)
         # LLVM 22 and later only look at integer constants cast to pointers
-        addr = if API.LLVMIsAConstantPointerNull(c) != C_NULL &&
+        addr = if c isa LLVM.PointerNull &&
                   library_facts(context(c)).null_pointer_alignment
             UInt64(0)
-        elseif c isa LLVM.ConstantExpr && API.LLVMGetConstOpcode(c) == LLVM.Opcode.IntToPtr &&
-               Value(API.LLVMGetOperand(c, 0)) isa LLVM.ConstantInt
-            convert(UInt64, Value(API.LLVMGetOperand(c, 0)))
+        elseif c isa LLVM.ConstantExpr && c.opcode == LLVM.Opcode.IntToPtr &&
+               c.operands[1] isa LLVM.ConstantInt
+            convert(UInt64, c.operands[1])
         else
             return 1
         end

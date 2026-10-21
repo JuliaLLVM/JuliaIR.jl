@@ -30,12 +30,8 @@ pointer_addrspace(@nospecialize(v::Value)) =
 pointer_addrspace(@nospecialize(ty::LLVMType)) =
     Int(API.LLVMGetPointerAddressSpace(scalar_typeref(Base.unsafe_convert(API.LLVMTypeRef, ty))))
 
-# the module's data layout as written in the IR (`mod.datalayout` is the parsed layout,
-# whose string form LLVM may print differently)
-datalayout_string(mod::LLVM.Module) = unsafe_string(API.LLVMGetDataLayoutStr(mod))
-
 # the address space of allocas, from the data layout string (`A<n>`)
-alloca_addrspace(mod::LLVM.Module) = alloca_addrspace(datalayout_string(mod))
+alloca_addrspace(mod::LLVM.Module) = alloca_addrspace(string(mod.datalayout))
 function alloca_addrspace(layout::String)
     for spec in split(layout, '-')
         m = match(r"^A(\d+)$", spec)
@@ -66,7 +62,7 @@ function clone_call!(builder::IRBuilder, call::Instruction,
     for i in 1:length(call.arguments), attr in collect(call.argument_attributes[i])
         push!(new_call.argument_attributes[i], attr)
     end
-    if API.LLVMCanValueUseFastMathFlags(call) != 0
+    if supports_fast_math(call)
         new_call.fast_math = call.fast_math
     end
     new_call.debug_location = call.debug_location
@@ -215,8 +211,8 @@ metadata_int(md::Metadata) = convert(Int, Value(md))
 
 # whether `v` has exactly one use (C++'s `hasOneUse`: `fadd %m, %m` uses `%m` twice)
 function has_one_use(@nospecialize(v::Value))
-    use = API.LLVMGetFirstUse(v)
-    return use != C_NULL && API.LLVMGetNextUse(use) == C_NULL
+    next = iterate(v.uses)
+    return next !== nothing && iterate(v.uses, next[2]) === nothing
 end
 has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
 

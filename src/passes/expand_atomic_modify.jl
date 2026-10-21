@@ -125,8 +125,16 @@ function rmw_intrinsic(f::LLVM.Function)
     return nothing
 end
 
+# the opcodes of C++'s `BinaryOperator`
+const BINARY_OPCODES = (LLVM.Opcode.Add, LLVM.Opcode.FAdd, LLVM.Opcode.Sub, LLVM.Opcode.FSub,
+                        LLVM.Opcode.Mul, LLVM.Opcode.FMul, LLVM.Opcode.UDiv,
+                        LLVM.Opcode.SDiv, LLVM.Opcode.FDiv, LLVM.Opcode.URem,
+                        LLVM.Opcode.SRem, LLVM.Opcode.FRem, LLVM.Opcode.Shl,
+                        LLVM.Opcode.LShr, LLVM.Opcode.AShr, LLVM.Opcode.And, LLVM.Opcode.Or,
+                        LLVM.Opcode.Xor)
+
 is_binary_operator(@nospecialize(v::Value)) =
-    v isa Instruction && API.LLVMIsABinaryOperator(v) != C_NULL
+    v isa Instruction && v.opcode in BINARY_OPCODES
 
 # the operand of a two-operand instruction that `old` is used as (or as the second
 # operand, if the instruction is commutative)
@@ -223,12 +231,10 @@ end
 
 # the integer type of the size of a floating-point type (`getPrimitiveSizeInBits`)
 function float_bits(@nospecialize(T::LLVMType))
-    kind = API.LLVMGetTypeKind(T)
-    kind == LLVM.TypeKind.Half && return 16
-    kind == LLVM.TypeKind.BFloat && return 16
-    kind == LLVM.TypeKind.Float && return 32
-    kind == LLVM.TypeKind.Double && return 64
-    kind == LLVM.TypeKind.X86_FP80 && return 80
+    T isa Union{HalfType,BFloatType} && return 16
+    T isa FloatType && return 32
+    T isa DoubleType && return 64
+    T isa X86FP80Type && return 80
     return 128  # fp128, ppc_fp128
 end
 

@@ -236,6 +236,7 @@ function parse_input(data::Vector{UInt8}, name::String)
     end
     mod.name = name
     if !bitcode && !occursin(r"^source_filename"m, text)
+        # LLVM.jl has no property for this yet (JuliaLLVM/LLVM.jl#705)
         API.LLVMSetSourceFileName(mod, name, length(name))
     end
     return mod

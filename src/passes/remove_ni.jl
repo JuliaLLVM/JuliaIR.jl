@@ -4,7 +4,7 @@
 # has not changed since Julia 1.10.
 
 function remove_ni!(mod::LLVM.Module, am, opts::PassOptions)
-    layout = datalayout_string(mod)
+    layout = string(mod.datalayout)
     # like the C++ pass, remove the first `-ni:...` component only
     range = findfirst("-ni:", layout)
     range === nothing && return PreservedAnalyses(AllAnalyses)

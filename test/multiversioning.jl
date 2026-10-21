@@ -461,9 +461,7 @@ end
 # the elements of an array initializer, as text (global values by name)
 function table(mod, name)
     init = mod.globals[name].initializer
-    elements = (Value(LLVM.API.LLVMGetAggregateElement(init, i))
-                for i in 0:init.value_type.length-1)
-    return [e isa GlobalValue ? "@" * e.name : string(e) for e in elements]
+    return [e isa GlobalValue ? "@" * e.name : string(e) for e in init.elements]
 end
 
 @testset "cloning" begin
