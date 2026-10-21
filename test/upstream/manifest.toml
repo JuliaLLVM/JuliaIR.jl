@@ -35,7 +35,7 @@
 # A table [fixtures."<file>".pins.<minor>] overrides these keys for one pin.
 #
 # Independently of the status, run.jl skips the RUN lines of a fixture that use typed
-# pointers (`--opaque-pointers=0`; decision S-D1), and translates legacy pass manager
+# pointers (`--opaque-pointers=0`), and translates legacy pass manager
 # lines (`-enable-new-pm=0`) when they use opaque pointers. In mode B, it also skips the
 # RUN lines that name Julia's C++ passes without a port, and applies the patches of
 # derived-B/llvm<major>/<minor> after the mode-A patch (see derive.jl).

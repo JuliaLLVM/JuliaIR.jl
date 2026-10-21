@@ -12,13 +12,12 @@ in `src/pipeline.cpp` that runs them), written against
 
 ## Why
 
-Julia's own passes are compiled into Julia's copy of libLLVM, so they only exist in that
-library. Code that processes Julia's IR with another LLVM can't use them. The main case is
-GPUCompiler, which can load a standalone, newer libLLVM next to Julia's (e.g. to target a
-GPU that Julia's LLVM doesn't support yet), and still has to lower Julia's GC intrinsics,
-address spaces and so on before handing the IR to the back-end. The ports run on any
-LLVM library that LLVM.jl can load, so they work in either configuration, and they behave
-like the C++ passes of the Julia version that produced the IR.
+Julia's C++ passes live in `libjulia-codegen` and are built against Julia's bundled
+LLVM. They cannot be used with an independent LLVM library. GPUCompiler needs these
+transformations to lower Julia's GC intrinsics and address spaces before generating
+GPU code. The ports let it use a newer LLVM, for example to target a GPU that Julia's
+bundled LLVM does not support. They follow the C++ passes of the Julia version that
+produced the IR, with the intentional differences listed below.
 
 ## What is supported
 
@@ -29,11 +28,13 @@ like the C++ passes of the Julia version that produced the IR.
   passes use the running Julia's (`JuliaIR.Dialect(VERSION)`).
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions (e.g. a separately built library like
-  libLLVMGPU). They are tested on both: on the LLVM of each supported Julia version, and
-  with each version's IR on the newest LLVM (a standalone LLVM 23).
+  libLLVMGPU). CI tests each supported Julia version on its bundled LLVM, plus Julia
+  1.10 on standalone LLVM 23. The harness supports the other versions on standalone
+  LLVM too; see [Testing](testing.md).
 - **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.
+- **Julia's stock GC.** MMTk builds are not supported.
 
 JuliaIR.jl is not registered yet. It needs LLVM.jl 10.4 or later.
 
@@ -48,10 +49,11 @@ name, optionally with options:
 using LLVM, LLVM.IR, LLVM.Passes, JuliaIR
 
 @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
-    mod = parse(LLVM.Module, ir)
-    JuliaIR.register!(pb)
-    add!(pb, "jl-alloc-opt,jl-late-lower-gc-frame,jl-final-lower-gc")
-    run!(pb, mod)
+    @dispose mod=parse(LLVM.Module, ir) begin
+        JuliaIR.register!(pb)
+        add!(pb, "jl-alloc-opt,jl-late-lower-gc-frame,jl-final-lower-gc")
+        run!(pb, mod)
+    end
 end
 ```
 
@@ -77,9 +79,8 @@ Context(; library=lib, opaque_pointers=true) do ctx
 end
 ```
 
-For an existing context, `context!(ctx) do ... end` selects it and its library. The passes
-look up intrinsics and decide what depends on the LLVM version in the library they run
-with, not in the one the package was loaded with.
+For an existing context, `context!(ctx) do ... end` selects it and its library.
+Intrinsic IDs and LLVM compatibility checks use the selected library.
 
 From the command line, `jlopt` is an `opt`-compatible driver that runs the ports, and
 maps Julia's pass names (`-passes=AllocOpt`, `-passes='julia<level=2>'`) to them; see
@@ -89,7 +90,8 @@ GPUCompiler uses the ports instead of Julia's C++ passes when its `CompilerConfi
 `julia_passes = :ports` (or GPUCompiler's `julia_passes` preference is `"ports"`) and
 JuliaIR.jl is loaded; the compilation then needs a context with opaque pointers, which
 GPUCompiler's `JuliaContext()` creates for that setting. This
-is not merged in GPUCompiler yet (JuliaGPU/GPUCompiler.jl#1026).
+integration is proposed in
+[GPUCompiler.jl#1026](https://github.com/JuliaGPU/GPUCompiler.jl/pull/1026).
 
 ## Terms
 
@@ -104,7 +106,8 @@ is not merged in GPUCompiler yet (JuliaGPU/GPUCompiler.jl#1026).
   managers skip for the others. Each port is required exactly when Julia's C++ pass is.
 - *Runtime facts*: facts about the Julia runtime that the IR doesn't state, like the
   offset of a field in the current task, which some passes need (see
-  [below](#Facts-about-the-Julia-runtime)). IR for GPUs doesn't need them.
+  [below](#Facts-about-the-Julia-runtime)). GPU code without Julia runtime operations
+  does not need these facts.
 
 ## Passes
 
@@ -174,14 +177,20 @@ Differences with Julia's C++ passes:
   For PropagateJuliaAddrspaces, lifting into the common address space of the leaves
   instead of the alloca address space (Julia 1.14), and not walking the uses of
   constant data (Julia 1.14).
-- AllocOpt supports accesses of a zero-sized type to a split allocation (the C++ pass
-  divides their offset by their size, which crashes).
+- AllocOpt preserves `memset` writes when they start in a gap before a retained field.
+  The C++ pass stops at the preceding field and can lose writes to later fields.
+  Allocations with volatile accesses are kept: deleting them or splitting their fields
+  can remove volatile operations or turn them into ordinary accesses. Accesses of a
+  zero-sized type to a split allocation are supported (the C++ pass divides their offset
+  by their size, which crashes).
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
   address space 10), where the C++ pass uses the host's pointer size. For IR that Julia
   generates for its own host the result is the same; for IR of a target with another
   pointer size (e.g. a 32-bit target processed by a 64-bit Julia) the port is correct
-  where the C++ pass is not.
+  where the C++ pass is not. Likewise, an alloca in the target's non-zero alloca address
+  space is used as is (the C++ pass of Julia 1.10 and 1.11 casts it to address space 0
+  with a `bitcast`, which is invalid IR).
 - Bugs that no Julia version has fixed yet: PropagateJuliaAddrspaces declares
   `llvm.memset` overloaded on the type of the length (the C++ pass uses the type of the
   value, which makes the call invalid), and keeps `llvm.memset.inline` (the C++ pass

@@ -1,7 +1,8 @@
 # Testing
 
-The passes are tested at three levels: the package tests, Julia's own pass tests, and a
-differential test against Julia's C++ passes, which is not part of `Pkg.test()`.
+Validation covers package tests, Julia's upstream pass tests, and differential
+comparisons with the C++ passes. `Pkg.test()` runs the package tests; the upstream and
+differential suites have separate drivers.
 
 ## Package tests
 
@@ -16,14 +17,11 @@ differential test against Julia's C++ passes, which is not part of `Pkg.test()`.
   `python3` must be available;
 - tests of the harness for Julia's own pass tests (below), on a synthetic checkout.
 
-The passes process the IR of the running Julia, so each Julia version tests its own
-dialect, and CI runs the tests on every supported version. The testsets expect what the
-running Julia's dialect does where that matters (`JuliaIR.Dialect(VERSION)`). In the lit
-suite, the lit feature `julia-1.X` names the running Julia's minor version (that of its
-dialect: a nightly newer than the newest known version has that version's), and
-`julia-ge-1.X` holds for 1.X and later. A test for some versions only says
-`REQUIRES: julia-1.10 || julia-1.11`; a RUN line for some versions is wrapped in lit's
-`%if`, which also selects the check prefixes of a version:
+Each Julia version tests its own dialect, `JuliaIR.Dialect(VERSION)`. CI runs the
+package tests on every supported version. In lit, `julia-1.X` selects a dialect's minor
+version and `julia-ge-1.X` selects that version and later. Nightlies newer than the
+known dialects use the newest known one. Restrict a test with
+`REQUIRES: julia-1.10 || julia-1.11`, or select RUN lines and check prefixes with `%if`:
 
 ```
 ; RUN: %if julia-1.12 %{ opt -passes=jl-lower-exc-handlers -S %s | FileCheck %s %}
@@ -33,10 +31,9 @@ dialect: a nightly newer than the newest known version has that version's), and
 A misspelled feature would skip its lines silently, so a testset checks that every
 `julia-*` feature under `test/lit` names a known version.
 
-A RUN line can prove that a port ran, rather than Julia's C++ pass of the same name, with
-the ledger: when the environment variable `JULIAIR_LEDGER` names a file, every pass
-invocation appends a line to it (process id, `pass`, the pass name, the Julia dialect and
-the LLVM version), and `jlopt` appends one with the pipeline it runs:
+Set `JULIAIR_LEDGER` to a file to record which ports ran. Each invocation appends its
+process ID, `pass`, pass name, Julia version and LLVM version. `jlopt` also records the
+pipeline. This lets a RUN line verify that it used the port:
 
 ```
 ; RUN: env JULIAIR_LEDGER=%t.ledger opt -passes=RemoveNI -S %s -o /dev/null
@@ -104,14 +101,10 @@ preference in the `LocalPreferences.toml` of the environment the app runs in: of
 
 `test/upstream/run.jl` runs the tests in `test/llvmpasses` of a JuliaLang/julia checkout,
 unchanged, with `jlopt` standing in for `opt`. Which fixtures are relevant to this package,
-and how they run, is recorded in `test/upstream/manifest.toml`, together with the commit
-whose fixtures are used for each Julia minor version: the release tag for released
-versions. For a version without a release (the development version, Julia master, and a
-release branch before its first tag), the fixtures are those of the commit that the
-running nightly build was built from (`Base.GIT_VERSION_INFO.commit`), so that the binary
-and its tests always match. A prerelease newer than every pin, like master right after
-its version number is bumped, uses the newest pin if that one has no commit either, as
-it has the newest dialect too.
+and how they run, is recorded in `test/upstream/manifest.toml`. Released versions pin
+a release commit. Nightlies use their build commit (`Base.GIT_VERSION_INFO.commit`) so
+the binary and fixtures match. A prerelease newer than every pin uses the newest pin's
+rules if that pin has no fixed commit.
 Every file in the checkout must be in the manifest, as one of:
 
 - `run`: the fixture runs, with Julia's pass names mapped to the ports. The harness checks
@@ -156,18 +149,15 @@ own LLVM, and Julia's C++ passes for the fixtures that combine them). On Julia 1
 instead of the ports. It checks `jlopt` and the harness against upstream's expectations,
 independently of the ports.
 
-When a new patch release is tagged, update the pin's `commit`, `julia` and `llvm` in the manifest
-and the matching `julia_ref` in CI, and account for new or changed fixtures; the first
-release of a minor version gives its pin these keys, and CI's job a `julia_ref`. The
-entries of a pin without a commit apply to whatever its branch is current: when the
-nightly build moves on and a fixture appears or changes in a way the manifest doesn't
-account for (an override that no longer applies, a fixture of a port that now passes),
-the harness fails, and the manifest needs updating. When master's version is bumped
-(after a release branch is created), master keeps running with the newest pin (which
-has no commit yet) until it gets one of its own, and the release branch's pin then
-follows that branch's nightly build (`1.X-nightly` in CI) until its first tag. The new
-version's dialect only becomes a known version (`JuliaIR.KNOWN_MINORS`) once its IR
-differs from its predecessor's.
+When updating a release pin, change its `commit`, `julia` and `llvm` fields and CI's
+matching `julia_ref`, then account for new or changed fixtures. A minor version's
+first release needs these fields too.
+
+Nightly pins have no fixed commit. New fixtures, stale overrides and other changes
+that the manifest does not cover make the harness fail. After master bumps its version,
+it can use the newest nightly pin until it gets its own; the release branch follows
+`1.X-nightly` until its first release. Add a version to `JuliaIR.KNOWN_MINORS` when its
+IR first differs from its predecessor's.
 
 ## Julia's pass tests on a newer LLVM (mode B)
 
@@ -235,20 +225,17 @@ without its mode-B patch, and a fixture with a mode-A override with the mode-B p
 alone, and fails if either passes. A patch file for a fixture that the pin doesn't have
 is an error.
 
-CI runs mode B on Linux, in the `mode-b` job, for Julia 1.10 only. Running Julia's
-oldest supported IR on a newer LLVM is what GPUCompiler does, and that is where a port
-broke on LLVM 23 (LowerExcHandlers put lifetime markers on an address-space cast, which
-LLVM 22's verifier rejects). Newer IR on LLVM 23 is covered by the nightly builds, which
-use LLVM 23 themselves and run in the `test` and `upstream` jobs. The other pins pass
-mode B locally; adding one back to CI takes one line in the job's matrix. The
-`standalone-llvm` job builds the standalone LLVM 23 with the `deps/build_standalone.jl`
-of the LLVM.jl release that the package resolves to (and caches it, so that it is rebuilt
-only when that release, the LLVM version or the runner image change), and packs it
-together with the LLVM 23 tools that the tests need. The `mode-b` job runs the package
-tests with that library next to Julia's (`JULIAIR_TEST_LIBRARY`), then sets the
-preference and runs the package tests (`Pkg.test()`, after checking that LLVM.jl loaded
-the standalone library) and the harness with `--mode B`, both on that library. It also checks that its Julia doesn't
-use an LLVM newer than the standalone one, in which case the latter needs to move on.
+CI runs mode B on Linux for Julia 1.10, testing the oldest supported IR on standalone
+LLVM 23. This catches compatibility changes such as LLVM 22's requirement that lifetime
+markers refer directly to an alloca. The nightly jobs test newer Julia IR on their
+bundled LLVM 23. Extend the `mode-b` matrix to cover other Julia versions.
+
+The `standalone-llvm` job builds LLVM 23 with LLVM.jl's `deps/build_standalone.jl` and
+packages its test tools. The cache key includes the LLVM.jl release, LLVM version and
+runner image. The `mode-b` job first tests library switching with
+`JULIAIR_TEST_LIBRARY`, then selects the standalone library through preferences and
+runs `Pkg.test()` and the upstream harness with `--mode B`. It checks the loaded LLVM
+version and rejects a standalone LLVM older than Julia's bundled one.
 
 ### Where the mode-B patches come from
 
@@ -304,9 +291,9 @@ see the pin's printing. A patch that isn't needed fails here too, except for a f
 whose RUN lines all check stderr (those of the `memoryssa-alias` rule): it passes with or
 without its patch, which the harness lists as not validated, and only mode B checks it.
 
-The oracle passes at every pin with the patches of `derived-B/llvm23`, and Julia 1.14
-and master, which already use LLVM 23, need none. Mode B validates the
-composed patches against the ports.
+The patches in `derived-B/llvm23` cover pins older than LLVM 23. Julia 1.14 and master
+already use LLVM 23 and need no such patches. Run the oracle to validate the patches
+against C++ output, and mode B to validate their composition with the mode-A patches.
 
 In CI, the `oracle` job runs it for Julia 1.10, like mode B, with the `opt` of the
 `standalone-llvm` job, when a pull request or a push changes what it checks:
@@ -325,13 +312,10 @@ Julia's IR, each Julia version compares its own C++ passes with the ports, on IR
 generated itself. The C++ passes exist only in Julia's own LLVM, so unlike mode B, the
 differential can't compare the ports on a newer LLVM.
 
-The comparison is of the printed module, after removing the names of local values (so
-that LLVM numbers them) and replacing the numbers of attribute groups by their contents;
-of whether the module verifies; of the errors either side throws (the C++ passes abort
-the process on some inputs, so they run in a worker process that is restarted after a
-crash, and a pass that runs for too long counts as hung); and, for the passes that emit
-optimization remarks, of the remarks. A pass with a verdict instead of output
-(GCInvariantVerifier) is compared by the messages of the C++ pass, which aborts, and of
+The comparison covers printed IR, verification results, errors and optimization
+remarks. It removes local value names and substitutes attribute group contents for
+their numbers. Both implementations run in a worker process that restarts after a
+crash or timeout. For GCInvariantVerifier, it compares the C++ abort diagnostic with
 the port's exception.
 
 Each comparison is one of:
@@ -341,11 +325,10 @@ Each comparison is one of:
   `test/differential/exceptions.toml`. An entry there names the pass, optionally the
   inputs (a glob), dialects (Julia minor versions; a newer Julia has the newest known
   one's, so `julia = ["1.14"]` also applies to 1.15) and prefix it applies to, the
-  reason and the plan decision behind it, and a rewrite of one side's output: a regex over its lines (the
-  status lines for errors and invalid IR included) and what the matched text becomes,
-  or nothing to delete those lines. A difference is excepted only if the outputs are
-  identical after the rewrites of the entries that apply, so an entry allows exactly the
-  change it describes and the rest of the module is still compared. A deviation that a
+  reason, a documentation or upstream reference, and a rewrite of one side's output.
+  The rewrite matches lines with a regex, including status lines for errors and invalid
+  IR, and replaces the matched text or deletes the line. The outputs must be identical
+  after all applicable rewrites; the rest of the module is still compared. A deviation that a
   regex can't describe, like the order of GC frame slots, can have a named
   canonicalization of both outputs instead (`CANONICALIZATIONS` in `run.jl`);
 - *accepted*: not compared, for the few inputs where a recorded deviation changes too
