@@ -234,6 +234,12 @@ replace = '\1\2\3, i1 true)'
 reason = "the GC frame is zeroed by a non-volatile memset with the frame's TBAA tag, as from Julia 1.14 on (the C++ of 1.10 to 1.13 passes the tag as the volatility flag), which later passes may annotate"
 decision = "FinalLowerGC deviation (docs/src/final_lower_gc.md, JuliaLang/julia#62061)"
 
+[[FinalLowerGC]]
+side = "both"
+canonicalize = "GC frame push order"
+reason = "the previous-frame load and address are independent arguments of a C++ builder call, so their instruction order depends on the compiler that built Julia"
+decision = "src/passes/final_lower_gc.jl: lower_push_gc_frame!"
+
 [[LowerPTLSPass]]
 side = "port"
 accept = '^! error: LowerPTLSError: can.t read the thread pointer for target '

@@ -73,6 +73,40 @@ include("differential/run.jl")
     @test canonical_metadata_numbers(original) != canonical_metadata_numbers(changed_string)
 end
 
+@testset "GC frame push order" begin
+    load_first = [
+        "define void @f(ptr %0, ptr %1) {",
+        "  %2 = load ptr, ptr %0, align 8",
+        "  %3 = getelementptr inbounds ptr, ptr %1, i32 1",
+        "  store ptr %2, ptr %3, align 8, !tbaa !0",
+        "  ret void", "}",
+    ]
+    gep_first = [load_first[1],
+        "  %2 = getelementptr inbounds ptr, ptr %1, i32 1",
+        "  %3 = load ptr, ptr %0, align 8",
+        "  store ptr %3, ptr %2, align 8, !tbaa !0",
+        load_first[5:end]...,
+    ]
+    @test canonical_frame_push(load_first) == load_first
+    @test canonical_frame_push(gep_first) == load_first
+    dependent = copy(gep_first)
+    dependent[3] = replace(dependent[3], "ptr %0" => "ptr %2")
+    @test canonical_frame_push(dependent) == dependent
+    extra_use = copy(gep_first)
+    insert!(extra_use, 5, "  call void @use(ptr %2)")
+    @test canonical_frame_push(extra_use) == extra_use
+    wrong_store = copy(gep_first)
+    wrong_store[4] = "  store ptr %2, ptr %3, align 8, !tbaa !0"
+    @test canonical_frame_push(wrong_store) == wrong_store
+    changed_align = replace.(gep_first, "align 8" => "align 4")
+    @test canonical_frame_push(changed_align) != load_first
+    changed_metadata = replace.(gep_first, "!tbaa !0" => "!tbaa !1")
+    @test canonical_frame_push(changed_metadata) != load_first
+    volatile = replace.(gep_first, "load ptr" => "load volatile ptr")
+    @test canonical_frame_push(volatile) != load_first
+    @test canonical_frame_push(volatile)[2] == "  %2 = load volatile ptr, ptr %0, align 8"
+end
+
 @testset "GPU cleanup preparation" begin
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
         declare void @julia.safepoint(ptr)

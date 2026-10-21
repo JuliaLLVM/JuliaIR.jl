@@ -661,6 +661,44 @@ function canonical_padding_fixture(lines)
 end
 CANONICALIZATIONS["overaligned padding fixture"] = canonical_padding_fixture
 
+# FinalLowerGC builds the previous-frame load and address as two C++ call arguments.
+# Compilers can emit them in either order. Normalize only an adjacent independent pair
+# used solely by the following store; leave every operand, flag and metadata unchanged.
+function canonical_frame_push(lines)
+    out = String.(lines)
+    starts = findall(l -> startswith(l, "define "), out)
+    for from in starts
+        finish = findnext(==("}"), out, from)
+        finish === nothing && continue
+        body = join(@view(out[from:finish]), "\n")
+        occurrences = Dict{String,Int}()
+        for m in eachmatch(r"%\d+\b", body)
+            occurrences[m.match] = get(occurrences, m.match, 0) + 1
+        end
+        for i in from+1:finish-3
+            first = match(r"^  (%\d+) = (.*)$", out[i])
+            second = match(r"^  (%\d+) = (.*)$", out[i+1])
+            (first === nothing || second === nothing) && continue
+            load, gep = startswith(first[2], "load ") ? (first, second) : (second, first)
+            startswith(load[2], "load ") && startswith(gep[2], "getelementptr ") || continue
+            all(m -> get(occurrences, m[1], 0) == 2, (load, gep)) || continue
+            # A dependent pair cannot be reordered, even if its users happen to fit.
+            ids = Set((load[1], gep[1]))
+            any(m -> m.match in ids, eachmatch(r"%\d+\b", load[2] * " " * gep[2])) && continue
+            store = match(r"^  store(?: atomic)?(?: volatile)? ptr(?: addrspace\(\d+\))? (%\d+), ptr(?: addrspace\(\d+\))? (%\d+)(?:,| ).*$", out[i+2])
+            store === nothing && continue
+            (store[1], store[2]) == (load[1], gep[1]) || continue
+            a, b = sort([load[1], gep[1]]; by=x -> parse(Int, x[2:end]))
+            out[i] = "  $a = $(load[2])"
+            out[i+1] = "  $b = $(gep[2])"
+            out[i+2] = replace(out[i+2], r"%\d+\b" => v ->
+                              v == load[1] ? a : v == gep[1] ? b : v)
+        end
+    end
+    return out
+end
+CANONICALIZATIONS["GC frame push order"] = canonical_frame_push
+
 # Metadata nodes are numbered in the order LLVM meets them, so a node that one side adds
 # or drops renumbers the others: number them by their first reference instead (in the IR,
 # then in the nodes in that order), and list them in that order. References are only

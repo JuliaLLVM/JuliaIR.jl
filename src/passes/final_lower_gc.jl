@@ -173,7 +173,8 @@ function lower_push_gc_frame!(p::FinalLowerGC, target::Instruction)
     # `JL_GC_ENCODE_PUSHARGS`
     store = store!(builder, ConstantInt(p.gc.T_size, nroots << 2), nroots_addr; align)
     store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
-    # in the order of the C++ (whose compilers evaluate the store's operands right to left)
+    # The C++ builds these in separate store arguments, whose evaluation order varies
+    # between compilers. Either order is valid: the load and address are independent.
     prev_addr = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [ConstantInt(T_int32, 1)],
                               names ? "frame.prev" : "")
     prev = load!(builder, T_ptr, p.pgcstack, names ? "task.gcstack" : ""; align)
