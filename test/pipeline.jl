@@ -154,7 +154,10 @@ end
     @testset "$(nameof(f)) at level $level" for (f, types) in ((sum_loop, (Vector{Float64},)),
                                                               (boxed, (Int,))),
                                                 level in 0:3
-        ir = unoptimized_ir(f, types)
+        # (without `optnone`, which Julia gives its `jfptr` wrappers: on Windows, Julia's
+        # C++ pipeline doesn't skip such functions when run from another PassBuilder, so
+        # it would be compared with a pipeline that does)
+        ir = replace(unoptimized_ir(f, types), " optnone" => "")
         @dispose ctx=Context(; opaque_pointers=true) begin
             function optimized(text)
                 mod = parse(LLVM.Module, ir)
