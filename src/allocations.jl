@@ -1,5 +1,5 @@
 # Escape analysis of Julia's GC allocations (`julia.gc_alloc_obj`), used by AllocOpt and
-# later JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (1.14).
+# JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (1.14).
 
 # Julia's address spaces (`src/llvm-codegen-shared.h`), which are the same in every dialect
 const AS_GENERIC = 0
@@ -17,8 +17,7 @@ struct JuliaFunctions
     gc_preserve_end::Union{Nothing,LLVM.Function}
     pointer_from_objref::Union{Nothing,LLVM.Function}
     gc_loaded::Union{Nothing,LLVM.Function}
-    # all write barriers, and the field barriers among them (whose odd operands are the
-    # slots that are written)
+    # all write barriers, and the field barriers whose even arguments are written slots
     write_barriers::Vector{LLVM.Function}
     field_write_barriers::Vector{LLVM.Function}
 end
