@@ -154,6 +154,17 @@ ir = """
         @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
         @test occursin("\"target-cpu\"=\"skylake\" \"target-features\"=\"-avx2\"", out)
     end
+    # the same without a target machine, when LLVM lacks the module's target
+    if :Sparc ∉ LLVM.backends()
+        out = sprint() do io
+            redirect_stderr(devnull) do
+                jlopt(["-mtriple=sparcv9-unknown-linux-gnu", "-mcpu=v9", "-mattr=-avx2",
+                       "-passes=jl-remove-ni", "-S"]; stdin=IOBuffer(attributed), stdout=io)
+            end
+        end
+        @test occursin("\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx2,-avx2\"", out)
+        @test occursin("\"target-cpu\"=\"v9\" \"target-features\"=\"-avx2\"", out)
+    end
 
     # output to a file, from the API with the standard output discarded
     mktemp() do path, io
