@@ -8,7 +8,7 @@ include("litsetup.jl")
 # the tests that run entirely in this process, with the current library
 const IN_PROCESS_TESTS = ["dialect.jl", "irutils.jl", "gc.jl", "registration.jl",
                           "passes.jl", "multiversioning.jl", "pipeline.jl", "runtime.jl",
-                          "type_lowering.jl"]
+                          "type_lowering.jl", "differential.jl"]
 
 # `JULIAIR_TEST_LIBRARY` names another LLVM library, e.g. a standalone build of a newer
 # LLVM, to run the in-process tests with instead, selected after loading the package with

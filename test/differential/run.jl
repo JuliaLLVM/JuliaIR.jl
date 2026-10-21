@@ -565,10 +565,9 @@ const CANONICALIZATIONS = Dict{String,Function}()
 # the frame that are as large as the C++'s, whatever their order. Only slots whose index is
 # fetched once are renamed (allocas, sret roots, tracked stores); the slot of a colored root
 # is fetched at each of its stores and keeps its index, bounding the extents of the others.
-# In an over-aligned frame (`align N`), the padding before an over-aligned alloca counts
-# towards the extent of the slot before it, which then depends on the order: there, only
-# the indices in use are listed. If an index is outside its frame, the function is left as
-# it is, so that the difference shows.
+# Over-aligned frames are left unchanged: padding makes extents depend on allocation
+# order, but comparing only the set of indices would hide overlapping or undersized
+# slots. An index outside its frame also prevents canonicalization.
 function canonical_frame_slots(lines)
     out = String.(lines)
     starts = findall(l -> startswith(l, "define "), out)
@@ -595,7 +594,7 @@ function canonical_frame_slots(lines)
         uses = Dict{Tuple{String,Int},Int}()
         foreach(s -> uses[s] = get(uses, s, 0) + 1, values(fetched))
         slots = filter(((_, s),) -> uses[s] == 1, fetched)
-        (valid && !isempty(slots)) || continue
+        (valid && isempty(aligned) && !isempty(slots)) || continue
         function extent((frame, index))
             next = [i for (f, i) in values(fetched) if f == frame && i > index]
             return (isempty(next) ? sizes[frame] : minimum(next)) - index
@@ -613,8 +612,8 @@ function canonical_frame_slots(lines)
         unused = sort([v for v in keys(slots) if !haskey(names, v)]; by=v -> slots[v])
         foreach(name, unused)
         function entry(v)
-            frame, index = slots[v]
-            frame in aligned ? "$frame[$index]" : "$(names[v]) = $frame + $(extent(slots[v]))"
+            frame, _ = slots[v]
+            "$(names[v]) = $frame + $(extent(slots[v]))"
         end
         listing = sort(map(entry, collect(keys(slots))))
         out[from] *= "\n; frame slots: " * join(listing, ", ")
@@ -802,4 +801,4 @@ function main(args)
     return report(opts, jobs, skipped)
 end
 
-isinteractive() || exit(main(ARGS) ? 0 : 1)
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && exit(main(ARGS) ? 0 : 1)
