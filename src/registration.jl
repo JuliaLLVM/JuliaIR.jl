@@ -5,9 +5,8 @@
 """
     JuliaIR.PassOptions
 
-The options of one occurrence of a pass in a pipeline: the [`JuliaIR.Dialect`](@ref) of
-the IR (`dialect`, the running Julia's, with the policies of the options) and the values
-of the pass-specific options (`extra`, a `NamedTuple`).
+Options for one occurrence of a pass in a pipeline. `dialect` describes the running
+Julia's IR and the selected policies; `extra` is a `NamedTuple` of pass-specific options.
 """
 struct PassOptions{T<:NamedTuple}
     dialect::Dialect
@@ -61,11 +60,9 @@ end
 """
     JuliaIR.option(T, default; text=true, valid=nothing, requirement="")
 
-The declaration of a pass-specific option of type `T`, whose value is `default` unless it
-is given, for the `options` of a pass definition. An option whose type includes `Nothing`
-may be left unspecified, which its default `nothing` says; the pass then decides (e.g. by
-reading the running Julia). The type also decides how the option is written in a
-pipeline:
+Declare a pass-specific option of type `T` with a default value. If `T` includes
+`Nothing`, the value `nothing` leaves the choice to the pass, for example by querying
+the running Julia. The type determines the pipeline syntax:
 
 | type | in a pipeline |
 |:-----|:--------------|
@@ -83,11 +80,10 @@ machine). A keyword argument is converted to `T` where that loses nothing: an in
 range, a `Ptr` for an address, any `AbstractString` for a `String`, and any vector of the
 element type for a `Vector`.
 
-`valid(value)` says whether a value other than `nothing` is valid, and `requirement`
-what it requires, for error messages (e.g. `"a non-negative integer"`). The requirement
-describes only the values other than `nothing`, because `nothing` can't be written in a
-pipeline: errors about keyword arguments add "or `nothing`" themselves. It defaults to a
-description of the type.
+`valid(value)` validates values other than `nothing`. `requirement` describes the
+constraint in errors, e.g. `"a non-negative integer"`; it defaults to a description of
+`T`. Do not include `nothing` in this description: keyword errors add it when allowed,
+and pipeline syntax cannot express it.
 """
 function option(@nospecialize(T::Type), @nospecialize(default); text::Bool=true,
                 valid=nothing, requirement::String="")
@@ -223,14 +219,13 @@ end
                           values)
     JuliaIR.parse_options(def::PassDefinition, str; kwargs...)
 
-Parse the option text of a pass in a pipeline (the part between `<` and `>`, e.g.
-`fp16=demote;strong`) into [`JuliaIR.PassOptions`](@ref), whose dialect is the running
-Julia's. Options are separated by `;`. The keyword arguments are the defaults for the
-policies that are not given; `options` declares the pass-specific options (as
-[`JuliaIR.option`](@ref)s, or by their default values), which decides how they are
-written, and `values` holds their values when they are not given (by default, the
-declared defaults). Unknown, repeated and keyword-only options are rejected. With a pass
-definition, its options are parsed, and its check of their combination applies.
+Parse the text between a pass's `<` and `>` into [`JuliaIR.PassOptions`](@ref), using
+the running Julia's dialect. Separate options with `;`, e.g. `fp16=demote;strong`.
+
+The policy keywords supply defaults. `options` declares pass-specific options using
+[`JuliaIR.option`](@ref) or plain default values; `values` can override those defaults.
+Unknown, repeated and keyword-only options are rejected. The `PassDefinition` overload
+also checks whether the selected options are valid together.
 """
 function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:auto,
                        gc_barrier::Symbol=:stock, options::NamedTuple=(;),
@@ -458,13 +453,12 @@ passes() = unique(def.name for def in PASSES)
     JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock,
                       options=Dict())
 
-Register every pass of this package with the pass builder `pb`, so that they can be used
-by name in its pipeline, as well as the marker passes of Julia's pipeline (see
-[`JuliaIR.build_pipeline!`](@ref)). The keyword arguments are the defaults of the policy
-options for occurrences of the passes that do not specify them (see
-[`JuliaIR.Dialect`](@ref)), and `options` maps the names of passes to the defaults of their
-own options, as a `NamedTuple` of the keyword arguments of their constructors (e.g.
-`Dict("jl-cpu-features" => (; target_cpu="haswell"))`).
+Register all ports and pipeline marker passes with `pb` for use by name (see
+[`JuliaIR.build_pipeline!`](@ref)). The policy keywords supply defaults for passes that
+do not specify them; see [`JuliaIR.Dialect`](@ref).
+
+`options` maps pass names to default constructor keywords, e.g.
+`Dict("jl-cpu-features" => (; target_cpu="haswell"))`.
 """
 function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
                    gc_barrier::Symbol=:stock, options::AbstractDict=Dict{String,NamedTuple}())
