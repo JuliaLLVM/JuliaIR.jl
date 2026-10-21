@@ -126,8 +126,11 @@ ir = """
     # the CPU and features: of the target machine, and of the functions (as `opt`, which
     # appends the features to those a function has)
     @test JuliaIR.resolve_cpu(nothing, "+avx") == (nothing, "+avx")
+    # (LLVM doesn't know the host's features everywhere, e.g. on macOS on ARM)
+    host = LLVM.host_cpu_features()
     cpu, features = JuliaIR.resolve_cpu("native", "-avx")
-    @test cpu == LLVM.host_cpu_name() && endswith(features, ",-avx")
+    @test cpu == LLVM.host_cpu_name()
+    @test features == (isempty(host) ? "-avx" : "$host,-avx")
     @test JuliaIR.resolve_cpu("native", nothing)[2] == LLVM.host_cpu_features()
     @dispose ctx=Context() mod=parse(LLVM.Module, ir) begin
         LLVM.triple!(mod, LLVM.default_triple())
