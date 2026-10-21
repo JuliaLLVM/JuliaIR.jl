@@ -266,15 +266,21 @@ end
     @test manifest["pins"]["1.14"]["tag"] == "release-1.14"
     @test !haskey(manifest["pins"]["1.15"], "commit")
     @test manifest["pins"]["1.15"]["tag"] == "master"
-    # CI checks out the pinned commits, and the nightly builds' own
-    ci = read(joinpath(dirname(@__DIR__), ".github", "workflows", "CI.yml"), String)
-    refs = [m[1] for m in eachmatch(r"julia_ref: '([0-9a-f]{40})'", ci)]
-    @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])
-                            if haskey(pin, "commit")])
-    for (minor, pin) in manifest["pins"]
-        haskey(pin, "commit") && continue
-        version = pin["tag"] == "master" ? "nightly" : "$minor-nightly"
-        @test occursin("{version: '$version', julia_ref: ''}", ci)
+    # CI (test/ci/versions.jl) runs the pinned releases with their commits, and the
+    # nightly builds with their own
+    ci = Module()
+    Base.include(ci, joinpath(@__DIR__, "ci", "versions.jl"))
+    rows = ci.versions()
+    @test issetequal([row.minor for row in rows], keys(manifest["pins"]))
+    for row in rows
+        pin = manifest["pins"][row.minor]
+        if haskey(pin, "commit")
+            @test row.version == pin["julia"]
+            @test row.ref == pin["commit"]
+        else
+            @test row.version == (pin["tag"] == "master" ? "nightly" : "$(row.minor)-nightly")
+            @test isempty(row.ref)
+        end
     end
 
     # the pin of a Julia version: its minor's, or for a newer prerelease, the newest
