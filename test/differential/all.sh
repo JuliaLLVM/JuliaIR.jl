@@ -4,10 +4,10 @@
 #
 #   test/differential/all.sh WORKDIR [CHANNEL...]
 #
-# CHANNELs are juliaup channels (default: 1.10 1.11 1.12 1.13 1.14-nightly nightly). Per
-# version, WORKDIR/<minor>/ gets the fixtures (julia/), the corpora (corpus/,
-# gpucompiler/), the results (out/) and the report (report.txt); WORKDIR/summary.txt has
-# the counts of all.
+# CHANNELs are juliaup channels; defaults come from test/upstream/manifest.toml through
+# test/ci/versions.jl. Per version, WORKDIR/<minor>/ gets the fixtures (julia/), package
+# environments (env/, gpucompiler-env/), corpora (corpus/, gpucompiler/), results (out/)
+# and report (report.txt). WORKDIR/summary.txt collects the counts and corpus omissions.
 #
 # Environment:
 #   JULIA_SRC         a local clone of JuliaLang/julia to take the fixtures from (cloned
@@ -25,9 +25,15 @@ ulimit -c 0
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DIFF=$ROOT/test/differential
 [ $# -ge 1 ] || { sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 2; }
-WORK=$(mkdir -p "$1" && cd "$1" && pwd); shift
+WORK=$(mkdir -p "$1" && cd "$1" && pwd) || exit 1
+shift
 CHANNELS=("$@")
-[ ${#CHANNELS[@]} -gt 0 ] || CHANNELS=(1.10 1.11 1.12 1.13 1.14-nightly nightly)
+if [ ${#CHANNELS[@]} -eq 0 ]; then
+    defaults=$(julia --startup-file=no -e \
+        'include(ARGS[1]); foreach(row -> println(row.version), versions())' \
+        "$ROOT/test/ci/versions.jl") || exit 1
+    while IFS= read -r ch; do CHANNELS+=("$ch"); done <<< "$defaults"
+fi
 
 jl() { local ch=$1; shift; julia +"$ch" --startup-file=no "$@"; }
 
@@ -56,47 +62,54 @@ for ch in "${CHANNELS[@]}"; do
     git -C "$dir/julia" fetch -q origin "$pin" 2>/dev/null
     git -C "$dir/julia" checkout -q "$pin" || { echo "cannot check out $pin"; status=1; continue; }
 
-    # the environment: workspaces from 1.12; before, develop JuliaIR into a versioned
-    # manifest that only this Julia reads
-    case $minor in
-        1.10|1.11)
-            touch "$DIFF/Manifest-v$minor.toml"
-            jl "$ch" --project="$DIFF" -e '
-                using Pkg
-                Pkg.develop(path=ARGS[1])
-                Pkg.instantiate()' "$ROOT" || { status=1; continue; } ;;
-        *)
-            touch "$ROOT/Manifest-v$minor.toml"
-            jl "$ch" --project="$DIFF" -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()' || { status=1; continue; } ;;
-    esac
+    # Keep every Julia's dependency resolution outside the checkout, including on
+    # versions without package workspaces.
+    env=$dir/env
+    mkdir -p "$env" || { status=1; continue; }
+    cp "$DIFF/Project.toml" "$env/Project.toml" || { status=1; continue; }
+    jl "$ch" --project="$env" -e '
+        using Pkg
+        Pkg.develop(path=ARGS[1])
+        Pkg.instantiate()' "$ROOT" || { status=1; continue; }
 
     # the corpora
     rm -rf "$dir/corpus" "$dir/gpucompiler"
-    jl "$ch" --project="$DIFF" "$DIFF/corpus.jl" "$dir/corpus" || { status=1; continue; }
+    jl "$ch" --project="$env" "$DIFF/corpus.jl" "$dir/corpus" |
+        tee "$dir/corpus.log" || { status=1; continue; }
+    grep '^skipped ' "$dir/corpus.log" >> "$WORK/summary.txt" || true
+    compgen -G "$dir/corpus/*.ll" > /dev/null ||
+        { echo "empty host corpus for Julia $minor"; status=1; continue; }
     inputs=("$dir/julia/test/llvmpasses" "$dir/corpus" "$DIFF/inputs")
     if [ "${GPUCOMPILER:-1}" != 0 ]; then
-        touch "$DIFF/gpucompiler/Manifest-v$minor.toml"
-        if jl "$ch" --project="$DIFF/gpucompiler" -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'; then
+        gpuenv=$dir/gpucompiler-env
+        mkdir -p "$gpuenv" || { status=1; continue; }
+        cp "$DIFF/gpucompiler/Project.toml" "$gpuenv/Project.toml" || { status=1; continue; }
+        if jl "$ch" --project="$gpuenv" -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'; then
             : > "$dir/gpucompiler.log"
             for target in ptx gcn spirv metal native; do
-                jl "$ch" --project="$DIFF/gpucompiler" "$DIFF/gpucompiler/corpus.jl" \
+                jl "$ch" --project="$gpuenv" "$DIFF/gpucompiler/corpus.jl" \
                     "$dir/gpucompiler" "$target" >> "$dir/gpucompiler.log" 2>&1 ||
-                    echo "GPUCompiler failed for $target on Julia $minor (see $dir/gpucompiler.log)"
+                    echo "GPUCompiler failed for $target on Julia $minor (see $dir/gpucompiler.log)" |
+                        tee -a "$WORK/summary.txt"
             done
             [ -d "$dir/gpucompiler" ] && inputs+=("$dir/gpucompiler")
             # a target that GPUCompiler can't compile for shows here, not as a failure
             gpu=$(for t in ptx gcn spirv metal native; do
-                      printf '%s %s, ' "$t" "$(ls "$dir/gpucompiler/$t" 2>/dev/null | wc -l)"
+                      printf '%s %s, ' "$t" "$(find "$dir/gpucompiler/$t" -name '*.ll' -type f 2>/dev/null | wc -l)"
                   done)
             echo "GPUCompiler modules: ${gpu%, }" | tee -a "$WORK/summary.txt"
+            grep '^skipped ' "$dir/gpucompiler.log" >> "$WORK/summary.txt" || true
         else
-            echo "no GPUCompiler corpus for Julia $minor"
+            echo "no GPUCompiler corpus for Julia $minor" | tee -a "$WORK/summary.txt"
         fi
     fi
 
-    jl "$ch" --project="$DIFF" "$DIFF/run.jl" --quiet --out "$dir/out" "${inputs[@]}" \
+    jl "$ch" --project="$env" "$DIFF/run.jl" --quiet --out "$dir/out" "${inputs[@]}" \
         > "$dir/report.txt" 2>&1 || status=1
+    # The backticks are literal report text, not command substitutions.
+    # shellcheck disable=SC2016
     sed -n '/^Julia /,/^`accepted`/p;/^unused exception/p;/^no comparisons/p;/^prefix .* failed on/p;/unexplained difference/p' "$dir/report.txt"
+    # shellcheck disable=SC2016
     sed -n '/^Julia /,/^`accepted`/p' "$dir/report.txt" >> "$WORK/summary.txt"
 done
 exit $status
