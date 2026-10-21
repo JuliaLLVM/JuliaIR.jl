@@ -775,7 +775,7 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
             end
             newload.alignment = user.alignment
             # heap to stack: the access does not need to be atomic anymore
-            newload.ordering = LLVM.API.LLVMAtomicOrderingNotAtomic
+            newload.ordering = LLVM.AtomicOrdering.NotAtomic
             replace_uses!(user, newload)
             erase_inst!(opt, user)
         elseif user isa StoreInst
@@ -803,7 +803,7 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                 store!(builder, store_val, slot_gep(slot, offset, store_ty))
             end
             newstore.alignment = user.alignment
-            newstore.ordering = LLVM.API.LLVMAtomicOrderingNotAtomic
+            newstore.ordering = LLVM.AtomicOrdering.NotAtomic
             erase_inst!(opt, user)
         elseif user isa AtomicCmpXchgInst || user isa AtomicRMWInst
             slot = slots[find_slot(offset)]

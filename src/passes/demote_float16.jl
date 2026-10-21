@@ -8,8 +8,9 @@
 # every instruction with a 16-bit result type, also when that type is kept), and gives
 # the replacement the name of the original.
 
-const DEMOTED_OPCODES = (API.LLVMFNeg, API.LLVMFAdd, API.LLVMFSub, API.LLVMFMul,
-                         API.LLVMFDiv, API.LLVMFRem, API.LLVMFCmp)
+const DEMOTED_OPCODES = (LLVM.Opcode.FNeg, LLVM.Opcode.FAdd, LLVM.Opcode.FSub,
+                         LLVM.Opcode.FMul, LLVM.Opcode.FDiv, LLVM.Opcode.FRem,
+                         LLVM.Opcode.FCmp)
 
 # whether a type is kept (`true`) or demoted, according to the policy or to the rule of
 # the Julia version
@@ -75,7 +76,7 @@ end
 # Types are handled as references: LLVM.jl doesn't wrap scalable vector types.
 function scalar_type_kind(ty::API.LLVMTypeRef)
     kind = API.LLVMGetTypeKind(ty)
-    if kind == API.LLVMVectorTypeKind || kind == API.LLVMScalableVectorTypeKind
+    if kind == LLVM.TypeKind.Vector || kind == LLVM.TypeKind.ScalableVector
         kind = API.LLVMGetTypeKind(API.LLVMGetElementType(ty))
     end
     return kind
@@ -83,8 +84,8 @@ end
 
 function float_type(ty::API.LLVMTypeRef, T_float::API.LLVMTypeRef)
     kind = API.LLVMGetTypeKind(ty)
-    kind == API.LLVMVectorTypeKind && return API.LLVMVectorType(T_float, API.LLVMGetVectorSize(ty))
-    kind == API.LLVMScalableVectorTypeKind &&
+    kind == LLVM.TypeKind.Vector && return API.LLVMVectorType(T_float, API.LLVMGetVectorSize(ty))
+    kind == LLVM.TypeKind.ScalableVector &&
         return API.LLVMScalableVectorType(T_float, API.LLVMGetVectorSize(ty))
     return T_float
 end
@@ -99,8 +100,8 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
     T_float = API.LLVMFloatTypeInContext(context(f))
     function demoted(@nospecialize(v::Value))
         kind = scalar_type_kind(typeref(v))
-        return (!keep_fp16 && kind == API.LLVMHalfTypeKind) ||
-               (!keep_bf16 && kind == API.LLVMBFloatTypeKind)
+        return (!keep_fp16 && kind == LLVM.TypeKind.Half) ||
+               (!keep_bf16 && kind == LLVM.TypeKind.BFloat)
     end
 
     erase = Instruction[]
@@ -119,17 +120,17 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
                 demoted(op) || return op
                 Value(API.LLVMBuildFPExt(builder, op, float_type(typeref(op), T_float), ""))
             end
-            new = if opcode == API.LLVMFNeg
+            new = if opcode == LLVM.Opcode.FNeg
                 fneg!(builder, args[1])
-            elseif opcode == API.LLVMFCmp
+            elseif opcode == LLVM.Opcode.FCmp
                 fcmp!(builder, inst.predicate, args[1], args[2])
-            elseif opcode == API.LLVMFAdd
+            elseif opcode == LLVM.Opcode.FAdd
                 fadd!(builder, args[1], args[2])
-            elseif opcode == API.LLVMFSub
+            elseif opcode == LLVM.Opcode.FSub
                 fsub!(builder, args[1], args[2])
-            elseif opcode == API.LLVMFMul
+            elseif opcode == LLVM.Opcode.FMul
                 fmul!(builder, args[1], args[2])
-            elseif opcode == API.LLVMFDiv
+            elseif opcode == LLVM.Opcode.FDiv
                 fdiv!(builder, args[1], args[2])
             else
                 frem!(builder, args[1], args[2])

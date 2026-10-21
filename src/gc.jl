@@ -427,7 +427,7 @@ function emit_load_tag!(g::GCCodegen, @nospecialize(v::Value))
     addr = emit_tag_ptr!(g, g.T_size, v)
     name = g.dialect.gc_names ? LLVM.name(v) * ".tag" : ""
     load = load!(g.builder, g.T_size, addr, name; align=pointer_align(g),
-                 ordering=LLVM.API.LLVMAtomicOrderingUnordered,
+                 ordering=LLVM.AtomicOrdering.Unordered,
                  volatile=g.dialect.gc_tag_load_volatile)
     load.metadata[LLVM.MD_tbaa] = tbaa_tags(g).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
@@ -500,7 +500,7 @@ function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent
     par_bits = and!(builder, par_tag, ConstantInt(T_size, GC_OLD_MARKED),
                     named ? "parent_bits" : "")
     set_name!(par_bits, "parent_bits")
-    par_old_marked = icmp!(builder, LLVM.API.LLVMIntEQ, par_bits,
+    par_old_marked = icmp!(builder, LLVM.IntPredicate.EQ, par_bits,
                            ConstantInt(T_size, GC_OLD_MARKED),
                            named ? "parent_old_marked" : "")
     set_name!(par_old_marked, "parent_old_marked")
@@ -516,7 +516,7 @@ function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent
         par_in_image = and!(builder, par_tag,
                             ConstantInt(T_size, GC_IN_IMAGE | GC_IN_IMAGE_REMSET),
                             "parent_in_image")
-        par_is_image = icmp!(builder, LLVM.API.LLVMIntEQ, par_in_image,
+        par_is_image = icmp!(builder, LLVM.IntPredicate.EQ, par_in_image,
                              ConstantInt(T_size, GC_IN_IMAGE_NOT_REMSET), "parent_is_image")
     end
     any_child_not_marked = nothing
@@ -524,7 +524,7 @@ function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent
         child_bit = and!(builder, emit_load_tag!(g, child), ConstantInt(T_size, GC_MARKED),
                          named ? "child_bit" : "")
         set_name!(child_bit, "child_bit")
-        child_not_marked = icmp!(builder, LLVM.API.LLVMIntEQ, child_bit,
+        child_not_marked = icmp!(builder, LLVM.IntPredicate.EQ, child_bit,
                                  ConstantInt(T_size, 0),
                                  lowering === :unnamed ? "" : "child_not_marked")
         set_name!(child_not_marked, "child_not_marked")
@@ -597,14 +597,14 @@ function signal_page_from_ptls!(g::GCCodegen, @nospecialize(ptls::Value),
                       style === :monotonic_named ? "safepoint_addr" : "")
     end
     load = load!(g.builder, T_ptr, psafepoint, "safepoint"; align=pointer_align(g),
-                 ordering=style === :plain ? LLVM.API.LLVMAtomicOrderingNotAtomic :
-                                             LLVM.API.LLVMAtomicOrderingMonotonic)
+                 ordering=style === :plain ? LLVM.AtomicOrdering.NotAtomic :
+                                             LLVM.AtomicOrdering.Monotonic)
     tbaa === nothing || tbaa_decorate!(tbaa_tags(g), tbaa, load)
     return load
 end
 
 emit_signal_fence!(g::GCCodegen) =
-    fence!(g.builder, LLVM.API.LLVMAtomicOrderingSequentiallyConsistent; scope="singlethread")
+    fence!(g.builder, LLVM.AtomicOrdering.SequentiallyConsistent; scope="singlethread")
 
 # A safepoint (`emit_gc_safepoint`): with `final`, a volatile load from the safepoint
 # page, which faults when the GC wants this thread to stop; otherwise a call of
@@ -643,10 +643,10 @@ function emit_gc_state_set!(g::GCCodegen, @nospecialize(ptls::Value), state::Val
     gc_state = gc_state_address!(g, ptls)
     if old_state === nothing
         old_state = load!(builder, T_int8, gc_state, condition === :ne ? "old_state" : "";
-                          ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+                          ordering=LLVM.AtomicOrdering.Monotonic)
     end
     store!(builder, state, gc_state; align=GC_STATE_ALIGN,
-           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+           ordering=LLVM.AtomicOrdering.Release)
     if condition === :ne
         old_state isa ConstantInt && state isa ConstantInt &&
             convert(UInt64, old_state) == convert(UInt64, state) && return old_state
@@ -659,13 +659,13 @@ function emit_gc_state_set!(g::GCCodegen, @nospecialize(ptls::Value), state::Val
     exit_bb = BasicBlock(f, "after_safepoint")
     zero8 = ConstantInt(T_int8, 0)
     cond = if condition === :and
-        and!(builder, icmp!(builder, LLVM.API.LLVMIntNE, old_state, zero8),
-             icmp!(builder, LLVM.API.LLVMIntEQ, state, zero8))
+        and!(builder, icmp!(builder, LLVM.IntPredicate.NE, old_state, zero8),
+             icmp!(builder, LLVM.IntPredicate.EQ, state, zero8))
     elseif condition === :or
-        or!(builder, icmp!(builder, LLVM.API.LLVMIntEQ, old_state, zero8),
-            icmp!(builder, LLVM.API.LLVMIntEQ, state, zero8))
+        or!(builder, icmp!(builder, LLVM.IntPredicate.EQ, old_state, zero8),
+            icmp!(builder, LLVM.IntPredicate.EQ, state, zero8))
     else
-        icmp!(builder, LLVM.API.LLVMIntNE, old_state, state, "is_new_state")
+        icmp!(builder, LLVM.IntPredicate.NE, old_state, state, "is_new_state")
     end
     br!(builder, cond, pass_bb, exit_bb)
     position!(builder, LLVM.at_end(pass_bb))

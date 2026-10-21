@@ -62,14 +62,14 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     visited = Set{ValueRef}((vref(v),))
     while true
         op = operator_opcode(v)
-        if op == API.LLVMGetElementPtr
+        if op == LLVM.Opcode.GetElementPtr
             API.LLVMIsInBounds(v) != 0 || return v
             v = Value(API.LLVMGetOperand(v, 0))
-        elseif op == API.LLVMBitCast
+        elseif op == LLVM.Opcode.BitCast
             new = Value(API.LLVMGetOperand(v, 0))
             is_pointer_value(new) || return v
             v = new
-        elseif op == API.LLVMAddrSpaceCast
+        elseif op == LLVM.Opcode.AddrSpaceCast
             v = Value(API.LLVMGetOperand(v, 0))
         elseif v isa LLVM.CallBase
             ret = returned_argument(v)
@@ -203,7 +203,7 @@ end
 function find_scalar_element(@nospecialize(v::Value), elt::Int)
     t = typeref(v)
     elt_type = API.LLVMGetElementType(t)
-    if type_kind(t) == API.LLVMVectorTypeKind && elt >= composite_num_elements(t)
+    if type_kind(t) == LLVM.TypeKind.Vector && elt >= composite_num_elements(t)
         return Value(API.LLVMGetPoison(elt_type))
     end
     v isa LLVM.Constant && return aggregate_element(v, elt)
@@ -214,14 +214,14 @@ function find_scalar_element(@nospecialize(v::Value), elt::Int)
         vref(v.operands[1]) == vref(v) && return nothing
         return find_scalar_element(v.operands[1], elt)
     end
-    if v isa LLVM.ShuffleVectorInst && type_kind(t) == API.LLVMVectorTypeKind
+    if v isa LLVM.ShuffleVectorInst && type_kind(t) == LLVM.TypeKind.Vector
         lhs_width = composite_num_elements(typeref(v.operands[1]))
         in_elt = shuffle_mask(v)[elt+1]
         in_elt < 0 && return Value(API.LLVMGetPoison(elt_type))
         in_elt < lhs_width && return find_scalar_element(v.operands[1], in_elt)
         return find_scalar_element(v.operands[2], in_elt - lhs_width)
     end
-    if type_kind(t) == API.LLVMScalableVectorTypeKind
+    if type_kind(t) == LLVM.TypeKind.ScalableVector
         splat = splat_value(v)
         splat !== nothing && elt < composite_num_elements(t) && return splat
     end
@@ -258,7 +258,7 @@ function simplify_extract_element(@nospecialize(vec::Value), idx::Int)
         return aggregate_element(vec, idx)
     end
     nelts = composite_num_elements(t)
-    if type_kind(t) == API.LLVMVectorTypeKind && idx >= nelts
+    if type_kind(t) == LLVM.TypeKind.Vector && idx >= nelts
         return Value(API.LLVMGetPoison(API.LLVMGetElementType(t)))
     end
     if idx < nelts
@@ -655,7 +655,7 @@ function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
             numbers[i+1] = number
         end
     end
-    if type_kind(sty) == API.LLVMVectorTypeKind && num_roots != length(numbers)
+    if type_kind(sty) == LLVM.TypeKind.Vector && num_roots != length(numbers)
         # broadcast the scalar root number to fill the vector
         @assert num_roots == 1
         numbers = fill(numbers[1], Int(API.LLVMGetVectorSize(sty)))
@@ -1030,7 +1030,7 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     v isa LLVM.GlobalVariable && return is_const_gv(v)
     is_constant_data(v) && return true  # null pointer
     if v isa LLVM.ConstantExpr  # literal pointers
-        return API.LLVMGetConstOpcode(v) == API.LLVMIntToPtr &&
+        return API.LLVMGetConstOpcode(v) == LLVM.Opcode.IntToPtr &&
                is_constant_data(Value(API.LLVMGetOperand(v, 0)))
     end
     if v isa LLVM.SelectInst
@@ -2128,15 +2128,15 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
     T_int8 = LLVM.Int8Type()
     gc_state = gc_state_address!(p.gc, ptls)
     last_gc_state = load!(builder, T_int8, gc_state; align,
-                          ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+                          ordering=LLVM.AtomicOrdering.Monotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
-           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+           ordering=LLVM.AtomicOrdering.Release)
     tbaa = tbaa_tags(p.gc).constant
     emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
     next = call.next
     position_before!(builder, next; debug=true)
     store!(builder, last_gc_state, gc_state; align,
-           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+           ordering=LLVM.AtomicOrdering.Release)
     emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
 end
 
@@ -2182,7 +2182,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     # many casts as possible from the tag, which is mostly loaded as an integer
     tag = strip_pointer_casts_and_aliases(call.arguments[3])
     if tag isa LLVM.ConstantExpr
-        if API.LLVMGetConstOpcode(tag) == API.LLVMIntToPtr
+        if API.LLVMGetConstOpcode(tag) == LLVM.Opcode.IntToPtr
             tag = Value(API.LLVMGetOperand(tag, 0))
         end
     elseif tag isa LLVM.LoadInst
@@ -2219,7 +2219,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
 
     # set the tag in IR, rather than in the allocation function
     store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
-                   align=pointer_align(p.gc), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
+                   align=pointer_align(p.gc), ordering=LLVM.AtomicOrdering.Unordered)
     store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
@@ -2290,7 +2290,7 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         addr = if API.LLVMIsAConstantPointerNull(c) != C_NULL &&
                   library_facts(context(c)).null_pointer_alignment
             UInt64(0)
-        elseif c isa LLVM.ConstantExpr && API.LLVMGetConstOpcode(c) == API.LLVMIntToPtr &&
+        elseif c isa LLVM.ConstantExpr && API.LLVMGetConstOpcode(c) == LLVM.Opcode.IntToPtr &&
                Value(API.LLVMGetOperand(c, 0)) isa LLVM.ConstantInt
             convert(UInt64, Value(API.LLVMGetOperand(c, 0)))
         else

@@ -14,15 +14,15 @@ is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 # Pointer types, by their reference, without wrapping the type of every value.
 function scalar_typeref(ty::API.LLVMTypeRef)
     kind = API.LLVMGetTypeKind(ty)
-    vector = kind == API.LLVMVectorTypeKind || kind == API.LLVMScalableVectorTypeKind
+    vector = kind == LLVM.TypeKind.Vector || kind == LLVM.TypeKind.ScalableVector
     return vector ? API.LLVMGetElementType(ty) : ty
 end
 
 # whether a value is a pointer, or a pointer or vector of pointers
 is_pointer(@nospecialize(v::Value)) =
-    API.LLVMGetTypeKind(API.LLVMTypeOf(v)) == API.LLVMPointerTypeKind
+    API.LLVMGetTypeKind(API.LLVMTypeOf(v)) == LLVM.TypeKind.Pointer
 is_pointer_like(@nospecialize(v::Value)) =
-    API.LLVMGetTypeKind(scalar_typeref(API.LLVMTypeOf(v))) == API.LLVMPointerTypeKind
+    API.LLVMGetTypeKind(scalar_typeref(API.LLVMTypeOf(v))) == LLVM.TypeKind.Pointer
 
 # the address space of a pointer or vector of pointers, or of their type
 pointer_addrspace(@nospecialize(v::Value)) =
@@ -82,11 +82,11 @@ const ValueRef = API.LLVMValueRef
 type_kind(t::TypeRef) = API.LLVMGetTypeKind(t)
 vref(@nospecialize(v::Value)) = Base.unsafe_convert(ValueRef, v)
 
-is_pointer_type(t::TypeRef) = type_kind(t) == API.LLVMPointerTypeKind
-is_vector_type(t::TypeRef) = type_kind(t) in (API.LLVMVectorTypeKind,
-                                              API.LLVMScalableVectorTypeKind)
-is_struct_type(t::TypeRef) = type_kind(t) == API.LLVMStructTypeKind
-is_array_type(t::TypeRef) = type_kind(t) == API.LLVMArrayTypeKind
+is_pointer_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Pointer
+is_vector_type(t::TypeRef) = type_kind(t) in (LLVM.TypeKind.Vector,
+                                              LLVM.TypeKind.ScalableVector)
+is_struct_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Struct
+is_array_type(t::TypeRef) = type_kind(t) == LLVM.TypeKind.Array
 type_addrspace(t::TypeRef) = Int(API.LLVMGetPointerAddressSpace(t))
 
 function array_length(t::TypeRef)
@@ -224,10 +224,10 @@ has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
 # C++ passes render instructions that way.
 function opcode_name(inst::Instruction)
     opcode = inst.opcode
-    opcode == API.LLVMAtomicCmpXchg && return "cmpxchg"
-    opcode == API.LLVMVAArg && return "va_arg"
-    # `LLVM.Opcode.FAdd`, or `LLVMFAdd` with older LLVM.jl
-    return lowercase(chopprefix(last(split(string(opcode), '.')), "LLVM"))
+    opcode == LLVM.Opcode.AtomicCmpXchg && return "cmpxchg"
+    opcode == LLVM.Opcode.VAArg && return "va_arg"
+    # `LLVM.Opcode.FAdd` -> `fadd`
+    return lowercase(last(split(string(opcode), '.')))
 end
 
 
@@ -333,8 +333,8 @@ function forward!(walk::ConstantUses)
             # Unlike Julia's walk, a cast to a narrower or wider type doesn't keep the bits
             # (e.g., `ptrtoint` to `i32` of a 64-bit pointer): the image loader would write
             # a full pointer there, over whatever follows.
-            keeps_bits = opcode in (API.LLVMPtrToInt, API.LLVMIntToPtr,
-                                    API.LLVMAddrSpaceCast, API.LLVMBitCast) &&
+            keeps_bits = opcode in (LLVM.Opcode.PtrToInt, LLVM.Opcode.IntToPtr,
+                                    LLVM.Opcode.AddrSpaceCast, LLVM.Opcode.BitCast) &&
                 API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(user)) ==
                 API.LLVMSizeOfTypeInBits(walk.datalayout, API.LLVMTypeOf(frame.val))
             push!(stack, frame.samebits && keeps_bits ?
