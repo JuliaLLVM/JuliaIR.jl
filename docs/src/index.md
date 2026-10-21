@@ -28,9 +28,8 @@ produced the IR, with the intentional differences listed below.
   passes use the running Julia's (`JuliaIR.Dialect(VERSION)`).
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions (e.g. a separately built library like
-  libLLVMGPU). CI tests each supported Julia version on its bundled LLVM, plus Julia
-  1.10 on standalone LLVM 23. The harness supports the other versions on standalone
-  LLVM too; see [Testing](testing.md).
+  libLLVMGPU). CI tests every supported Julia version on both its bundled LLVM and
+  standalone LLVM 23. See [Testing](testing.md).
 - **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.

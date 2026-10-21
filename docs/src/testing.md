@@ -1,8 +1,23 @@
 # Testing
 
-Validation covers package tests, Julia's upstream pass tests, and differential
-comparisons with the C++ passes. `Pkg.test()` runs the package tests; the upstream and
-differential suites have separate drivers.
+CI checks two contracts for every Julia version in `test/upstream/manifest.toml`:
+
+| Contract | Configuration | Checks |
+| --- | --- | --- |
+| The ports behave like that Julia's C++ passes | JuliaIR and Julia's C++ passes on Julia's bundled LLVM | Upstream fixtures and differential comparisons on fixtures and generated IR |
+| The ports process that Julia's IR on a newer LLVM | The same Julia dialect, with standalone LLVM 23 | Package tests, upstream fixtures, and generated IR through all optimization levels |
+
+The `native` jobs run package tests on Linux, macOS and Windows. Linux also runs the
+C++ comparisons for every version. The `compatibility` jobs run every version on
+standalone LLVM, including library switching after JuliaIR has loaded. Released versions
+use pinned binaries and fixture commits; nightlies use the fixtures from their build
+commit. The workflow and local comparison script read the same version manifest.
+
+Exact output matching is only meaningful with the same LLVM. Differences caused by
+nondeterminism or backported improvements need narrow, documented exceptions; a passing
+verifier alone does not establish equivalence. On newer LLVM, upstream expectations are
+adapted for LLVM changes, and the generated-IR checks establish that the pipeline accepts
+and produces valid IR. They do not establish identical optimization or runtime behaviour.
 
 ## Package tests
 
@@ -92,15 +107,15 @@ That command passes the arguments before a `--` to Julia rather than to `jlopt`,
 `jlopt --threads=4 -- -passes=jl-remove-ni -S in.ll`; to give `jlopt` itself a `--`,
 write another one before it. Both behaviours are Pkg's and may change with it.
 
-To run the passes on a standalone LLVM, as in mode B below, set LLVM.jl's `libLLVM`
+To run the passes on a standalone LLVM, as described below, set LLVM.jl's `libLLVM`
 preference in the `LocalPreferences.toml` of the environment the app runs in: of
 `~/.julia/environments/apps/JuliaIR` after `app add`, of the checkout after
 `app develop`.
 
 ## Julia's own pass tests
 
-`test/upstream/run.jl` runs the tests in `test/llvmpasses` of a JuliaLang/julia checkout,
-unchanged, with `jlopt` standing in for `opt`. Which fixtures are relevant to this package,
+`test/upstream/run.jl` runs the tests in `test/llvmpasses` of a JuliaLang/julia checkout
+with `jlopt` standing in for `opt`. Most fixtures run unchanged; deviations have patches. Which fixtures are relevant to this package,
 and how they run, is recorded in `test/upstream/manifest.toml`. Released versions pin
 a release commit. Nightlies use their build commit (`Base.GIT_VERSION_INFO.commit`) so
 the binary and fixtures match. A prerelease newer than every pin uses the newest pin's
@@ -128,7 +143,7 @@ git clone --filter=blob:none --no-checkout https://github.com/JuliaLang/julia ju
 git -C julia-src sparse-checkout set --cone test/llvmpasses test/testhelpers
 git -C julia-src checkout <commit from the manifest>
 julia +1.12 --project=test test/upstream/run.jl julia-src            # the ports
-julia +1.12 --project=test test/upstream/run.jl julia-src --cpp      # Julia's passes
+julia +1.12 --project=test test/upstream/run.jl julia-src --reference      # Julia's passes
 julia +1.12 --project=test test/upstream/run.jl julia-src --report   # coverage table
 ```
 
@@ -140,18 +155,18 @@ git -C julia-src checkout $(julia +nightly -e 'print(Base.GIT_VERSION_INFO.commi
 julia +nightly --project=test test/upstream/run.jl julia-src
 ```
 
-The Julia that runs the harness must be the one the pin is for (it runs the passes on its
-own LLVM, and Julia's C++ passes for the fixtures that combine them). On Julia 1.10 and
+The Julia executable must match the fixture pin. By default the ports run on its
+bundled LLVM; selecting another library changes the LLVM version, not the dialect. On Julia 1.10 and
 1.11, which don't support workspaces, first run
 `julia --project=test -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate()'`.
 
-`--cpp` runs every fixture that does not test the code generator with Julia's own passes
+`--reference` runs every fixture that does not test the code generator with Julia's own passes
 instead of the ports. It checks `jlopt` and the harness against upstream's expectations,
 independently of the ports.
 
-When updating a release pin, change its `commit`, `julia` and `llvm` fields and CI's
-matching `julia_ref`, then account for new or changed fixtures. A minor version's
-first release needs these fields too.
+When updating a release pin, change its `commit`, `julia` and `llvm` fields, then account
+for new or changed fixtures. CI reads these fields directly. A minor version's first
+release needs these fields too.
 
 Nightly pins have no fixed commit. New fixtures, stale overrides and other changes
 that the manifest does not cover make the harness fail. After master bumps its version,
@@ -159,97 +174,73 @@ it can use the newest nightly pin until it gets its own; the release branch foll
 `1.X-nightly` until its first release. Add a version to `JuliaIR.KNOWN_MINORS` when its
 IR first differs from its predecessor's.
 
-## Julia's pass tests on a newer LLVM (mode B)
+## Processing older dialects with standalone LLVM
 
-The passes are meant to run on a newer LLVM than the one of the Julia version whose IR
-they process: GPUCompiler can load a standalone, newer libLLVM next to Julia's. Mode B
-runs Julia's own pass tests in that configuration: the running Julia is still the one of
-the pin (it produces the IR, and its fixtures are used), but the ports run on whatever
-library LLVM.jl has loaded.
-
-```
-julia +1.12 --project=test test/upstream/run.jl julia-src --mode B
-```
-
-The library is selected with LLVM.jl's `libLLVM` preference, in the `LocalPreferences.toml`
-of every environment that loads LLVM.jl (the package's for `Pkg.test()`, `test/` for the
-harness): a standalone library built by LLVM.jl's `deps/build_standalone.jl`:
+The Julia executable selects the dialect and produces the input IR. LLVM.jl selects the
+library that runs the ports, and the upstream harness adapts to the library it finds.
+Set LLVM.jl's preference in each environment that loads it (`.`, `test`, and
+`test/differential` for these commands):
 
 ```toml
 [LLVM]
 libLLVM = "/path/to/libLLVM-standalone-23.so"
 ```
 
-The lit tests then need the LLVM tools (`FileCheck`, `llvm-dis`, ...) of that library's
-version, as those of Julia's LLVM can't read the bitcode that a newer one writes:
-`JULIAIR_LLVM_TOOLS` names their directory, e.g. the `tools` directory of the
-LLVM_full_jll artifact that the library was built from. Without the preference, the
-command above is a dry run on Julia's own LLVM; the harness's report names the library.
-The package tests run under the preference too (`Pkg.test()`, with the same
-`JULIAIR_LLVM_TOOLS`); the tests that compare with Julia's C++ passes or its type
-lowering, which only exist in Julia's LLVM, are skipped there (`julia_llvm_in_use()` in
-the testsets, the lit feature `julia-llvm` in RUN lines).
+Set `JULIAIR_LLVM_TOOLS` to the matching LLVM tools directory, then run the same tests:
 
-With the preference, the package is compiled for the selected library. GPUCompiler
-instead registers its library next to Julia's after the package was loaded, and selects
-it while compiling, so the passes must not use what they computed for Julia's library,
-such as intrinsic IDs, which differ between LLVM versions. `JULIAIR_TEST_LIBRARY` tests
-that configuration: when it names a library, `Pkg.test()` registers it and runs the tests
-that stay in its process (not the lit suite, `jlopt` or the harness, which start other
-processes) with that library selected, after loading the package with Julia's:
+```
+julia --project -e 'using Pkg; Pkg.test()'
+julia --project=test test/upstream/run.jl julia-src
+```
+
+Tests requiring Julia's C++ passes or type lowering skip when those are unavailable.
+The harness also lists skipped RUN lines that require an unported C++ pass. On a
+different LLVM version, it skips upstream whole-pipeline output checks: LLVM's own
+optimizations change too. Unknown pass names still fail.
+
+The generated corpus fills part of that pipeline coverage gap:
+
+```
+julia --project=test/differential test/differential/corpus.jl corpus
+julia --project=test test/compatibility/run.jl corpus
+```
+
+`corpus.jl` obtains IR from the running Julia. The compatibility driver runs the ports'
+whole pipeline at levels 0 through 3 and verifies the results. It restores the source
+data layout after parsing, as required when carrying Julia IR to a newer LLVM. CI
+creates the corpus before selecting standalone LLVM, keeping input generation separate
+from processing it.
+
+GPUCompiler selects another library after JuliaIR has loaded with Julia's LLVM. Test
+that path separately, before setting preferences:
 
 ```
 JULIAIR_TEST_LIBRARY=/path/to/libLLVM-standalone-23.so julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-Two things differ from mode A, the default run of the previous section:
+This runs the in-process tests after switching libraries, catching cached intrinsic IDs
+and other state tied to the original LLVM. The preference-selected suite also tests
+subprocesses, lit, and IR crossing between libraries. CI runs both configurations.
 
-- A standalone LLVM doesn't have Julia's C++ passes. RUN lines whose pipeline names one
-  of them that isn't ported would be skipped, and the harness lists them; every pass of
-  Julia's pipelines is ported now, so this only applies to one that a newer Julia adds. Mode B skips them on Julia's own LLVM too, so
-  that a run there (a dry run of mode B) tests the same lines. A pass name that no LLVM
-  knows is not skipped: the line fails. Julia's pipeline (`julia<...>`) is rebuilt from
-  the ports, but it also runs LLVM's own passes, which optimize differently on another
-  LLVM than the pin's: its RUN lines are skipped there too.
-- A newer LLVM prints the same IR differently: it upgrades old constructs when it reads
-  a module, and prints some constants in a new syntax. The fixtures expect the spelling
-  of the pin's LLVM, so they get a second layer of patches,
-  `test/upstream/derived-B/llvm<major>/<minor>/<fixture>.patch`, for the major version
-  of the library that runs. Mode B applies a fixture's mode-A patch first (if it has
-  one), then its mode-B patch. For a fixture with a mode-A patch, the mode-B patch is
-  `<fixture>.after-A.patch`, which applies on top of the mode-A patch; the plain
-  `<fixture>.patch` always applies to the pristine fixture.
+### LLVM compatibility patches
 
-As in mode A, every patch must be needed: the harness also runs each patched fixture
-without its mode-B patch, and a fixture with a mode-A override with the mode-B patch
-alone, and fails if either passes. A patch file for a fixture that the pin doesn't have
-is an error.
+Newer LLVM versions upgrade old constructs and print some constants differently.
+`test/upstream/llvm-compat/llvm<major>/<minor>` contains the corresponding fixture
+patches. They apply after any port-specific patch in `test/upstream/derived`. A
+`<fixture>.after-port.patch` applies to that already-patched fixture; the plain
+`<fixture>.patch` applies to its pristine upstream form.
 
-CI runs mode B on Linux for Julia 1.10, testing the oldest supported IR on standalone
-LLVM 23. This catches compatibility changes such as LLVM 22's requirement that lifetime
-markers refer directly to an alloca. The nightly jobs test newer Julia IR on their
-bundled LLVM 23. Extend the `mode-b` matrix to cover other Julia versions.
-
-The `standalone-llvm` job builds LLVM 23 with LLVM.jl's `deps/build_standalone.jl` and
-packages its test tools. The cache key includes the LLVM.jl release, LLVM version and
-runner image. The `mode-b` job first tests library switching with
-`JULIAIR_TEST_LIBRARY`, then selects the standalone library through preferences and
-runs `Pkg.test()` and the upstream harness with `--mode B`. It checks the loaded LLVM
-version and rejects a standalone LLVM older than Julia's bundled one.
-
-### Where the mode-B patches come from
-
-The mode-B patches are generated by `test/upstream/derive.jl`, never written by hand,
-and committed so that they can be reviewed:
+The harness checks that each patch is needed by running the fixture without it.
+An unnecessary patch or a patch for an absent fixture fails the run. Generate the LLVM
+patches from reviewed rules rather than editing them by hand:
 
 ```
-julia +1.12 --project=test test/upstream/derive.jl julia-src --llvm 23           # write
-julia +1.12 --project=test test/upstream/derive.jl julia-src --llvm 23 --check   # compare
+julia --project=test test/upstream/derive.jl julia-src --llvm 23
+julia --project=test test/upstream/derive.jl julia-src --llvm 23 --check
 ```
 
-`julia-src` is a clone of JuliaLang/julia that has the pinned commits (the sparse clone
-above will do). The patches are generated for the pins whose `llvm` (the major version
-of the LLVM their Julia uses, in the manifest) is older than the one given.
+The clone must contain all pinned commits. Patches are generated for pins whose bundled
+LLVM is older than the requested version.
 
 The script applies a list of rules, one per change of LLVM. Each rule names the LLVM
 change (the version, the upstream pull request) and how Julia's own fixtures were adapted
@@ -271,35 +262,23 @@ opaque pointers use, except for input repairs, which say so. For LLVM 23:
 What the passes produce is never rewritten: the rules change what the fixtures expect,
 the same way upstream changed them.
 
-### The upgrade oracle
+### Checking the LLVM adaptations independently
 
-Whether the patches describe the newer LLVM, and nothing about the ports, is checked
-against Julia's own passes:
+Before selecting standalone LLVM, run:
 
 ```
-julia +1.12 --project=test test/upstream/run.jl julia-src --cpp --reprint <newer opt>
+julia --project=test test/upstream/run.jl julia-src --reference-llvm /path/to/newer/opt
 ```
 
-runs the fixtures with Julia's C++ passes on the pin's own LLVM, as `--cpp` does, but
-every textual IR that `opt` writes, to stdout or to a file (`-o`), is re-printed by the
-given `opt` of the newer LLVM (e.g. from `LLVM_full_jll`), and the fixtures are checked
-with the `FileCheck` next to it. The fixtures get their plain mode-B patches, not the
-mode-A ones, which are about the ports. Bitcode output is passed on as it is (a newer LLVM
-upgrades it when reading it), and so is what `opt` prints on stderr: the harness lists
-the RUN lines whose checks read stderr (`print<memoryssa>`, diagnostics), which therefore
-see the pin's printing. A patch that isn't needed fails here too, except for a fixture
-whose RUN lines all check stderr (those of the `memoryssa-alias` rule): it passes with or
-without its patch, which the harness lists as not validated, and only mode B checks it.
+This runs Julia's C++ passes on their bundled LLVM, then reprints their output with the
+newer `opt` and checks it with the adjacent `FileCheck`. Only the LLVM compatibility
+patches apply, so a port-specific bug cannot justify changing an upstream expectation.
+The `compatibility` job runs this check for every Julia version before testing the ports.
 
-The patches in `derived-B/llvm23` cover pins older than LLVM 23. Julia 1.14 and master
-already use LLVM 23 and need no such patches. Run the oracle to validate the patches
-against C++ output, and mode B to validate their composition with the mode-A patches.
-
-In CI, the `oracle` job runs it for Julia 1.10, like mode B, with the `opt` of the
-`standalone-llvm` job, when a pull request or a push changes what it checks:
-`test/upstream` (the harness, the pins, the patches and their generator),
-`test/litsetup.jl`, `bin/jlopt` or the workflow; and when the workflow is started by
-hand.
+Bitcode passes through unchanged for the newer LLVM to read. Stderr diagnostics are
+not reprinted. The harness lists patches affecting only stderr as unvalidated by this
+check; the standalone fixture run still checks those expectations. This check validates
+representation changes, not the newer LLVM's optimizations.
 
 ## Differential test against Julia's C++ passes
 
@@ -309,8 +288,8 @@ it runs the C++ pass and the port on independent copies of the module, behind th
 pipeline of Julia's C++ passes (a *prefix*: e.g. none, or what precedes the pass in
 Julia's pipeline), and compares the results. Since the passes process the running
 Julia's IR, each Julia version compares its own C++ passes with the ports, on IR it
-generated itself. The C++ passes exist only in Julia's own LLVM, so unlike mode B, the
-differential can't compare the ports on a newer LLVM.
+generated itself. The C++ passes are built against Julia's own LLVM (in
+`libjulia-codegen`), so the differential can't compare the ports on a newer LLVM.
 
 The comparison covers printed IR, verification results, errors and optimization
 remarks. It removes local value names and substitutes attribute group contents for
@@ -386,13 +365,13 @@ shows what remains of an unexplained one after the exceptions' rewrites); `run.j
 into the environment first (`Pkg.develop(path=".")`).
 
 `test/differential/all.sh WORKDIR` does all of this for every Julia version (juliaup
-channels 1.10 to 1.13, 1.14-nightly and nightly, or those given): it checks out the
+the pinned releases and nightly channels from the manifest, or those given): it checks out the
 fixtures, sets up the environments, generates the corpora and runs the comparison, one
 version at a time, and summarizes the counts in `WORKDIR/summary.txt`.
 
-CI runs the comparison on Julia 1.12, 1.14-nightly and nightly, in the `upstream` job: on the
-fixtures that job checks out, a fresh `code_llvm` corpus and `test/differential/inputs`,
-without the GPUCompiler modules. Any unexplained difference fails the job.
+CI runs the comparison for every supported Julia version in the Linux `native` jobs,
+on upstream fixtures, a fresh `code_llvm` corpus and `test/differential/inputs`.
+GPUCompiler modules are currently generated only by the local comparison script. Any unexplained difference fails the job.
 
 To compare another port, add a `PassSpec` to `test/differential/passes.jl`: Julia's name
 of the pass, whether it is a module, function or loop pass, the prefixes to run it

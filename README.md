@@ -26,9 +26,8 @@ later.
   through 1.15 are supported; there is no option to process another Julia version's IR.
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions, e.g. a separately built library like
-  libLLVMGPU. CI tests each supported Julia version on its bundled LLVM, plus Julia
-  1.10 on standalone LLVM 23. The test harness also supports the other versions on
-  standalone LLVM.
+  libLLVMGPU. CI tests every supported Julia version on both its bundled LLVM and
+  standalone LLVM 23.
 - **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.
