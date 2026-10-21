@@ -66,8 +66,9 @@ data layout, so its results describe values of the running Julia. In order:
    (`x::Union{Int32,Nothing}`) becomes integers of the union's alignment covering its
    data, then the byte that selects the member (preceded by an empty array of vectors when
    the union is aligned more than Julia's `MAX_ALIGN`). A `VecElement` becomes its
-   element; a tuple of identical `VecElement`s of a power-of-two size becomes an LLVM
-   vector (`NTuple{4,VecElement{Float32}}` is `<4 x float>`); fields that all have the
+   element; a tuple of identical `VecElement`s whose primitive element has a power-of-two
+   byte size becomes an LLVM vector (`NTuple{3,VecElement{Float32}}` is `<3 x float>`);
+   fields that all have the
    same LLVM type become an array, everything else a literal struct.
 
 ### Differences between Julia versions
@@ -119,15 +120,14 @@ parameter of `GenericMemoryRef`, and so does the port.
 
 The LLVM types only describe values correctly if LLVM lays them out like Julia: Julia's
 code generator addresses fields by their byte offsets, which it maps onto the LLVM type's
-elements. Under the data layout of the running Julia's own target that always holds.
-[`JuliaIR.check_layout(T, dl)`](@ref JuliaIR.check_layout) lists where it doesn't under
-another data layout: differences in size, allocation size (the stride of arrays),
+elements. The tests check this agreement for a corpus of types under the running Julia's
+data layout. [`JuliaIR.check_layout(T, dl)`](@ref JuliaIR.check_layout) reports
+differences in size, allocation size (the stride of arrays),
 alignment, field offsets and pointer sizes, as
 [`JuliaIR.LayoutDivergence`](@ref)s.
 
-For GPU targets, some types diverge, with the port exactly as with Julia's C++ (so code
-for these types and targets is wrong today; the lowering reproduces Julia, not the
-target):
+For the GPU data layouts in the tests, some types diverge with both the port and Julia's
+C++ lowering. Consumers must account for these differences when accessing memory:
 
 - NVPTX aligns 128-bit integers to 16 bytes, which Julia only does from 1.12 on (on
   x86-64): before, `Int128` and structs containing it diverge
