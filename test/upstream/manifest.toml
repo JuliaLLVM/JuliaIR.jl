@@ -89,6 +89,11 @@ kind = "port"
 ports = ["AllocOpt"]
 status = "run"
 
+[fixtures."alloc-opt-memory.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "run"
+
 [fixtures."alloc-opt-pass.ll"]
 kind = "port"
 ports = ["AllocOpt"]

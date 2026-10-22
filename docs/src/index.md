@@ -184,7 +184,9 @@ Differences with Julia's C++ passes:
   by their size, which crashes).
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
-  address space 10), where the C++ pass uses the host's pointer size. For IR that Julia
+  address space 10), where the C++ pass uses the host's pointer size. So does the
+  layout of a Memory's header (Julia 1.15 and later), and with it the largest Memory
+  that fits a GC pool, in AllocOpt, LateLowerGCFrame and CancellationLowering. For IR that Julia
   generates for its own host the result is the same; for IR of a target with another
   pointer size (e.g. a 32-bit target processed by a 64-bit Julia) the port is correct
   where the C++ pass is not. Likewise, an alloca in the target's non-zero alloca address

@@ -12,6 +12,7 @@ const AS_LOADED = 13
 # `nothing` for those it doesn't use.
 struct JuliaFunctions
     alloc_obj::Union{Nothing,LLVM.Function}
+    alloc_memory::Union{Nothing,LLVM.Function}
     typeof::Union{Nothing,LLVM.Function}
     gc_preserve_begin::Union{Nothing,LLVM.Function}
     gc_preserve_end::Union{Nothing,LLVM.Function}
@@ -27,7 +28,9 @@ function JuliaFunctions(mod::LLVM.Module, dialect::Dialect)
     lookup(name) = get(fs, name, nothing)
     barriers = LLVM.Function[f for f in lookup.(dialect.write_barriers) if f !== nothing]
     field_barriers = filter(f -> startswith(f.name, "julia.field_write_barrier"), barriers)
-    return JuliaFunctions(lookup("julia.gc_alloc_obj"), lookup("julia.typeof"),
+    return JuliaFunctions(lookup("julia.gc_alloc_obj"),
+                          dialect.has_gc_alloc_memory ? lookup("julia.gc_alloc_memory") : nothing,
+                          lookup("julia.typeof"),
                           lookup("llvm.julia.gc_preserve_begin"),
                           lookup("llvm.julia.gc_preserve_end"),
                           lookup("julia.pointer_from_objref"),
@@ -464,10 +467,11 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
     end
 end
 
-# whether `use` is an operand of an operand bundle of `call` with the given tag
-function is_bundle_operand(call::Instruction, use::Use, tag::String)
+# whether `use` is an operand of an operand bundle of `call`, with the given tag if any
+function is_bundle_operand(call::Instruction, use::Use, tag::Union{Nothing,String}=nothing)
     use.argument_index === nothing || return false
     LLVM.iscallee(use) && return false
+    tag === nothing && return true
     i = use.operand_index - length(call.arguments)
     for bundle in call.operand_bundles
         n = length(bundle.inputs)

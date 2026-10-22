@@ -437,6 +437,120 @@ end
         end
     end
 
+    # `julia.gc_alloc_memory` (Julia 1.15 and later) of a constant size whose data is inline
+    @testset "Memory" begin
+        # the size of the object, with the header laid out for the target's pointers
+        @dispose ctx=Context(; opaque_pointers=true) begin
+            for (layout, T, largest) in (("e-i64:64-n8:16:32:64", "i64", 2008),
+                                         ("e-p:32:32-n8:16:32", "i32", 2012))
+                mod = parse(LLVM.Module, """
+                    target datalayout = "$layout"
+                    declare ptr addrspace(10) @julia.gc_alloc_memory(ptr, $T, ptr addrspace(10), $T, i1)
+                    define void @f(ptr %task, $T %n) {
+                      %a = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T 24, ptr addrspace(10) null, $T 3, i1 false)
+                      %b = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T $largest, ptr addrspace(10) null, $T 3, i1 false)
+                      %c = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T $(largest + 1), ptr addrspace(10) null, $T 3, i1 false)
+                      %d = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T %n, ptr addrspace(10) null, $T %n, i1 false)
+                      ret void
+                    }""")
+                alloc_memory = mod.functions["julia.gc_alloc_memory"]
+                calls = collect(only(mod.functions["f"].blocks).instructions)[1:4]
+                sizes = [JuliaIR.inline_memory_size(alloc_memory, call, mod.datalayout)
+                         for call in calls]
+                @test sizes == [40, largest + 16, nothing, nothing]
+                @test JuliaIR.inline_memory_size(nothing, calls[1], mod.datalayout) === nothing
+                dispose(mod)
+            end
+        end
+
+        memory(body; args="") = """
+            target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
+            @tag = external global {}
+            declare ptr @julia.get_pgcstack()
+            declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_memory(ptr, i64, ptr addrspace(10), i64, i1) allockind("alloc")
+            declare ptr @julia.pointer_from_objref(ptr addrspace(11)) readnone
+            declare ptr addrspace(13) @julia.gc_loaded(ptr addrspace(10), ptr) readnone
+            declare void @use(ptr)
+            define double @f(double %x$args) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %task = getelementptr inbounds i8, ptr %pgcstack, i64 -152
+              %mem = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, i64 24, ptr addrspace(10) addrspacecast (ptr @tag to ptr addrspace(10)), i64 3, i1 false)
+              %mem_derived = addrspacecast ptr addrspace(10) %mem to ptr addrspace(11)
+              %ptr_field = getelementptr inbounds i8, ptr addrspace(11) %mem_derived, i64 8
+            $body
+            }"""
+        function alloc_opt(ir)
+            @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
+                run!(JuliaIR.AllocOptPass(), mod)
+                @test verify(mod) === nothing
+                return string(mod.functions["f"])
+            end
+        end
+
+        # moved to the stack: the length is stored, the loads of the data pointer are
+        # forwarded and, when nothing else reads it, it isn't stored
+        out = alloc_opt(memory("""
+              %data = load ptr, ptr addrspace(11) %ptr_field, align 8
+              %loaded = call ptr addrspace(13) @julia.gc_loaded(ptr addrspace(10) %mem, ptr %data)
+              %elt = getelementptr inbounds i8, ptr addrspace(13) %loaded, i64 8
+              store double %x, ptr addrspace(13) %elt, align 8
+              %val = load double, ptr addrspace(13) %elt, align 8
+              ret double %val"""))
+        if dialect.has_gc_alloc_memory
+            @test occursin("%mem = alloca [5 x i64], align 16", out)
+            @test occursin(r"call void @llvm.memset.p0.i64\(ptr align 16 %mem, i8 0, i64 40, i1 false\)", out)
+            @test occursin(r"%(\d+) = getelementptr inbounds i8, ptr %mem, i64 0\n\s*store i64 3, ptr %\1, align 8", out)
+            @test occursin(r"%(\d+) = getelementptr inbounds i8, ptr %mem, i64 16\n(.*\n)*\s*%\d+ = addrspacecast ptr %\1 to ptr addrspace\(13\)", out)
+            @test !occursin("store ptr", out)
+            @test !occursin("julia.gc_alloc_memory", out)
+            @test !occursin("julia.gc_loaded", out)
+        else
+            # an unknown call that the object escapes from
+            @test occursin("@julia.gc_alloc_memory(", out)
+        end
+
+        # stored when the header may be read
+        out = alloc_opt(memory("""
+              %objref = call ptr @julia.pointer_from_objref(ptr addrspace(11) %mem_derived)
+              %token = call token (...) @llvm.julia.gc_preserve_begin(ptr addrspace(10) %mem)
+              call void @use(ptr %objref)
+              call void @llvm.julia.gc_preserve_end(token %token)
+              ret double %x
+            }
+            declare token @llvm.julia.gc_preserve_begin(...)
+            declare void @llvm.julia.gc_preserve_end(token)
+            define void @unused() {
+              ret void"""))
+        if dialect.has_gc_alloc_memory
+            @test occursin(r"%(\d+) = getelementptr inbounds i8, ptr %mem, i64 16\n\s*%(\d+) = getelementptr inbounds i8, ptr %mem, i64 8\n\s*store ptr %\1, ptr %\2, align 8", out)
+        end
+
+        # a store of another value to the data pointer field prevents the forwarding
+        out = alloc_opt(memory("""
+              store ptr null, ptr addrspace(11) %ptr_field, align 8
+              %data = load ptr, ptr addrspace(11) %ptr_field, align 8
+              %val = load double, ptr %data, align 8
+              ret double %val"""))
+        if dialect.has_gc_alloc_memory
+            @test occursin(r"store ptr %\d+, ptr %\d+, align 8", out)
+            @test occursin("store ptr null, ptr %ptr_field", out)
+            @test occursin("%data = load ptr, ptr %ptr_field", out)
+        end
+
+        # a size that isn't constant, or too large for a pool, stays on the heap
+        out = alloc_opt(replace(memory("""
+              %data = load ptr, ptr addrspace(11) %ptr_field, align 8
+              %val = load double, ptr %data, align 8
+              ret double %val"""; args=", i64 %n"), "i64 24," => "i64 %n,"))
+        @test occursin("@julia.gc_alloc_memory(ptr %task, i64 %n,", out)
+        out = alloc_opt(replace(memory("""
+              %data = load ptr, ptr addrspace(11) %ptr_field, align 8
+              %val = load double, ptr %data, align 8
+              ret double %val"""), "i64 24," => "i64 2009,"))
+        @test occursin("@julia.gc_alloc_memory(ptr %task, i64 2009,", out)
+    end
+
     @testset "remarks" begin
         remarks = []
         @dispose ctx=Context(; opaque_pointers=true) begin

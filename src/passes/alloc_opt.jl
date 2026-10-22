@@ -1,6 +1,7 @@
-# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`) whose object does not
-# escape, or move them to the stack, whole or split into their fields. Port of Julia's
-# `src/llvm-alloc-opt.cpp` (1.14), with the representation choices of older Julia
+# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`, and from Julia 1.15 on
+# `julia.gc_alloc_memory` of a size that fits a GC pool) whose object does not escape, or
+# move them to the stack, whole or split into their fields. Port of Julia's
+# `src/llvm-alloc-opt.cpp` (1.15), with the representation choices of older Julia
 # versions where their tests check them (see `alloc_layout` and `alloc_initialization`
 # in `Dialect`).
 
@@ -103,6 +104,8 @@ end
 # the size of an allocation, or -1 if `inst` is not one of a known size
 function gc_alloc_size(opt::AllocOpt, @nospecialize(inst::Instruction))
     inst isa CallInst || return -1
+    sz = inline_memory_size(opt.fns.alloc_memory, inst, opt.dl)
+    sz === nothing || return sz
     inst.called_operand == opt.fns.alloc_obj || return -1
     sz = inst.arguments[2]
     sz isa ConstantInt || return -1
@@ -173,7 +176,12 @@ function optimize_all!(opt::AllocOpt)
     while !isempty(opt.worklist)
         orig, sz = pop!(opt.worklist)
         delete!(opt.inworklist, orig)
+        is_memory = is_fn(opt.fns.alloc_memory, orig.called_operand)
         check_inst!(opt, orig)
+        # The escape analysis doesn't follow the data pointer of a Memory, so keep the
+        # layout of one that is loaded from. `move_to_stack!` forwards the data pointer,
+        # which lets SROA split it afterwards.
+        is_memory && info.hasload && (info.addrescaped = true)
         if info.escaped
             remark(opt, :missed, "Escaped", orig, "GC allocation escaped")
             info.hastypeof && optimize_tag!(opt, orig)
@@ -495,6 +503,108 @@ function initialize_alloca!(opt::AllocOpt, buff::Instruction, at::Instruction)
     end
 end
 
+# the intrinsics that are `MemIntrinsic`s in C++
+const MEM_INTRINSICS = ("llvm.memcpy", "llvm.memcpy.inline", "llvm.memmove", "llvm.memset",
+                        "llvm.memset.inline")
+
+is_mem_intrinsic(@nospecialize(callee::Value)) =
+    callee isa LLVM.Function && LLVM.isintrinsic(callee) && callee.intrinsic.name in MEM_INTRINSICS
+
+# Forward the loads of the data pointer of the inline Memory `orig` to `data`, and if
+# nothing else may read it, remove the stores of it: a header pointing into the alloca
+# keeps SROA from splitting it. Returns whether the caller still has to store the data
+# pointer. Gives up on anything that may write the field other than a plain store of the
+# inline data address. Accesses through the loaded data pointer aren't followed: reaching
+# the header through it would be out of bounds.
+function forward_memory_data!(opt::AllocOpt, orig::Instruction, data::Instruction)
+    dl = opt.dl
+    fns = opt.fns
+    ptr_size = storage_size(dl, opt.T_pjlvalue)
+    ptr_offset = UInt64(genericmemory_ptr_offset(ptr_size))
+    data_offset = UInt64(genericmemory_inline_data_offset(ptr_size))
+    unknown = typemax(UInt64)
+    overlaps(offset, size) =
+        offset == unknown ? true :
+        offset >= ptr_offset + ptr_size ? false :
+        size == unknown || ptr_offset < offset + size
+    loads = Instruction[]
+    stores = Instruction[]              # stores to the data pointer field
+    stored_data = Set{Instruction}()    # stores of the data pointer
+    stored_other = false                # some other pointer into the object is stored
+    may_read = false
+    worklist = Tuple{Instruction,UInt64}[(orig, UInt64(0))]
+    while !isempty(worklist)
+        inst, offset = pop!(worklist)
+        for use in collect(inst.uses)
+            user = use.user::Instruction
+            if user isa LoadInst
+                if offset == ptr_offset && user.value_type == data.value_type && !user.volatile
+                    push!(loads, user)
+                elseif overlaps(offset, storage_size(dl, user.value_type))
+                    may_read = true
+                end
+            elseif user isa StoreInst
+                if use.operand_index != 2
+                    if offset == data_offset
+                        push!(stored_data, user)
+                    else
+                        stored_other = true
+                    end
+                elseif offset == ptr_offset && !user.volatile && !LLVM.isatomic(user) &&
+                       user.value_operand.value_type == data.value_type
+                    push!(stores, user)
+                elseif overlaps(offset, storage_size(dl, user.value_operand.value_type))
+                    return true
+                end
+            elseif user isa GetElementPtrInst
+                gep_offset = offset == unknown ? nothing : LLVM.constant_offset(user, dl)
+                new_offset = gep_offset === nothing ? -1 : Int64(offset) + gep_offset
+                push!(worklist, (user, new_offset >= 0 ? UInt64(new_offset) : unknown))
+            elseif user isa AddrSpaceCastInst || user isa BitCastInst
+                push!(worklist, (user, offset))
+            elseif user isa CallInst
+                callee = user.called_operand
+                if callee == fns.pointer_from_objref
+                    push!(worklist, (user, offset))
+                elseif is_fn(fns.gc_loaded, callee)
+                    # the parent operand only roots the object; the result aliases the
+                    # derived one
+                    use.operand_index == 2 && push!(worklist, (user, offset))
+                elseif is_mem_intrinsic(callee)
+                    len = user.arguments[3]
+                    if overlaps(offset, len isa ConstantInt ? convert(UInt64, len) : unknown)
+                        use.operand_index == 1 && return true
+                        may_read = true
+                    end
+                elseif !(callee == fns.typeof || is_write_barrier(fns, callee) ||
+                         callee == fns.gc_preserve_begin || is_bundle_operand(user, use) ||
+                         (callee isa LLVM.Function && is_lifetime(callee)))
+                    return true
+                end
+            else
+                return true
+            end
+        end
+    end
+    # only forward if every store to the field writes the inline data address
+    all(in(stored_data), stores) || return true
+    for load in loads
+        for user in collect(load.users)
+            if user isa CallInst && is_fn(fns.gc_loaded, user.called_operand)
+                # `data` points into the alloca, which needs no root
+                position_at!(opt, user)
+                replace_uses!(user, addrspacecast!(opt.builder, data, user.value_type))
+                erase_inst!(opt, user)
+            end
+        end
+        replace_uses!(load, data)
+        erase_inst!(opt, load)
+    end
+    (may_read || stored_other || length(stored_data) != length(stores)) && return true
+    foreach(store -> erase_inst!(opt, store), stores)
+    return false
+end
+
 # Move an allocation to the stack. Must not erase safepoints, so that the lifetime markers
 # find all of the original ones.
 function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool)
@@ -519,6 +629,25 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
     end
     insert_lifetime!(opt, buff, sz, orig)
     sz != 0 && !has_ref && initialize_alloca!(opt, buff, orig)
+    if is_fn(opt.fns.alloc_memory, orig.called_operand)
+        # initialize the header like the allocation would have; the data was zeroed above
+        @assert !has_ref && opt.info.allockind & ALLOCKIND_UNINITIALIZED == 0
+        ptrsize = storage_size(opt.dl, opt.T_pjlvalue)
+        ptralign = abi_alignment(opt.dl, opt.T_pjlvalue)
+        T_int8, T_int64 = LLVM.Int8Type(), LLVM.Int64Type()
+        position_at!(opt, orig)
+        length_field = inbounds_gep!(builder, T_int8, buff,
+                                     [ConstantInt(T_int64, genericmemory_length_offset(ptrsize))])
+        store!(builder, orig.arguments[4], length_field; align=ptralign)
+        data = inbounds_gep!(builder, T_int8, buff,
+                             [ConstantInt(T_int64, genericmemory_inline_data_offset(ptrsize))])
+        if forward_memory_data!(opt, orig, data)
+            position_at!(opt, orig)
+            ptr_field = inbounds_gep!(builder, T_int8, buff,
+                                      [ConstantInt(T_int64, genericmemory_ptr_offset(ptrsize))])
+            store!(builder, data, ptr_field; align=ptralign)
+        end
+    end
     copy_metadata!(buff, orig)
     take_name!(buff, orig)
 
@@ -962,7 +1091,8 @@ function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOpt
     mod = f.parent
     dialect = opts.dialect
     fns = JuliaFunctions(mod, dialect)
-    fns.alloc_obj === nothing && return PreservedAnalyses(AllAnalyses)
+    fns.alloc_obj === nothing && fns.alloc_memory === nothing &&
+        return PreservedAnalyses(AllAnalyses)
     m = module_facts(() -> AllocOptModuleFacts(mod), opts, mod, AllocOptModuleFacts)
     lifetime_start = intrinsic_declaration(mod, Intrinsic("llvm.lifetime.start"),
                                            m.lifetime_start_name, LLVMType[m.T_alloca])
@@ -993,6 +1123,9 @@ const ALLOC_OPT = define_pass("jl-alloc-opt", :function, alloc_opt!; required=fa
     JuliaIR.AllocOptPass()
 
 Remove Julia GC allocations whose object does not escape, or move them to the stack,
-whole or split into their fields (`jl-alloc-opt` in a pipeline).
+whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.15 on, these
+include the allocations of Memory (`julia.gc_alloc_memory`) whose size is a constant that
+fits a GC pool; on the stack, their header is initialized like the allocation would, and
+loads of their data pointer are forwarded when nothing else may write it.
 """
 AllocOptPass(; kwargs...) = custom_pass(ALLOC_OPT; kwargs...)
