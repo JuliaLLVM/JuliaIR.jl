@@ -298,6 +298,40 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
     @test has(out, r"^%safepoint_addr = getelementptr inbounds i8, ptr %ptls, i32 16$")
     @test has(out, r"^%safepoint = load atomic ptr, ptr %safepoint_addr monotonic, align 8$")
     @test has(out, r"^call void @julia.safepoint\(ptr %safepoint\)$")
+
+    # A Memory allocation (Julia 1.15 and later) only runs with the region open if it
+    # becomes a pooled allocation, not if it becomes a call of the runtime, even when
+    # tagged reset-safe. Before, it is an unknown call.
+    memory = """
+        $X86_64
+        declare i32 @julia.cancellation_point()
+        declare ptr @julia.get_pgcstack()
+        declare ptr @julia.gc_alloc_memory(ptr, i64, ptr, i64, i1)
+        define ptr @f(i64 %n) {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %r = call i32 @julia.cancellation_point()
+          %small = call ptr @julia.gc_alloc_memory(ptr %pgcstack, i64 32, ptr null, i64 4, i1 false)
+          %large = call ptr @julia.gc_alloc_memory(ptr %pgcstack, i64 %n, ptr null, i64 %n, i1 false), !julia.reset_safe !0
+          ret ptr %small
+        }
+        !0 = !{}"""
+    clear = r"^store atomic volatile ptr null, ptr %reset_ctx_ptr release"
+    # the line of `name`'s definition, and whether the region is cleared just before it
+    function allocation(out, name)
+        lines = body(out)
+        i = findfirst(l -> startswith(l, "%$name = "), lines)
+        return lines[i], occursin(clear, lines[i-2])
+    end
+    out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, memory,
+                v"1.15", facts)
+    small, cleared = allocation(out, "small")
+    @test endswith(small, "!julia.reset_region !0") && !cleared
+    large, cleared = allocation(out, "large")
+    @test !occursin("reset_region", large) && cleared
+    out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, memory,
+                v"1.14", facts)
+    small, cleared = allocation(out, "small")
+    @test !occursin("reset_region", small) && cleared
 end
 
 end
