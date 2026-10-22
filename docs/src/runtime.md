@@ -32,6 +32,7 @@ without exception handlers) is processed without:
    written, e.g. addresses). Any value given is used, also `task-ptls=0`; an option
    that isn't given is `nothing` (the keyword arguments of the passes' constructors
    take `nothing` too).
+   Alignments (`handler_align`, `reset_ctx_align`) must be positive powers of two.
 2. Otherwise, the fact is read from the running Julia, whose IR the passes process.
 3. When the running Julia doesn't have the fact (e.g. the reset context of cancellation
    points before Julia 1.14) or it can't be read, the pass throws a

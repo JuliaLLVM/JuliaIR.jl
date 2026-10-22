@@ -2432,6 +2432,7 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         maxframeargs[] = max(maxframeargs[], nargs)
     else
         bundles = collect(call.operand_bundles)
+        any(b -> LLVM.tag(b) in JULIA_BUNDLES, bundles) || return false
         for bundle in bundles
             if LLVM.tag(bundle) == "julia.gc_alloc_zeroinit_indirect"
                 zeroinit_indirect!(p, call, bundle)
@@ -2441,10 +2442,7 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         if transition !== nothing && p.dialect.gc_transition_lowering !== :none
             lower_gc_transition!(p, call, bundles[transition])
         end
-        # Remove Julia's operand bundles; other ones are kept (a deviation, see the docs).
-        # The C++ recreates every call it gets here, which only shows in the numbers that
-        # LLVM appends to clashing names, since the new call is created with the name of
-        # the old one.
+        # Rebuild only calls with Julia's operand bundles, keeping all other bundles.
         kept = OperandBundle[b for b in bundles if !(LLVM.tag(b) in JULIA_BUNDLES)]
         new_call = clone_call!(p.builder, call, kept; name=LLVM.name(call))
         take_name!(new_call, call)

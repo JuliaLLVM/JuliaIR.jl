@@ -67,35 +67,35 @@ end
     # what jlopt cannot run is an error
     @test_throws HarnessError classify_run(run("opt -frobnicate -S %s"))
 
-    # mode B: lines that need Julia's C++ passes are skipped, those of the ports run
+    # standalone execution: lines that need Julia's C++ passes are skipped, those of the ports run
     # Julia's pipeline is rebuilt from the ports (lines with C++ passes in
     # `CPP_FALLBACKS` would be skipped)
     @test isempty(JuliaIR.CPP_FALLBACKS)
-    st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B")
+    st, why, pipelines = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); standalone=true)
     @test st == :run
     @test startswith(only(pipelines), "jl-remove-ni,BeforeOptimization,")
     # but not on another LLVM than the pin's, whose own passes optimize differently
-    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); mode="B",
+    st, why, _ = classify_run(run("opt -passes='RemoveNI,julia<level=2>' -S %s"); standalone=true,
                               other_llvm=true)
     @test st == :skip && occursin("Julia's pipeline", why)
     # (Julia's pipeline is rebuilt, as every pass in it is ported)
     for name in setdiff(JULIA_CPP_PASSES, ported_passes(), ["julia"])
-        @test classify_run(run("opt -passes='$name' -S %s"); mode="B")[1] == :skip
+        @test classify_run(run("opt -passes='$name' -S %s"); standalone=true)[1] == :skip
     end
-    st, _, pipelines = classify_run(run("opt -passes='module(RemoveNI)' -S %s"); mode="B")
+    st, _, pipelines = classify_run(run("opt -passes='module(RemoveNI)' -S %s"); standalone=true)
     @test st == :run && pipelines == ["module(jl-remove-ni)"]
     # names no LLVM knows are not skipped, but fail when the line runs
-    @test classify_run(run("opt -passes=frobnicate -S %s"); mode="B")[1] == :run
+    @test classify_run(run("opt -passes=frobnicate -S %s"); standalone=true)[1] == :run
 
     # patches are reported with `/`, as the manifest names them, also on Windows
-    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), raw"derived-B\llvm18\1.12\x.ll.patch"), pwd()) ==
-          "derived-B/llvm18/1.12/x.ll.patch"
-    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), "derived-B", "llvm18", "1.12"), pwd()) ==
-          "derived-B/llvm18/1.12"
+    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), raw"llvm-compat\llvm18\1.12\x.ll.patch"), pwd()) ==
+          "llvm-compat/llvm18/1.12/x.ll.patch"
+    @test UpstreamHarness.slashed_relpath(joinpath(pwd(), "llvm-compat", "llvm18", "1.12"), pwd()) ==
+          "llvm-compat/llvm18/1.12"
 end
 
-@testset "mode-B rules" begin
-    rules = Dict(rule.name => rule for rule in DeriveB.RULES)
+@testset "standalone rules" begin
+    rules = Dict(rule.name => rule for rule in FixturePatches.RULES)
     rewrite(name, line, kind=:check) = rules[name].rewrite(line, kind)
 
     @test rewrite("lifetime-size", "; OPAQUE: call void @llvm.lifetime.start.p5(i64 4, ptr addrspace(5) %var1)") ==
@@ -126,7 +126,7 @@ end
     @test rewrite("decimal-fp", "; CHECK: fadd bfloat %x, 0xR4040") ==
           "; CHECK: fadd bfloat %x, {{0xR4040|3\\.000000e\\+00}}"
     # a value whose decimal spelling isn't exact would need another form
-    @test_throws DeriveB.HarnessError rewrite("decimal-fp", "; CHECK: half 0xH3555")
+    @test_throws FixturePatches.HarnessError rewrite("decimal-fp", "; CHECK: half 0xH3555")
 
     @test rewrite("target-features-sign", "; CHECK-DAG: \"target-features\"=\"cloneall\"") ==
           "; CHECK-DAG: \"target-features\"=\"-cloneall\""
@@ -142,39 +142,39 @@ end
         ; OPAQUE: call void @llvm.lifetime.start{{.*}}(i64 8, ptr
         ; CHECK: call void @llvm.lifetime.end{{.*}}(i64 8, ptr
         """
-    derived, counts = DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 15, 23)
+    derived, counts = FixturePatches.apply_rules(text, "alloc-opt-gcframe.ll", 15, 23)
     @test counts == Dict("lifetime-size" => 2)
     @test occursin("; TYPED: call void @llvm.lifetime.start{{.*}}(i64 8, i8*", derived)
     @test occursin("; OPAQUE: call void @llvm.lifetime.start{{.*}}(ptr\n", derived)
     @test occursin("; CHECK: call void @llvm.lifetime.end{{.*}}(ptr\n", derived)
-    @test DeriveB.apply_rules(text, "other.ll", 15, 23)[1] == text
-    @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 22, 23)[1] == text
-    @test DeriveB.apply_rules(text, "alloc-opt-gcframe.ll", 15, 21)[1] == text
+    @test FixturePatches.apply_rules(text, "other.ll", 15, 23)[1] == text
+    @test FixturePatches.apply_rules(text, "alloc-opt-gcframe.ll", 22, 23)[1] == text
+    @test FixturePatches.apply_rules(text, "alloc-opt-gcframe.ll", 15, 21)[1] == text
 
-    # a fixture with a mode-A patch gets an after-A patch when the composed fixture needs
+    # a fixture with a port patch gets an after-port patch when the composed fixture needs
     # one, also when the pristine one doesn't; its counts are checked like the others'
-    rule = DeriveB.Rule("test", 23, "test", Dict("1.10/x.ll after A" => 1),
+    rule = FixturePatches.Rule("test", 23, "test", Dict("1.10/x.ll after port" => 1),
                         (line, kind) -> kind == :check ? replace(line, "old" => "new") : line)
     pristine = "; RUN: opt -S %s | FileCheck %s\n; CHECK: kept\n"
-    a_patch = "--- a/x.ll\n+++ b/x.ll\n@@ -2,1 +2,1 @@\n-; CHECK: kept\n+; CHECK: old\n"
+    port_patch = "--- a/x.ll\n+++ b/x.ll\n@@ -2,1 +2,1 @@\n-; CHECK: kept\n+; CHECK: old\n"
     patches, seen = Dict{String,String}(), Dict{Tuple{String,String},Int}()
-    DeriveB.derive_fixture!(patches, seen, pristine, "x.ll", "1.10", 15, 23; a_patch, rules=[rule])
-    @test collect(keys(patches)) == ["1.10/x.ll.after-A.patch"]
-    @test apply_patch(apply_patch(pristine, a_patch), patches["1.10/x.ll.after-A.patch"]) ==
+    FixturePatches.derive_fixture!(patches, seen, pristine, "x.ll", "1.10", 15, 23; port_patch, rules=[rule])
+    @test collect(keys(patches)) == ["1.10/x.ll.after-port.patch"]
+    @test apply_patch(apply_patch(pristine, port_patch), patches["1.10/x.ll.after-port.patch"]) ==
           "; RUN: opt -S %s | FileCheck %s\n; CHECK: new\n"
     pins = Dict("1.10" => Dict("llvm" => 15))
-    DeriveB.check_counts(seen, pins, 23; rules=[rule])
-    @test_throws "rule test changes 2 lines of 1.10/x.ll after A, expected 1" DeriveB.check_counts(
-        Dict(("test", "1.10/x.ll after A") => 2), pins, 23; rules=[rule])
-    @test_throws "rule test changes no line of 1.10/x.ll after A" DeriveB.check_counts(
+    FixturePatches.check_counts(seen, pins, 23; rules=[rule])
+    @test_throws "rule test changes 2 lines of 1.10/x.ll after port, expected 1" FixturePatches.check_counts(
+        Dict(("test", "1.10/x.ll after port") => 2), pins, 23; rules=[rule])
+    @test_throws "rule test changes no line of 1.10/x.ll after port" FixturePatches.check_counts(
         Dict{Tuple{String,String},Int}(), pins, 23; rules=[rule])
-    @test_throws "rule test changes 1 lines of 1.10/x.ll, expected 0" DeriveB.check_counts(
+    @test_throws "rule test changes 1 lines of 1.10/x.ll, expected 0" FixturePatches.check_counts(
         merge(seen, Dict(("test", "1.10/x.ll") => 1)), pins, 23; rules=[rule])
 
     # the generated patches apply with the harness
     long = join(["line $i" for i in 1:20], '\n') * '\n'
     changed = replace(long, "line 3\n" => "LINE 3\n", "line 4\n" => "LINE 4\n", "line 18\n" => "LINE 18\n")
-    diff = DeriveB.line_diff(long, changed, "x.ll"; header="generated\n")
+    diff = FixturePatches.line_diff(long, changed, "x.ll"; header="generated\n")
     @test startswith(diff, "generated\n--- a/x.ll\n+++ b/x.ll\n@@ -1,7 +1,7 @@\n")
     @test count("@@ -", diff) == 2
     @test apply_patch(long, diff) == changed
@@ -183,7 +183,7 @@ end
 if !Sys.iswindows()
 @testset "re-printing" begin
     mktempdir() do dir
-        # the upgrade oracle's opt runs jlopt, here a stand-in, and re-prints its textual
+        # the C++ reference check's opt runs jlopt, here a stand-in, and re-prints its textual
         # output with the other opt (here, one that marks what it re-printed)
         write(joinpath(dir, "jlopt"), raw"""
             #!/bin/bash
@@ -266,15 +266,21 @@ end
     @test manifest["pins"]["1.14"]["tag"] == "release-1.14"
     @test !haskey(manifest["pins"]["1.15"], "commit")
     @test manifest["pins"]["1.15"]["tag"] == "master"
-    # CI checks out the pinned commits, and the nightly builds' own
-    ci = read(joinpath(dirname(@__DIR__), ".github", "workflows", "CI.yml"), String)
-    refs = [m[1] for m in eachmatch(r"julia_ref: '([0-9a-f]{40})'", ci)]
-    @test issetequal(refs, [pin["commit"] for pin in values(manifest["pins"])
-                            if haskey(pin, "commit")])
-    for (minor, pin) in manifest["pins"]
-        haskey(pin, "commit") && continue
-        version = pin["tag"] == "master" ? "nightly" : "$minor-nightly"
-        @test occursin("{version: '$version', julia_ref: ''}", ci)
+    # CI (test/ci/versions.jl) runs the pinned releases with their commits, and the
+    # nightly builds with their own
+    ci = Module()
+    Base.include(ci, joinpath(@__DIR__, "ci", "versions.jl"))
+    rows = ci.versions()
+    @test issetequal([row.minor for row in rows], keys(manifest["pins"]))
+    for row in rows
+        pin = manifest["pins"][row.minor]
+        if haskey(pin, "commit")
+            @test row.version == pin["julia"]
+            @test row.ref == pin["commit"]
+        else
+            @test row.version == (pin["tag"] == "master" ? "nightly" : "$(row.minor)-nightly")
+            @test isempty(row.ref)
+        end
     end
 
     # the pin of a Julia version: its minor's, or for a newer prerelease, the newest
@@ -389,7 +395,7 @@ mktempdir() do dir
             [fixtures."forced.ll"]
             kind = "cpu"
             status = "exclude"
-            reason = "for --cpp"
+            reason = "for --reference"
 
             $fixtures
             """)
@@ -422,15 +428,17 @@ mktempdir() do dir
         reason = "test"
         """
 
-    function harness(manifest, args...)
+    function harness(manifest, args...; standalone=false)
         out = joinpath(dir, "out.txt")
         code = open(out, "w") do io
             redirect_stdout(io) do
-                UpstreamHarness.main([src, "--manifest", manifest, args...])
+                UpstreamHarness.main([src, "--manifest", manifest, args...]; standalone)
             end
         end
         return code, read(out, String)
     end
+
+    standalone_harness(manifest, args...) = harness(manifest, args...; standalone=true)
 
     # the fixtures pass, the typed RUN line is skipped, and the override is needed
     code, out = harness(write_manifest(good * override * excluded_cpp))
@@ -455,14 +463,14 @@ mktempdir() do dir
         @test occursin("cpp.ll: the ledger shows no run of jl-remove-ni for RUN line 2", out)
 
         # with Julia's passes, the ports must not run
-        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "cpp|good")
+        code, out = harness(write_manifest(good * cpp * override), "--reference", "--filter", "cpp|good")
         @test code == 0
         @test occursin("2 of 2 fixtures passed", out)
         # the overrides describe the ports: Julia's passes run the pristine fixtures
-        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "override")
+        code, out = harness(write_manifest(good * cpp * override), "--reference", "--filter", "override")
         @test code == 1
         @test occursin("override.ll: FAIL", out)
-        code, out = harness(write_manifest(good * cpp * override), "--cpp", "--filter", "forced")
+        code, out = harness(write_manifest(good * cpp * override), "--reference", "--filter", "forced")
         @test code == 1
         @test occursin("forced.ll: ports ran although Julia's passes were requested", out)
     end
@@ -521,9 +529,9 @@ mktempdir() do dir
     @test occursin("| good.ll | port | run | 1 run, 1 skipped | `jl-remove-ni` |", out)
     @test occursin("| excluded.ll | cpu | exclude |", out)
 
-    # Mode B, on the library that LLVM.jl uses: the mode-B patch layer of its LLVM comes
-    # after the mode-A patches, and each layer must be needed
-    layer = joinpath(dir, "derived-B", "llvm$(LLVM.version().major)", minor)
+    # Standalone execution, on the library that LLVM.jl uses: the LLVM compatibility patch layer of its LLVM comes
+    # after the port patches, and each layer must be needed
+    layer = joinpath(dir, "llvm-compat", "llvm$(LLVM.version().major)", minor)
     function with_layer(f, patches...)
         mkpath(layer)
         for (name, text) in patches
@@ -532,12 +540,12 @@ mktempdir() do dir
         try
             f()
         finally
-            rm(joinpath(dir, "derived-B"); recursive=true)
+            rm(joinpath(dir, "llvm-compat"); recursive=true)
         end
     end
     fixed = read(patch, String)    # override.ll's fix, as a layer patch
     noop = read(stale_patch, String)
-    noop_after_a = """
+    noop_after_port = """
         --- a/override.ll
         +++ b/override.ll
         @@ -2,1 +2,1 @@
@@ -546,53 +554,53 @@ mktempdir() do dir
         """
     as_run = replace(override, "status = \"override\"" => "status = \"run\"")
 
-    # without a layer, as mode A
-    code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    # without a layer, as native execution
+    code, out = standalone_harness(write_manifest(good * override * excluded_cpp))
     @test code == 0
-    @test occursin("mode B on $(julia_llvm_in_use() ? "Julia's own" : "a standalone") LLVM", out)
+    @test occursin("ports on $(julia_llvm_in_use() ? "Julia's own" : "a standalone") LLVM", out)
     @test occursin("2 of 2 fixtures passed", out)
 
     # a layer patch makes a fixture pass, and must be needed
-    code, out = harness(write_manifest(good * as_run * excluded_cpp), "--mode", "B")
+    code, out = standalone_harness(write_manifest(good * as_run * excluded_cpp))
     @test code == 1
     with_layer("override.ll.patch" => fixed) do
-        code, out = harness(write_manifest(good * as_run * excluded_cpp), "--mode", "B")
+        code, out = standalone_harness(write_manifest(good * as_run * excluded_cpp))
         @test code == 0
-        @test occursin("patched: override.ll: derived-B/", out)
+        @test occursin("patched: override.ll: llvm-compat/", out)
     end
     with_layer("good.ll.patch" => noop) do
-        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        code, out = standalone_harness(write_manifest(good * override * excluded_cpp))
         @test code == 1
-        @test occursin("good.ll: the mode-B patch is stale, the fixture passes without it", out)
+        @test occursin("good.ll: the LLVM compatibility patch is stale, the fixture passes without it", out)
     end
-    # mode A ignores the layers
+    # native execution ignores the layers
     with_layer("good.ll.patch" => noop) do
         code, _ = harness(write_manifest(good * override * excluded_cpp))
         @test code == 0
     end
 
-    # a fixture with a mode-A patch gets the layer's after-A variant, on top of it; the
-    # plain variant must not make the mode-A patch redundant
-    with_layer("override.ll.after-A.patch" => noop_after_a) do
-        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    # a fixture with a port patch gets the layer's after-port variant, on top of it; the
+    # plain variant must not make the port patch redundant
+    with_layer("override.ll.after-port.patch" => noop_after_port) do
+        code, out = standalone_harness(write_manifest(good * override * excluded_cpp))
         @test code == 1
-        @test occursin("override.ll: the mode-B patch is stale", out)
+        @test occursin("override.ll: the LLVM compatibility patch is stale", out)
     end
     with_layer("override.ll.patch" => fixed) do
-        code, out = harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        code, out = standalone_harness(write_manifest(good * override * excluded_cpp))
         @test code == 1
-        @test occursin("override.ll: the override is stale, the fixture passes with the mode-B patch alone", out)
+        @test occursin("override.ll: the override is stale, the fixture passes with the LLVM compatibility patch alone", out)
     end
 
     # a layer's patches must belong to fixtures of the pin
     with_layer("nosuch.ll.patch" => noop) do
-        @test_throws "no fixture nosuch.ll at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+        @test_throws "no fixture nosuch.ll at this pin" standalone_harness(write_manifest(good * override * excluded_cpp))
     end
-    with_layer("good.ll.after-A.patch" => noop) do
-        @test_throws "good.ll has no mode-A patch at this pin" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    with_layer("good.ll.after-port.patch" => noop) do
+        @test_throws "good.ll has no port patch at this pin" standalone_harness(write_manifest(good * override * excluded_cpp))
     end
 
-    # Julia's pipeline runs in mode B, as it is rebuilt from the ports only, unless the
+    # Julia's pipeline runs in standalone execution, as it is rebuilt from the ports only, unless the
     # ports run on another LLVM than the pin's (whose own passes optimize differently)
     manifest = UpstreamHarness.load_manifest(write_manifest(good * override * excluded_cpp))
     planned = mkpath(joinpath(dir, "planned", "test", "llvmpasses"))
@@ -600,12 +608,12 @@ mktempdir() do dir
         ; RUN: opt -passes='julia<level=2>' -S %s | FileCheck %s
         """)
     f = UpstreamHarness.plan_fixture(manifest, dirname(dirname(planned)), "good.ll", minor;
-                                     cpp=false, mode="B", manifest_dir=dir)
+                                     cpp=false, standalone=true, manifest_dir=dir)
     other_llvm = LLVM.version().major != Base.libllvm_version.major
     @test f.included == !other_llvm
     @test only(f.runs)[2] == (other_llvm ? :skip : :run)
 
-    # the upgrade oracle re-prints what opt writes as output, not its stderr: a fixture
+    # the C++ reference check re-prints what opt writes as output, not its stderr: a fixture
     # whose RUN lines all check stderr sees the pin's printing only
     for (run, reprinted) in (("opt -passes=jl-remove-ni -S %s | FileCheck %s", true),
                              ("opt -passes='print<memoryssa>' -S -o /dev/null %s 2>&1 | FileCheck %s", false))
@@ -615,7 +623,7 @@ mktempdir() do dir
         @test UpstreamHarness.reprints(f.runs) == reprinted
     end
 
-    # The upgrade oracle: Julia's passes, their output re-printed by another LLVM's opt
+    # The C++ reference check: Julia's passes, their output re-printed by another LLVM's opt
     # (here, the same LLVM's), checked against the fixtures with that LLVM's layer
     if !Sys.iswindows() && julia_llvm_in_use()
         tools = joinpath(LLVM_utils_unified_jll.artifact_dir, "tools")
@@ -626,23 +634,23 @@ mktempdir() do dir
             write(joinpath(newer, tool), "#!/bin/sh\nexec env $libpath $(joinpath(tools, tool)) \"\$@\"\n")
             chmod(joinpath(newer, tool), 0o755)
         end
-        reprint = ["--cpp", "--reprint", joinpath(newer, "opt")]
+        reprint = ["--reference-llvm", joinpath(newer, "opt")]
         with_layer("override.ll.patch" => fixed) do
             code, out = harness(write_manifest(good * override * excluded_cpp), reprint...,
                                 "--filter", "good|override")
             @test code == 0
-            @test occursin("the upgrade oracle", out)
+            @test occursin("the C++ reference check", out)
             @test occursin("2 of 2 fixtures passed", out)
         end
         with_layer("good.ll.patch" => noop) do
             code, out = harness(write_manifest(good * override * excluded_cpp), reprint...,
                                 "--filter", "good")
             @test code == 1
-            @test occursin("good.ll: the mode-B patch is stale", out)
+            @test occursin("good.ll: the LLVM compatibility patch is stale", out)
         end
     end
-    @test_throws "--reprint requires --cpp" harness(write_manifest(good * override * excluded_cpp), "--reprint", "opt")
-    @test_throws "mode B doesn't have" harness(write_manifest(good * override * excluded_cpp), "--cpp", "--mode", "B")
+    @test_throws "unknown option --mode" harness(write_manifest(good * override * excluded_cpp), "--mode", "B")
+    @test_throws "reference checks require Julia's own LLVM" standalone_harness(write_manifest(good * override * excluded_cpp), "--reference")
 end
 end
 

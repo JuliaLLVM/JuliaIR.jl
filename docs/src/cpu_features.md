@@ -12,8 +12,8 @@ multiversioned clones of a function, which have their own `target-cpu` and
 
 ## How the answer is decided
 
-Julia's C++ pass is two different passes, depending on the Julia version, and the port
-follows the running Julia's.
+The lookup rule depends on the Julia version. The port defaults to the running Julia's
+rule.
 
 Up to Julia 1.13, a feature string is searched for the features that provide FMA:
 
@@ -82,8 +82,7 @@ function the CPU unless it has one, and appends the features to its own
 
 ## Dependence on the process and the library
 
-So that the passes give the same answers as the C++ pass in the same process, some
-answers depend on the process:
+Some answers depend on the process, as in the C++ pass:
 
 - Up to Julia 1.13, functions without `target-features` get the JIT's answers, i.e.
   whether the machine the tests run on has FMA.

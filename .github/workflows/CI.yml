@@ -10,69 +10,69 @@ on:
 permissions:
   contents: read
 
+env:
+  LLVM_VERSION: '23.1.4'
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+  versions:
+    name: Select Julia versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+      coverage: ${{ steps.versions.outputs.coverage }}
+      llvm-major: ${{ steps.versions.outputs.llvm-major }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      - id: versions
+        run: julia --startup-file=no test/ci/versions.jl
+
+  native:
+    name: Julia ${{ matrix.julia.version }} / ${{ matrix.os }}
+    needs: versions
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.10', '1.11', '1.12', '1.13', '1.14-nightly', 'nightly']
+        julia: ${{ fromJSON(needs.versions.outputs.matrix) }}
         os: ['ubuntu-latest', 'macOS-latest', 'windows-latest']
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: ${{ matrix.version }}
+          version: ${{ matrix.julia.version }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
-          coverage: ${{ matrix.version != 'nightly' }}
+          coverage: ${{ matrix.os == 'ubuntu-latest' && matrix.julia.version == needs.versions.outputs.coverage }}
       - uses: julia-actions/julia-processcoverage@v1
-        if: matrix.version != 'nightly'
+        if: matrix.os == 'ubuntu-latest' && matrix.julia.version == needs.versions.outputs.coverage
       - uses: codecov/codecov-action@v7
-        if: matrix.version != 'nightly'
+        if: matrix.os == 'ubuntu-latest' && matrix.julia.version == needs.versions.outputs.coverage
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           files: lcov.info
-
-  # Julia's own pass tests, at the commits pinned in test/upstream/manifest.toml (the
-  # job checks that the refs here match), with the Julia build they belong to; for the
-  # nightly builds (master, and release branches before their first tag), at the commit
-  # they were built from
-  upstream:
-    name: Julia ${{ matrix.version }} - Julia's pass tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
-          - {version: '1.11.9', julia_ref: '53a02c0720cdc5d7fc0f35447886dd14bb2491a6'}   # v1.11.9
-          - {version: '1.12.7', julia_ref: '6d172b025e4befc4d274d9fbc9339917a8a86b65'}   # v1.12.7
-          - {version: '1.13.2', julia_ref: '45b6d15e34bbd2003a31acce0b1847b63dad029c'}   # v1.13.2
-          - {version: '1.14-nightly', julia_ref: ''}  # release-1.14
-          - {version: 'nightly', julia_ref: ''}  # master
-    steps:
-      - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: ${{ matrix.version }}
-      - name: Determine the fixtures' commit
+      # Compare every dialect with its own C++ implementation on Linux.
+      - name: Determine the fixture commit
+        if: matrix.os == 'ubuntu-latest'
         id: fixtures
+        env:
+          PINNED_REF: ${{ matrix.julia.ref }}
         run: |
-          ref='${{ matrix.julia_ref }}'
+          ref="$PINNED_REF"
           [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+        if: matrix.os == 'ubuntu-latest'
         with:
           repository: JuliaLang/julia
           ref: ${{ steps.fixtures.outputs.ref }}
@@ -80,67 +80,39 @@ jobs:
           sparse-checkout: |
             test/llvmpasses
             test/testhelpers
-          sparse-checkout-cone-mode: true
-      - uses: julia-actions/cache@v3
-      - name: Install dependencies
-        # Julia 1.10 and 1.11 don't support workspaces
-        run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
-      - name: Run the fixtures with the ports
-        run: julia --project=test test/upstream/run.jl julia-src --mode A
-      - name: Run the fixtures with Julia's passes
-        run: julia --project=test test/upstream/run.jl julia-src --cpp
-      # the ports against Julia's C++ passes (test/differential) on the fixtures and a
-      # code_llvm corpus, on 1.12, 1.14 and master (test/differential/all.sh covers every
-      # version, and GPUCompiler's IR, locally)
-      - name: Compare the ports with Julia's passes
-        if: startsWith(matrix.version, '1.12') || endsWith(matrix.version, 'nightly')
+      - name: Install comparison dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          for project in test test/differential; do
+            julia --project="$project" -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
+          done
+      - name: Check upstream expectations against Julia's C++ passes
+        if: matrix.os == 'ubuntu-latest'
+        run: julia --project=test test/upstream/run.jl julia-src --reference
+      - name: Check upstream expectations against the ports
+        if: matrix.os == 'ubuntu-latest'
+        run: julia --project=test test/upstream/run.jl julia-src
+      - name: Compare the ports with Julia's C++ passes
+        if: matrix.os == 'ubuntu-latest'
         run: |
           julia --project=test/differential test/differential/corpus.jl corpus
           julia --project=test/differential test/differential/run.jl --quiet --out differential julia-src/test/llvmpasses corpus test/differential/inputs
-      # the diffs and the worker log of a failing comparison
       - uses: actions/upload-artifact@v4
-        if: failure() && (startsWith(matrix.version, '1.12') || endsWith(matrix.version, 'nightly'))
+        if: failure() && matrix.os == 'ubuntu-latest'
         with:
-          name: differential-${{ matrix.version }}
+          name: differential-${{ matrix.julia.version }}
           path: differential
 
-  # A standalone LLVM 23 (LLVM.jl's `deps/build_standalone.jl`: LLVM_full_jll linked with
-  # LLVMExtra), with the LLVM 23 tools next to it, for the mode-B and oracle jobs. It is
-  # only built when the cache misses, i.e. when the LLVM.jl release, the LLVM version or
-  # the runner image change.
   standalone-llvm:
     name: Build a standalone LLVM 23
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    outputs:
-      oracle: ${{ steps.changes.outputs.oracle }}
-    env:
-      LLVM_VERSION: '23.1.4'
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0  # to find the changed files
-      # the oracle runs when what it validates changes: the harness, the pins, the patches
-      # and their generator (test/upstream), or this workflow
-      - name: Determine whether the oracle runs
-        id: changes
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          oracle=true
-          if [ "$EVENT" != workflow_dispatch ] && [ -n "$BASE" ] &&
-             git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            git diff --name-only "$BASE" HEAD |
-              grep -qE '^(test/upstream/|test/litsetup\.jl|bin/jlopt|\.github/workflows/CI\.yml)' ||
-              oracle=false
-          fi
-          echo "oracle=$oracle" >> "$GITHUB_OUTPUT"
       - uses: julia-actions/setup-julia@v3
         with:
-          version: '1.12'
-      # the LLVM.jl release that the package resolves to, which the mode-b jobs load: the
-      # library contains its LLVMExtra
+          version: '1.13'
+      # Build LLVMExtra from the LLVM.jl release used by the tests.
       - name: Install LLVM.jl
         id: llvm-jl
         shell: julia --project --color=yes {0}
@@ -206,133 +178,97 @@ jobs:
           path: standalone.tar
           retention-days: 1
 
-  # Julia's pass tests and the package tests with the ports on the standalone LLVM, for
-  # the IR of a pinned Julia (mode B; see the documentation's "Testing" page). Julia
-  # itself runs on its own LLVM, which produces the IR.
-  #
-  # Only the LTS: old IR on a newer LLVM is what GPUCompiler does, and where the ports
-  # broke (LowerExcHandlers' lifetime markers on an addrspace cast, which LLVM 22's
-  # verifier rejects); the LTS has the oldest IR of a supported release, and the nightly
-  # `test` and `upstream` jobs cover new IR on LLVM 23. Any pin of `upstream` can be added.
-  mode-b:
-    name: Julia ${{ matrix.version }} - tests on a standalone LLVM 23
-    needs: standalone-llvm
+  compatibility:
+    name: Julia ${{ matrix.julia.version }} IR / LLVM ${{ needs.versions.outputs.llvm-major }}
+    needs: [versions, standalone-llvm]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include:  # pins of the `upstream` job
-          - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
+        julia: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    env:
+      LLVM_MAJOR: ${{ needs.versions.outputs.llvm-major }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: ${{ matrix.version }}
-      # a pin whose Julia uses LLVM 23 tests a standalone build of its own LLVM version; one
-      # that uses a newer LLVM needs the standalone LLVM to follow
-      - name: Check that the standalone LLVM is not older than Julia's
-        run: |
-          julia --startup-file=no -e 'Base.libllvm_version.major <= 23 ||
-              error("Julia uses LLVM $(Base.libllvm_version), newer than the standalone LLVM 23; update the standalone-llvm job")'
+          version: ${{ matrix.julia.version }}
+      - uses: julia-actions/cache@v3
       - uses: actions/download-artifact@v5
         with:
           name: standalone-llvm
           path: ${{ runner.temp }}
       - name: Unpack the standalone LLVM
-        run: tar -xf standalone.tar
-        working-directory: ${{ runner.temp }}
-      - uses: julia-actions/cache@v3
-      # first next to Julia's LLVM, selected after loading the package, as GPUCompiler does
-      - name: Run the in-process tests with the standalone LLVM next to Julia's
+        run: |
+          tar -xf "$RUNNER_TEMP/standalone.tar" -C "$RUNNER_TEMP"
+          echo "STANDALONE_LIBRARY=$RUNNER_TEMP/standalone/lib/libLLVM-standalone-$LLVM_MAJOR.so" >> "$GITHUB_ENV"
+      - name: Check the LLVM versions
+        shell: julia --startup-file=no {0}
+        run: |
+          Base.libllvm_version.major <= parse(Int, ENV["LLVM_MAJOR"]) ||
+              error("Julia uses LLVM $(Base.libllvm_version); update LLVM_VERSION in CI.yml")
+      - name: Determine the fixture commit
+        id: fixtures
+        env:
+          PINNED_REF: ${{ matrix.julia.ref }}
+        run: |
+          ref="$PINNED_REF"
+          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: JuliaLang/julia
+          ref: ${{ steps.fixtures.outputs.ref }}
+          path: julia-src
+          sparse-checkout: |
+            test/llvmpasses
+            test/testhelpers
+      - name: Install test dependencies
+        run: |
+          for project in test test/differential; do
+            julia --project="$project" -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
+          done
+      # Keep the reference on Julia's LLVM. Only reprint its output with the newer LLVM.
+      - name: Check LLVM fixture adaptations against Julia's C++ passes
+        run: julia --project=test test/upstream/run.jl julia-src --reference-llvm "$RUNNER_TEMP/standalone/tools/opt"
+      - name: Generate this Julia version's IR corpus
+        run: julia --project=test/differential test/differential/corpus.jl corpus
+      # Pkg.test on Julia 1.10 can't merge a test manifest that develops the package
+      - name: Remove the test manifest
+        run: rm -f test/Manifest*.toml
+      # Exercise library switching after the package was loaded with Julia's LLVM.
+      - name: Test both LLVM libraries in one process
         run: julia --project -e 'using Pkg; Pkg.test()'
         env:
-          JULIAIR_TEST_LIBRARY: ${{ runner.temp }}/standalone/lib/libLLVM-standalone-23.so
-      # LLVM.jl's `libLLVM` preference selects the library, in every environment that
-      # loads LLVM.jl; the lit tests need the tools of its LLVM version
-      - name: Use the standalone LLVM
+          JULIAIR_TEST_LIBRARY: ${{ env.STANDALONE_LIBRARY }}
+      - name: Select the standalone LLVM for all test processes
         run: |
           for dir in . test docs test/differential; do
-            printf '[LLVM]\nlibLLVM = "%s"\n' "$RUNNER_TEMP/standalone/lib/libLLVM-standalone-23.so" > "$dir/LocalPreferences.toml"
+            printf '[LLVM]\nlibLLVM = "%s"\n' "$STANDALONE_LIBRARY" > "$dir/LocalPreferences.toml"
           done
           echo "JULIAIR_LLVM_TOOLS=$RUNNER_TEMP/standalone/tools" >> "$GITHUB_ENV"
       - uses: julia-actions/julia-buildpkg@v1
-      - name: Check that LLVM.jl uses the standalone LLVM
+      - name: Check the selected library
+        shell: julia --project --startup-file=no {0}
         run: |
-          julia --project -e 'using LLVM; (!LLVM.julia_llvm && LLVM.version().major == 23) ||
-              error("LLVM.jl uses LLVM $(LLVM.version()) (julia_llvm = $(LLVM.julia_llvm)) instead of the standalone LLVM 23")'
+          using LLVM
+          (!LLVM.julia_llvm && LLVM.version().major == parse(Int, ENV["LLVM_MAJOR"])) ||
+              error("LLVM.jl loaded the wrong library: $(LLVM.version()), julia_llvm=$(LLVM.julia_llvm)")
       - uses: julia-actions/julia-runtest@v1
         with:
           coverage: false
-      - name: Determine the fixtures' commit
-        id: fixtures
-        run: |
-          ref='${{ matrix.julia_ref }}'
-          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
-        with:
-          repository: JuliaLang/julia
-          ref: ${{ steps.fixtures.outputs.ref }}
-          path: julia-src
-          sparse-checkout: |
-            test/llvmpasses
-            test/testhelpers
-          sparse-checkout-cone-mode: true
-      - name: Install dependencies
-        # Julia 1.10 and 1.11 don't support workspaces
+      - name: Reinstall test dependencies
         run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
-      - name: Run the fixtures with the ports on the standalone LLVM
-        run: julia --project=test test/upstream/run.jl julia-src --mode B
-
-  # The upgrade oracle: Julia's C++ passes, on Julia's own LLVM, with their textual output
-  # re-printed by LLVM 23's opt, against the fixtures with the mode-B patches. It checks
-  # that the patches describe LLVM 23 rather than the ports, so it runs when they or the
-  # harness change. Only for the LTS, like `mode-b`.
-  oracle:
-    name: Julia ${{ matrix.version }} - check the fixture patches for LLVM 23
-    needs: standalone-llvm
-    if: needs.standalone-llvm.outputs.oracle == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:  # pins of the `upstream` job
-          - {version: '1.10.12', julia_ref: 'd93beab124c850d5f600f290069853e81413f7ca'}  # v1.10.12
-    steps:
-      - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
+      - name: Run upstream fixtures on the standalone LLVM
+        run: julia --project=test test/upstream/run.jl julia-src
+      - name: Process the generated IR with the standalone LLVM
+        run: julia --project=test test/compatibility/run.jl corpus
+      - uses: actions/upload-artifact@v4
+        if: failure()
         with:
-          version: ${{ matrix.version }}
-      - uses: actions/download-artifact@v5
-        with:
-          name: standalone-llvm
-          path: ${{ runner.temp }}
-      - name: Unpack the standalone LLVM
-        run: tar -xf standalone.tar
-        working-directory: ${{ runner.temp }}
-      - name: Determine the fixtures' commit
-        id: fixtures
-        run: |
-          ref='${{ matrix.julia_ref }}'
-          [ -n "$ref" ] || ref=$(julia --startup-file=no -e 'print(Base.GIT_VERSION_INFO.commit)')
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
-        with:
-          repository: JuliaLang/julia
-          ref: ${{ steps.fixtures.outputs.ref }}
-          path: julia-src
-          sparse-checkout: |
-            test/llvmpasses
-            test/testhelpers
-          sparse-checkout-cone-mode: true
-      - uses: julia-actions/cache@v3
-      - name: Install dependencies
-        # Julia 1.10 and 1.11 don't support workspaces
-        run: julia --project=test -e 'using Pkg; VERSION < v"1.12" && Pkg.develop(path=pwd()); Pkg.instantiate()'
-      - name: Run the fixtures with Julia's passes, re-printed by LLVM 23
-        run: julia --project=test test/upstream/run.jl julia-src --cpp --reprint "$RUNNER_TEMP/standalone/tools/opt"
+          name: compatibility-${{ matrix.julia.version }}
+          path: corpus
 
   docs:
     name: Documentation

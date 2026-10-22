@@ -34,7 +34,7 @@ function alloca_addrspace(layout::String)
 end
 
 # like C++'s `CallInst::Create(call, bundles, pos)`: the same call with other operand
-# bundles (and without metadata), inserted at `pos` (by default before the call), named
+# bundles (keeping only debug metadata), inserted at `pos` (by default before the call), named
 # `name`, which C++ passes as the call's own name
 function clone_call!(builder::IRBuilder, call::Instruction,
                      bundles::Vector{OperandBundle}=OperandBundle[];
@@ -102,8 +102,16 @@ is_debug_intrinsic(f::LLVM.Function) = startswith(LLVM.name(f), "llvm.dbg.")
 # whether `callee` is the function `f`, which may be absent (`nothing`)
 is_fn(f, @nospecialize(callee)) = f !== nothing && callee !== nothing && f == callee
 
-# the integer of a constant, at most INT_MAX (`getLimitedValue(INT_MAX)`)
-limited_value(c::LLVM.ConstantInt) = min(convert(UInt64, c), UInt64(typemax(Int32)))
+# The unsigned value of a constant, saturated at INT_MAX (`getLimitedValue(INT_MAX)`).
+function limited_value(c::LLVM.ConstantInt)
+    limit = UInt64(typemax(Int32))
+    bits = LLVM.width(c.value_type)
+    bits <= 64 && return min(convert(UInt64, c), limit)
+    # a wider constant doesn't convert to UInt64; as a BigInt it is sign-extended, so a
+    # negative value is one with the top bit set, which saturates too
+    value = convert(BigInt, c)
+    return value < 0 ? limit : UInt64(min(value, limit))
+end
 
 # the function a call calls, if its type matches (`CallBase::getCalledFunction`)
 function called_function(call::Instruction)

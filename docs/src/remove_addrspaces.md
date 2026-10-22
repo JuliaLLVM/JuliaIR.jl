@@ -16,12 +16,12 @@ required module passes. `JuliaIR.RemoveAddrspacesPass(asmap)` takes the mapping 
 function from an address space to another (`as -> as == 3 ? 0 : as`); in a pipeline, the
 pass always maps every address space to 0.
 
-The pass is the same in every Julia version from 1.10 on (for opaque pointers), so the
-port doesn't depend on the Julia version.
+The port uses the same rules for every Julia version from 1.10 on. It includes the
+debug-info fixes added in Julia 1.13, as described below.
 
 ## How it works
 
-LLVM can't change the type of a value in place, so the pass rebuilds the module:
+To keep types and uses consistent, the pass rebuilds the module:
 
 1. Every global variable, alias and function is renamed `<name>.bad`, and a new one with
    the old name and the mapped types is created. Functions keep their own (program)

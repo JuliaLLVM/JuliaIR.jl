@@ -1,19 +1,17 @@
 # JuliaIR.jl
 
-Julia implementations of the LLVM passes that operate on *Julia's LLVM IR dialect*: the IR
-that Julia's code generator emits, with GC-tracked pointers in address spaces 10 to 13,
-intrinsics like `julia.gc_alloc_obj` and `julia.gc_preserve_begin`, and Julia-specific
-metadata and operand bundles. The passes are ports of the C++ passes in Julia's
-`src/llvm-*.cpp`, written against [LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s
-custom-pass API, so that they can run on any LLVM library LLVM.jl can use, including one
-that does not contain Julia's own passes.
+JuliaIR.jl ports Julia's C++ LLVM passes to Julia using
+[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API. The passes operate
+on *Julia's LLVM IR dialect*: GC pointers in address spaces 10 to 13, intrinsics such
+as `julia.gc_alloc_obj`, and Julia-specific metadata and operand bundles. They can run
+on LLVM libraries other than the one Julia bundles.
 
 "IR" in the package name refers to that dialect, not to Julia's own SSA IR.
 
-Julia's own passes are compiled into Julia's libLLVM and exist nowhere else. The ports
-let code that processes Julia's IR with another LLVM, mainly GPUCompiler on a standalone,
-newer libLLVM, run the same passes, with the behaviour of the Julia version that produced
-the IR.
+Julia's C++ passes live in `libjulia-codegen` and are built against Julia's bundled
+LLVM. The ports let consumers such as GPUCompiler process Julia's IR with a newer
+LLVM, while following the pass behavior of the Julia version that produced the IR.
+Intentional differences are documented for each pass.
 
 ## Status
 
@@ -24,22 +22,21 @@ later.
 
 ## What is supported
 
-- **The IR of the running Julia.** JuliaIR.jl processes the IR that the Julia version it
-  runs on generates: Julia 1.12 processes Julia 1.12's IR, not that of an older or newer
-  Julia. Every Julia version from 1.10 up to the current development version (1.15) is
-  supported this way.
+- **The running Julia's IR.** Passes select their dialect from `VERSION`. Julia 1.10
+  through 1.15 are supported; there is no option to process another Julia version's IR.
 - **Julia's LLVM, or a newer one.** The passes work with LLVM.jl on the LLVM library that
   Julia bundles, and on newer LLVM versions, e.g. a separately built library like
-  libLLVMGPU. They are tested on both: on the LLVM of each supported Julia version, and
-  with each version's IR on the newest LLVM (currently a standalone LLVM 23).
+  libLLVMGPU. CI tests every supported Julia version on both its bundled LLVM and
+  standalone LLVM 23.
 - **Opaque pointers only.** Julia 1.10 emits typed pointers by default; its IR is
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.
+- **Julia's stock GC.** MMTk builds are not supported.
 
 Some passes need facts about Julia's runtime that the IR doesn't state, such as the
 offsets of fields in the current task or the size of an exception handler. They take
-these from the running Julia, or from pass options that give them explicitly; IR for
-GPUs doesn't need them.
+these from the running Julia or explicit pass options. GPU code without Julia runtime
+operations does not need these facts.
 
 ## Usage
 
@@ -50,10 +47,11 @@ name, optionally with options:
 using LLVM, LLVM.IR, LLVM.Passes, JuliaIR
 
 @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
-    mod = parse(LLVM.Module, ir)
-    JuliaIR.register!(pb)
-    add!(pb, "jl-remove-ni")
-    run!(pb, mod)
+    @dispose mod=parse(LLVM.Module, ir) begin
+        JuliaIR.register!(pb)
+        add!(pb, "jl-remove-ni")
+        run!(pb, mod)
+    end
 end
 ```
 
@@ -77,13 +75,13 @@ Context(; library=lib, opaque_pointers=true) do ctx
 end
 ```
 
-For an existing context, `context!(ctx) do ... end` selects it and its library. The passes
-look up intrinsics and decide what depends on the LLVM version in the library they run
-with, not in the one the package was loaded with.
+For an existing context, `context!(ctx) do ... end` selects it and its library.
+Intrinsic IDs and LLVM compatibility checks use the selected library.
 
 GPUCompiler runs the ports instead of Julia's C++ passes with `julia_passes = :ports` in
 its `CompilerConfig` (or its `julia_passes` preference set to `"ports"`) and JuliaIR.jl
-loaded (JuliaGPU/GPUCompiler.jl#1026, not merged yet).
+loaded. This integration is proposed in
+[GPUCompiler.jl#1026](https://github.com/JuliaGPU/GPUCompiler.jl/pull/1026).
 
 ## Testing
 

@@ -186,6 +186,15 @@ end
     # a fact given as 0 is used, not taken for one that isn't given
     @test facts(; task_ptls=0).task_ptls == 0
     @test facts(; task_ptls=nothing).task_ptls == facts().task_ptls
+    for name in (:handler_align, :reset_ctx_align)
+        @test getproperty(facts(; name => 32), name) == 32
+        options = JuliaIR.runtime_options(name)
+        key = replace(string(name), '_' => '-')
+        for alignment in (0, -8, 3, 24)
+            @test_throws ArgumentError("the runtime fact $name must be a positive power of two or `nothing`") facts(; name => alignment)
+            @test_throws ArgumentError("option $key requires a positive power of two") JuliaIR.parse_options("$key=$alignment"; options)
+        end
+    end
     @test_throws ArgumentError("the runtime fact tls_elf_support must be true, false or `nothing`") facts(; tls_elf_support=:no)
     @test_throws ArgumentError("the runtime fact task_ptls must be a non-negative integer or `nothing`") facts(; task_ptls=-8)
     @test_throws ArgumentError("the runtime fact setjmp must be a non-empty string or `nothing`") facts(; setjmp="")

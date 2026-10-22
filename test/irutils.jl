@@ -2,6 +2,20 @@ using LLVM, LLVM.IR
 
 @testset "IR utilities" begin
 
+@testset "limited_value" begin
+    Context() do ctx
+        limit = UInt64(typemax(Int32))
+        for bits in (1, 8, 32, 64, 65, 128, 256)
+            ty = IntType(bits)
+            for n in (big(0), big(1), big(limit)-1, big(limit), big(limit)+1,
+                      big(1)<<64, (big(1)<<bits)-1)
+                n < big(1)<<bits || continue
+                @test JuliaIR.limited_value(ConstantInt(ty, n)) == min(n, limit)
+            end
+        end
+    end
+end
+
 @testset "constant_uses" begin
     @dispose ctx=Context(; opaque_pointers=true) begin
         mod = parse(LLVM.Module, """

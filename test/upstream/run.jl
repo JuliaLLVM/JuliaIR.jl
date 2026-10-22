@@ -3,20 +3,13 @@
 #
 #   julia --project=test test/upstream/run.jl JULIA_SRC [options]
 #
-#   --mode A       (default) the passes run on the LLVM of the running Julia, which is the
-#                  one of the pin; fixtures get the patches of derived/<minor>
-#   --mode B       the passes run on whatever library LLVM.jl has loaded (a newer,
-#                  standalone LLVM, or Julia's own for a dry run): fixtures get the mode-A
-#                  patch and then the patch layer of that LLVM
-#                  (derived-B/llvm<major>/<minor>), and RUN lines that name Julia's C++
-#                  passes without a port are skipped
-#   --cpp          run the fixtures with Julia's C++ passes instead of the ports (except
-#                  those testing the code generator): checks jlopt and the harness against
-#                  upstream's expectations, independently of the ports
-#   --reprint OPT  with --cpp, the upgrade oracle: the textual IR that Julia's passes
-#                  write is re-printed by OPT, the `opt` of a newer LLVM, and checked with
-#                  the FileCheck next to OPT against the fixtures with that LLVM's mode-B
-#                  patch layer (without the mode-A patches, which are about the ports)
+# The selected LLVM library determines execution: Julia's bundled LLVM uses the native
+# fixtures; a standalone LLVM also applies llvm-compat/llvm<major>/<minor> patches and
+# skips RUN lines that need C++ passes without ports.
+#
+#   --reference          validate pristine fixtures with Julia's C++ passes
+#   --reference-llvm OPT validate C++ output after OPT reprints it for another LLVM;
+#                        uses FileCheck beside OPT and implies --reference
 #   --filter RE   only fixtures whose file name matches RE
 #   --report       print the coverage of the pin's fixtures as a table, and exit
 #   --workdir DIR  where to write the executed suite (default: a temporary directory)
@@ -93,8 +86,7 @@ ported_passes() = Set(keys(JuliaIR.cpp_mapping()))
 
 # The passes that Julia's code generator library registers with LLVM, at any pin (the
 # union of their `passes.def`), and Julia's pipeline. A standalone LLVM doesn't have them,
-# so mode B skips the RUN lines that name one without a port; any other name that LLVM
-# doesn't know still fails.
+# so standalone runs skip those without a port. Unknown LLVM pass names still fail.
 const JULIA_CPP_PASSES = Set([
     "AllocOpt", "CancellationLowering", "CombineMulAdd", "CPUFeatures", "DemoteFloat16",
     "ExpandAtomicModify", "FinalLowerGC", "GCInvariantVerifier", "JuliaLICM",
@@ -223,16 +215,15 @@ function opt_invocations(cmd::AbstractString)
 end
 
 # What happens to a RUN line: `(status, reason, pipelines)`, where pipelines are those of
-# its `opt` invocations after mapping Julia's pass names and pipeline to the ports. In mode
-# B, Julia's C++ passes are not available.
+# its `opt` invocations after mapping Julia's pass names and pipeline to the ports.
+# A standalone LLVM does not provide Julia's C++ passes.
 #
-# `other_llvm` is whether mode B runs on another LLVM than the pin's: Julia's pipeline
-# (`julia<...>`) then also runs that LLVM's own passes, whose output the fixture doesn't
-# expect.
-function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A",
+# `other_llvm` means the selected LLVM differs from the pin's. Julia's pipeline then
+# includes different LLVM optimizations, whose output the fixture does not expect.
+function classify_run(run::RunLine; map_passes::Bool=true, standalone::Bool=!julia_llvm_in_use(),
                       other_llvm::Bool=false)
     occursin(r"--?opaque-pointers=0", run.command) &&
-        return (:skip, "typed pointers (S-D1)", String[])
+        return (:skip, "typed pointers are not supported", String[])
     pipelines = String[]
     julia_pipeline = false
     for args in opt_invocations(run.command)
@@ -247,7 +238,7 @@ function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A",
         map_passes && (pipeline = JuliaIR.port_pipeline(pipeline))
         push!(pipelines, pipeline)
     end
-    if mode == "B"
+    if standalone
         cpp = unique(name for pipeline in pipelines for name in cpp_only_passes(pipeline))
         isempty(cpp) ||
             return (:skip, "no port of Julia's $(join(cpp, ", "))", pipelines)
@@ -258,13 +249,12 @@ function classify_run(run::RunLine; map_passes::Bool=true, mode::String="A",
 end
 
 # A RUN line that checks what `opt` prints on stderr (`print<memoryssa>`, `-print-after`,
-# diagnostics). The upgrade oracle re-prints only the IR that `opt` writes as output.
+# diagnostics). The C++ reference check re-prints only the IR that `opt` writes as output.
 checks_stderr(run::RunLine) =
     occursin("2>&1", run.command) && !isempty(opt_invocations(run.command))
 
-# Whether the upgrade oracle re-prints any of what a fixture checks: if every RUN line that
-# runs checks stderr, the fixture sees the pin's printing only, and passes with or without
-# a mode-B patch, which the oracle therefore can't call stale.
+# Whether a reference check reprints any checked output. If all RUN lines check stderr,
+# they see only the original LLVM's printing, so compatibility patches cannot be validated.
 reprints(runs) = any(((run, status, _, _),) -> status == :run && !checks_stderr(run), runs)
 
 ported_names(pipeline) = unique(m.match for m in eachmatch(r"\bjl-[a-z0-9-]+", pipeline))
@@ -325,33 +315,32 @@ end
 
 ## patch layers
 
-# The mode-B patch layer of an LLVM major version for a pin: patches of fixtures whose
-# expectations change with that LLVM's representation of the IR (see derive.jl).
-# `<file>.patch` applies to the pristine fixture; `<file>.after-A.patch` replaces it in
-# mode B for a fixture that has a mode-A patch at the pin, and applies on top of that.
+# Compatibility patches adapt a pin's expectations to another LLVM's IR (see derive.jl).
+# `<file>.patch` applies to the pristine fixture. `<file>.after-port.patch` applies after
+# a port patch and replaces the pristine variant for that fixture.
 layer_dir(manifest_dir, major, minor) =
-    joinpath(manifest_dir, "derived-B", "llvm$major", minor)
+    joinpath(manifest_dir, "llvm-compat", "llvm$major", minor)
 
 # A path relative to `dir`, written with `/` as in the manifest, on every platform: for
 # the report, and for the keys of a layer's patches.
 slashed_relpath(path, dir) = replace(relpath(path, dir), '\\' => '/')
 
-const AFTER_A = ".after-A.patch"
+const AFTER_PORT = ".after-port.patch"
 
-# Check that every patch of a layer belongs to a fixture of the pin, and the after-A
-# variants to fixtures that have a mode-A patch.
+# Check that every patch of a layer belongs to a fixture of the pin, and the after-port
+# variants to fixtures that have a port patch.
 function check_layer(manifest, dir, names, minor)
     isdir(dir) || return
     for file in readdir(dir)
-        fixture = endswith(file, AFTER_A) ? file[1:end-length(AFTER_A)] :
+        fixture = endswith(file, AFTER_PORT) ? file[1:end-length(AFTER_PORT)] :
                   endswith(file, ".patch") ? file[1:end-length(".patch")] :
                   throw(HarnessError("$(joinpath(dir, file)): not a patch"))
         fixture in names ||
             throw(HarnessError("$(joinpath(dir, file)): no fixture $fixture at this pin"))
-        if endswith(file, AFTER_A)
+        if endswith(file, AFTER_PORT)
             entry = fixture_entry(manifest, fixture, minor)
             entry["status"] in ("override", "derived") ||
-                throw(HarnessError("$(joinpath(dir, file)): $fixture has no mode-A patch at this pin"))
+                throw(HarnessError("$(joinpath(dir, file)): $fixture has no port patch at this pin"))
         end
     end
 end
@@ -367,7 +356,7 @@ struct Fixture
     runs::Vector{Tuple{RunLine,Symbol,String,Vector{String}}}
     text::String            # what is executed (patched, RUN lines disabled)
     patches::Vector{String} # the patches applied, relative to the manifest
-    # per patch layer (:A or :B), the fixture without that layer, RUN lines disabled,
+    # per patch layer (:port or :llvm_compat), the fixture without that layer, RUN lines disabled,
     # which must fail: otherwise the layer is stale
     stale::Vector{Pair{Symbol,String}}
 end
@@ -375,10 +364,10 @@ end
 Fixture(name, entry, reason, runs=[]) =
     Fixture(name, entry, false, reason, runs, "", String[], Pair{Symbol,String}[])
 
-# `mode` is "A" or "B" for the ports, and ignored with `cpp`, where `layer` (a directory of
-# `layer_dir`) is the upgrade oracle's.
+# Select the fixtures for the active library. Reference checks use pristine fixtures
+# plus any compatibility layer for the LLVM that reprints their output.
 function plan_fixture(manifest, src::String, name::String, minor::String; cpp::Bool,
-                      mode::String="A", layer::Union{Nothing,String}=nothing,
+                      standalone::Bool=!julia_llvm_in_use(), layer::Union{Nothing,String}=nothing,
                       manifest_dir::String=@__DIR__)
     entry = fixture_entry(manifest, name, minor)
     status = entry["status"]
@@ -408,31 +397,32 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
     end
 
     # the patch layers: with Julia's own passes, upstream's expectations hold as they are,
-    # up to the representation of a newer LLVM (the oracle's mode-B layer)
+    # except for LLVM compatibility patches when reprinting with another LLVM
     rel(file) = slashed_relpath(file, manifest_dir)
-    a = status in ("override", "derived") && !cpp ? joinpath(manifest_dir, entry["patch"]) : nothing
-    b = b_after_a = nothing
+    port_patch = status in ("override", "derived") && !cpp ?
+                 joinpath(manifest_dir, entry["patch"]) : nothing
+    compat = compat_after_port = nothing
     if layer !== nothing
         file = joinpath(layer, name * ".patch")
-        isfile(file) && (b = file)
-        file = joinpath(layer, name * AFTER_A)
-        isfile(file) && !cpp && (b_after_a = file)
+        isfile(file) && (compat = file)
+        file = joinpath(layer, name * AFTER_PORT)
+        isfile(file) && !cpp && (compat_after_port = file)
     end
-    # in mode B, a fixture with a mode-A patch gets the layer's after-A variant only
-    b_composed = cpp ? b : a === nothing ? b : b_after_a
+    # A patched fixture needs the compatibility patch derived from that patched input.
+    compat_composed = cpp ? compat : port_patch === nothing ? compat : compat_after_port
     patch(text, file) = file === nothing ? text :
         apply_patch(text, read(file, String); name="$name ($(rel(file)))")
 
     pristine = read(path, String)
-    text = patch(patch(pristine, a), b_composed)
-    patches = [rel(file) for file in (a, b_composed) if file !== nothing]
+    text = patch(patch(pristine, port_patch), compat_composed)
+    patches = [rel(file) for file in (port_patch, compat_composed) if file !== nothing]
 
     function classify(text)
         # local: the closure would otherwise assign the fixture's `runs` below
         local runs = Tuple{RunLine,Symbol,String,Vector{String}}[]
         for run in run_lines(text)
             st, why, pipelines = try
-                classify_run(run; map_passes=!cpp, mode=cpp ? "A" : mode,
+                classify_run(run; map_passes=!cpp, standalone=!cpp && standalone,
                              other_llvm=LLVM.version().major != Base.libllvm_version.major)
             catch err
                 err isa HarnessError || rethrow()
@@ -475,12 +465,12 @@ function plan_fixture(manifest, src::String, name::String, minor::String; cpp::B
     # must fail (a derived copy tests something else than the fixture, which may pass too)
     stale = Pair{Symbol,String}[]
     if status == "override" && !cpp
-        without = runnable(patch(pristine, mode == "B" ? b : nothing))
-        without === nothing || push!(stale, :A => without)
+        without = runnable(patch(pristine, standalone ? compat : nothing))
+        without === nothing || push!(stale, :port => without)
     end
-    if b_composed !== nothing
-        without = runnable(patch(pristine, a))
-        without === nothing || push!(stale, :B => without)
+    if compat_composed !== nothing
+        without = runnable(patch(pristine, port_patch))
+        without === nothing || push!(stale, :llvm_compat => without)
     end
     return Fixture(name, entry, true, "", runs, text, patches, stale)
 end
@@ -515,7 +505,7 @@ function julia_wrapper(bindir::String)
     chmod(path, 0o755)
 end
 
-# The upgrade oracle's tools: `opt` runs `jlopt` (from `jlopt_bindir`) and re-prints the
+# The C++ reference check's tools: `opt` runs `jlopt` (from `jlopt_bindir`) and re-prints the
 # textual IR it writes, to stdout or to a file, with a newer LLVM's `opt`; `FileCheck`
 # is that LLVM's. Bitcode is left as is (a newer LLVM upgrades it when reading it), and
 # so is stderr. A crash of jlopt is passed on, for `not --crash`.
@@ -710,11 +700,10 @@ function report(fixtures, minor, pin; io=stdout)
     end
 end
 
-const USAGE = "usage: run.jl JULIA_SRC [--mode A|B] [--cpp [--reprint OPT]] [--filter RE] [--report] [--workdir DIR]"
+const USAGE = "usage: run.jl JULIA_SRC [--reference | --reference-llvm OPT] [--filter RE] [--report] [--workdir DIR]"
 
-function main(args)
+function main(args; standalone::Bool=!julia_llvm_in_use())
     src = nothing
-    mode = "A"
     cpp = false
     reprint = nothing
     filter_re = nothing
@@ -724,11 +713,10 @@ function main(args)
     i = 1
     while i <= length(args)
         arg = args[i]
-        if arg == "--mode"
-            mode = args[i += 1]
-        elseif arg == "--cpp"
+        if arg == "--reference"
             cpp = true
-        elseif arg == "--reprint"
+        elseif arg == "--reference-llvm"
+            cpp = true
             reprint = abspath(args[i += 1])
         elseif arg == "--filter"
             filter_re = Regex(args[i += 1])
@@ -747,31 +735,28 @@ function main(args)
         i += 1
     end
     src === nothing && throw(HarnessError(USAGE))
-    mode in ("A", "B") || throw(HarnessError("unknown mode $mode"))
-    cpp && mode == "B" &&
-        throw(HarnessError("--cpp runs Julia's passes, which mode B doesn't have; the upgrade oracle is --cpp --reprint OPT"))
-    reprint === nothing || cpp || throw(HarnessError("--reprint requires --cpp"))
+    cpp && standalone &&
+        throw(HarnessError("C++ reference checks require Julia's own LLVM library"))
     reprint === nothing || !Sys.iswindows() ||
-        throw(HarnessError("--reprint is not supported on Windows"))
+        throw(HarnessError("--reference-llvm is not supported on Windows"))
 
     manifest = load_manifest(manifest_path)
     manifest_dir = dirname(manifest_path)
     minor = pin_minor(manifest)
     pin = check_pin(manifest, src, minor)
 
-    # the mode-B patch layer: of the LLVM that the ports run on in mode B, or that
-    # re-prints the output of Julia's passes in the oracle
-    major = mode == "B" ? LLVM.version().major : reprint !== nothing ? opt_major(reprint) : nothing
+    # Select compatibility patches for the standalone library or reference reprinter.
+    major = standalone ? LLVM.version().major : reprint !== nothing ? opt_major(reprint) : nothing
     layer = major === nothing ? nothing : layer_dir(manifest_dir, major, minor)
     # the layers are derived for the pin's own LLVM
     if layer !== nothing && get(pin, "llvm", Base.libllvm_version.major) != Base.libllvm_version.major
-        throw(HarnessError("Julia $VERSION uses LLVM $(Base.libllvm_version), but the pin of Julia $minor says LLVM $(pin["llvm"]); update the manifest and regenerate the mode-B patches (derive.jl)"))
+        throw(HarnessError("Julia $VERSION uses LLVM $(Base.libllvm_version), but the pin of Julia $minor says LLVM $(pin["llvm"]); update the manifest and regenerate the LLVM compatibility patches (derive.jl)"))
     end
 
     # the fixtures of the pin's commit (which check_pin verified are checked out)
     names = sort(map(basename, readlines(`git -C $src ls-tree --name-only $(pin["commit"]) test/llvmpasses/`)))
     layer === nothing || check_layer(manifest, layer, names, minor)
-    fixtures = [plan_fixture(manifest, src, name, minor; cpp, mode, layer, manifest_dir)
+    fixtures = [plan_fixture(manifest, src, name, minor; cpp, standalone, layer, manifest_dir)
                 for name in names]
     if do_report
         report(fixtures, minor, pin)
@@ -781,13 +766,11 @@ function main(args)
     selected = filter(f -> f.included, fixtures)
 
     what = if reprint !== nothing
-        "the upgrade oracle: Julia's C++ passes on LLVM $(Base.libllvm_version), re-printed by LLVM $major ($reprint)"
+        "the C++ reference check: Julia's C++ passes on LLVM $(Base.libllvm_version), re-printed by LLVM $major ($reprint)"
     elseif cpp
-        "mode A with Julia's C++ passes"
-    elseif mode == "B"
-        "mode B on $(library_description())"
+        "native C++ reference check"
     else
-        "mode A"
+        "ports on $(library_description())"
     end
     println("Julia $VERSION, fixtures of $(pin["tag"]) ($(pin["commit"][1:10])), $what: ",
             "running $(length(selected)) of $(length(fixtures)) files")
@@ -795,7 +778,7 @@ function main(args)
         println("  patch layer: ", slashed_relpath(layer, manifest_dir), isdir(layer) ? "" : " (none)")
     for f in selected
         isempty(f.patches) || println("  patched: $(f.name): $(join(f.patches, ", "))")
-        if mode == "B" && !cpp
+        if standalone && !cpp
             for (run, status, why, _) in f.runs
                 status == :skip && startswith(why, "no port") &&
                     println("  RUN line skipped: $(f.name), RUN line $(run.index): $why")
@@ -806,14 +789,14 @@ function main(args)
         f.included || println("  not run: $(f.name): $(f.reason)")
     end
     if reprint !== nothing
-        # what the oracle can't re-print, checked against the pin's printing
+        # what the reference check can't re-print, checked against the pin's printing
         for f in selected, (run, status, _, _) in f.runs
             status == :run && checks_stderr(run) &&
                 println("  not re-printed: $(f.name), RUN line $(run.index): checks stderr")
         end
         for f in selected
-            any(l -> first(l) == :B, f.stale) && !reprints(f.runs) &&
-                println("  mode-B patch not validated: $(f.name): every RUN line checks stderr")
+            any(l -> first(l) == :llvm_compat, f.stale) && !reprints(f.runs) &&
+                println("  LLVM compatibility patch not validated: $(f.name): every RUN line checks stderr")
         end
     end
     isempty(selected) && return 0
@@ -867,19 +850,19 @@ function main(args)
     ok || println(output)
 
     # every patch layer must be needed: the fixture without it has to fail
-    for (layer_name, dir) in ((:A, "stale-A"), (:B, "stale-B"))
+    for (layer_name, dir) in ((:port, "stale-port"), (:llvm_compat, "stale-llvm-compat"))
         stale = [(f, text) for f in selected for (l, text) in f.stale
-                 if l == layer_name && !(l == :B && reprint !== nothing && !reprints(f.runs))]
+                 if l == layer_name && !(l == :llvm_compat && reprint !== nothing && !reprints(f.runs))]
         isempty(stale) && continue
         _, _, stale_results, _ = run_suite(joinpath(workdir, dir),
                                            [(f.name, text) for (f, text) in stale])
         for (f, _) in stale
             get(stale_results, f.name, "MISSING") == "PASS" || continue
-            push!(failures, layer_name == :A && mode == "A" ?
+            push!(failures, layer_name == :port && !standalone ?
                   "$(f.name): the override is stale, the pristine fixture passes" :
-                  layer_name == :A ?
-                  "$(f.name): the override is stale, the fixture passes with the mode-B patch alone" :
-                  "$(f.name): the mode-B patch is stale, the fixture passes without it")
+                  layer_name == :port ?
+                  "$(f.name): the override is stale, the fixture passes with the LLVM compatibility patch alone" :
+                  "$(f.name): the LLVM compatibility patch is stale, the fixture passes without it")
         end
     end
 

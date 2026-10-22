@@ -482,7 +482,8 @@ glob_regex(glob) = Regex("^" * join(["\\Q$(part)\\E" for part in split(glob, '*'
 function load_exceptions(file)
     isfile(file) || return Recorded[]
     exceptions = Recorded[]
-    for (pass, entries) in TOML.parsefile(file), e in entries
+    # (in a fixed order: the rewrites of different passes can apply to the same line)
+    for (pass, entries) in sort(collect(TOML.parsefile(file)); by=first), e in entries
         where = "an entry of $pass in $file"
         for k in keys(e)
             k in ("input", "julia", "prefix", "side", "lines", "replace", "accept",
@@ -526,12 +527,15 @@ applies(e::Recorded, job::Job) = (e.pass == job.spec.name || e.pass in job.spec.
     (isempty(e.prefix) || e.prefix == job.prefix)
 
 # The lines of an output that are compared (blank lines carry nothing), after the rewrites
-# of `exceptions` for that side. Returns them and the indices of the exceptions that
-# changed a line.
+# of `exceptions` for that side: first those of lines, then the canonicalizations, which
+# see the lines as rewritten. Returns them and the indices of the exceptions that changed
+# a line.
 function rewritten(text, side, exceptions)
     lines = filter(l -> !isempty(strip(l)), split(text, '\n'))
     used = Int[]
-    for (i, e) in enumerate(exceptions)
+    order = sort(eachindex(exceptions); by=i -> exceptions[i].action === :canonicalize)
+    for i in order
+        e = exceptions[i]
         e.action === :accept && continue
         e.side == side || e.side == "both" || continue
         if e.action === :canonicalize
@@ -565,10 +569,9 @@ const CANONICALIZATIONS = Dict{String,Function}()
 # the frame that are as large as the C++'s, whatever their order. Only slots whose index is
 # fetched once are renamed (allocas, sret roots, tracked stores); the slot of a colored root
 # is fetched at each of its stores and keeps its index, bounding the extents of the others.
-# In an over-aligned frame (`align N`), the padding before an over-aligned alloca counts
-# towards the extent of the slot before it, which then depends on the order: there, only
-# the indices in use are listed. If an index is outside its frame, the function is left as
-# it is, so that the difference shows.
+# Over-aligned frames are left unchanged: padding makes extents depend on allocation
+# order, but comparing only the set of indices would hide overlapping or undersized
+# slots. An index outside its frame also prevents canonicalization.
 function canonical_frame_slots(lines)
     out = String.(lines)
     starts = findall(l -> startswith(l, "define "), out)
@@ -595,7 +598,7 @@ function canonical_frame_slots(lines)
         uses = Dict{Tuple{String,Int},Int}()
         foreach(s -> uses[s] = get(uses, s, 0) + 1, values(fetched))
         slots = filter(((_, s),) -> uses[s] == 1, fetched)
-        (valid && !isempty(slots)) || continue
+        (valid && isempty(aligned) && !isempty(slots)) || continue
         function extent((frame, index))
             next = [i for (f, i) in values(fetched) if f == frame && i > index]
             return (isempty(next) ? sizes[frame] : minimum(next)) - index
@@ -613,8 +616,8 @@ function canonical_frame_slots(lines)
         unused = sort([v for v in keys(slots) if !haskey(names, v)]; by=v -> slots[v])
         foreach(name, unused)
         function entry(v)
-            frame, index = slots[v]
-            frame in aligned ? "$frame[$index]" : "$(names[v]) = $frame + $(extent(slots[v]))"
+            frame, _ = slots[v]
+            "$(names[v]) = $frame + $(extent(slots[v]))"
         end
         listing = sort(map(entry, collect(keys(slots))))
         out[from] *= "\n; frame slots: " * join(listing, ", ")
@@ -622,6 +625,114 @@ function canonical_frame_slots(lines)
     return out
 end
 CANONICALIZATIONS["frame slots"] = canonical_frame_slots
+
+# late-lower-gc.ll's overaligned_gc_padding has two four-pointer allocas, aligned to
+# 64 bytes. Slots 6 and 14 in its 18-slot frame are disjoint and large enough for both
+# (the two header words make their byte offsets 64 and 128). Match the complete known
+# body before allowing their permutation; arbitrary aligned frames remain unchanged.
+function canonical_padding_fixture(lines)
+    header = "define void @overaligned_gc_padding(<4 x ptr addrspace(10)> %0) {"
+    start = findfirst(==(header), lines)
+    start === nothing && return lines
+    function body(index, first, nonnull)
+        second = 7 - first
+        attr = nonnull ? "nonnull " : ""
+        split("""
+            $header
+              %2 = call align 64 ptr @julia.new_gc_frame(i32 18)
+              %3 = call ptr @julia.get_gc_frame_slot(ptr %2, i32 $index)
+              %4 = call ptr @julia.get_gc_frame_slot(ptr %2, i32 $(20-index))
+              %5 = call ptr @julia.get_pgcstack()
+              call void @julia.push_gc_frame(ptr %2, i32 18)
+              store <4 x ptr addrspace(10)> %0, ptr %$first, align 64
+              store <4 x ptr addrspace(10)> %0, ptr %$second, align 64
+              call void @aligned_short_root_array(ptr $(attr)align 64 %$first)
+              call void @aligned_short_root_array(ptr $(attr)align 64 %$second)
+              call void @julia.pop_gc_frame(ptr %2)
+              ret void
+            }""", '\n')
+    end
+    for nonnull in (false, true), index in (6, 14), first in (3, 4)
+        candidate = body(index, first, nonnull)
+        span = start:start+length(candidate)-1
+        last(span) <= length(lines) || continue
+        lines[span] == candidate || continue
+        out = String.(lines)
+        out[span] = body(14, 3, nonnull)
+        return out
+    end
+    return lines
+end
+CANONICALIZATIONS["overaligned padding fixture"] = canonical_padding_fixture
+
+# Once FinalLowerGC lowered the frame of that function, its slots are byte offsets that
+# later passes optimize, and the order can't be canonicalized: leave the function out of
+# the comparison of Julia's pipeline (LateLowerGCFrame's comparison still checks it).
+function without_padding_fixture(lines)
+    start = findfirst(l -> startswith(l, "define void @overaligned_gc_padding("), lines)
+    start === nothing && return lines
+    finish = findnext(==("}"), lines, start)
+    finish === nothing && return lines
+    return [lines[1:start-1]; lines[finish+1:end]]
+end
+CANONICALIZATIONS["without overaligned padding fixture"] = without_padding_fixture
+
+# FinalLowerGC builds the previous-frame load and address as two C++ call arguments.
+# Compilers can emit them in either order. Normalize only an adjacent independent pair
+# used solely by the following store; leave every operand, flag and metadata unchanged.
+function canonical_frame_push(lines)
+    out = String.(lines)
+    starts = findall(l -> startswith(l, "define "), out)
+    for from in starts
+        finish = findnext(==("}"), out, from)
+        finish === nothing && continue
+        body = join(@view(out[from:finish]), "\n")
+        occurrences = Dict{String,Int}()
+        for m in eachmatch(r"%\d+\b", body)
+            occurrences[m.match] = get(occurrences, m.match, 0) + 1
+        end
+        for i in from+1:finish-3
+            first = match(r"^  (%\d+) = (.*)$", out[i])
+            second = match(r"^  (%\d+) = (.*)$", out[i+1])
+            (first === nothing || second === nothing) && continue
+            load, gep = startswith(first[2], "load ") ? (first, second) : (second, first)
+            startswith(load[2], "load ") && startswith(gep[2], "getelementptr ") || continue
+            all(m -> get(occurrences, m[1], 0) == 2, (load, gep)) || continue
+            # A dependent pair cannot be reordered, even if its users happen to fit.
+            ids = Set((load[1], gep[1]))
+            any(m -> m.match in ids, eachmatch(r"%\d+\b", load[2] * " " * gep[2])) && continue
+            store = match(r"^  store(?: atomic)?(?: volatile)? ptr(?: addrspace\(\d+\))? (%\d+), ptr(?: addrspace\(\d+\))? (%\d+)(?:,| ).*$", out[i+2])
+            store === nothing && continue
+            (store[1], store[2]) == (load[1], gep[1]) || continue
+            a, b = sort([load[1], gep[1]]; by=x -> parse(Int, x[2:end]))
+            out[i] = "  $a = $(load[2])"
+            out[i+1] = "  $b = $(gep[2])"
+            out[i+2] = replace(out[i+2], r"%\d+\b" => v ->
+                              v == load[1] ? a : v == gep[1] ? b : v)
+        end
+    end
+    return out
+end
+CANONICALIZATIONS["GC frame push order"] = canonical_frame_push
+
+# late-lower-gc.ll has two 64-byte-aligned frames with 16 and 20 pointers. Optimizers
+# strengthen their non-volatile memsets to align 64 but leave the C++ volatile ones at
+# align 16. Check the exact allocation, pointer and byte count before normalizing.
+function canonical_frame_zero_alignment(lines)
+    out = String.(lines)
+    for i in 2:length(out)
+        alloca = match(r"^  (%\d+) = alloca \[(16|20) x ptr\], align 64$", out[i-1])
+        alloca === nothing && continue
+        memset = match(r"^(  call void @llvm\.memset\.p0\.i64\(ptr align )(\d+)( (%\d+), i8 0, i64 (\d+), i1 (?:true|false)\).*)$", out[i])
+        memset === nothing && continue
+        memset[4] == alloca[1] || continue
+        parse(Int, memset[5]) == 8 * parse(Int, alloca[2]) || continue
+        parse(Int, memset[2]) in (16, 64) || continue
+        out[i] = memset[1] * "16" * memset[3]
+    end
+    return out
+end
+CANONICALIZATIONS["GC frame zero alignment"] = canonical_frame_zero_alignment
 
 # Metadata nodes are numbered in the order LLVM meets them, so a node that one side adds
 # or drops renumbers the others: number them by their first reference instead (in the IR,
@@ -802,4 +913,4 @@ function main(args)
     return report(opts, jobs, skipped)
 end
 
-isinteractive() || exit(main(ARGS) ? 0 : 1)
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && exit(main(ARGS) ? 0 : 1)

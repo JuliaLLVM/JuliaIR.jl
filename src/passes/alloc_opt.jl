@@ -184,6 +184,13 @@ function optimize_all!(opt::AllocOpt)
             info.hastypeof && optimize_tag!(opt, orig)
             continue
         end
+        # Unlike the C++ pass, keep allocations with volatile accesses: removing or splitting
+        # them would drop those accesses or make them ordinary.
+        if info.hasvolatile
+            remark(opt, :missed, "Volatile", orig, "GC allocation has volatile accesses")
+            info.hastypeof && optimize_tag!(opt, orig)
+            continue
+        end
         if !info.addrescaped && !info.hasload && (!info.haspreserve || !info.refstore)
             # no one takes the address or reads anything, and there's no meaningful
             # preserve of fields: delete all uses
@@ -728,9 +735,9 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
     end
     function slot_gep(slot::SplitSlot, offset, elty)
         offset -= slot.offset
+        offset == 0 && return slot.slot
         size = abi_size(opt.dl, elty)
-        if offset % size == 0
-            offset == 0 && return slot.slot
+        if size != 0 && offset % size == 0
             return inbounds_gep!(builder, elty, slot.slot,
                                  [ConstantInt(LLVM.Int32Type(), offset ÷ size)])
         else
@@ -827,7 +834,8 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                     size = UInt32(convert(UInt64, user.arguments[3]))
                     for idx in find_slot(offset):nslots
                         slot = slots[idx]
-                        (slot.offset + slot.size <= offset || slot.offset >= offset + size) && break
+                        slot.offset + slot.size <= offset && continue
+                        slot.offset >= offset + size && break
                         if slot.isref
                             ptr = if val == 0
                                 null(opt.T_prjlvalue)

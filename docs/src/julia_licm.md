@@ -16,7 +16,7 @@ For a loop with a preheader, in reverse postorder of its blocks:
   are defined before the loop (or are constants). A begin that stays leaves its ends
   where they are.
 - **`llvm.julia.gc_preserve_end`** of a hoisted begin is sunk to the exits of the loop:
-  moved to the first exit and cloned, without operand bundles or metadata, into the
+  moved to the first exit and cloned, without operand bundles and keeping only debug metadata, into the
   others. A loop without exits loses the end. Only the exits of the loop being
   processed that are inside the loop that defines the token (the innermost loop of its
   begin) get an end: an end is never sunk out of a loop its token is defined in, as LCSSA

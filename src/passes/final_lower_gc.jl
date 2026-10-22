@@ -1,9 +1,7 @@
-# FinalLowerGC: port of Julia's final GC lowering pass (`src/llvm-final-gc-lowering.cpp`,
-# and from Julia 1.14 on `llvm-final-gc-lowering-stock.cpp`). It lowers what
-# LateLowerGCFrame leaves behind to code for Julia's runtime: the GC frame intrinsics,
-# allocations, root queuing and safepoints, and from Julia 1.14 on also the write barriers.
-# The functions keep the names of the C++ ones; differences between Julia versions are
-# fields of `Dialect`, deviations from the C++ are documented in
+# Lower GC frames, allocations, root queuing and safepoints to Julia runtime operations.
+# Julia 1.14 also lowers write barriers here. Port of `llvm-final-gc-lowering.cpp`
+# and, from Julia 1.14, `llvm-final-gc-lowering-stock.cpp`.
+# Version differences live in `Dialect`; deliberate changes are documented in
 # docs/src/final_lower_gc.md.
 
 mutable struct FinalLowerGC
@@ -150,9 +148,8 @@ function lower_new_gc_frame!(p::FinalLowerGC, target::Instruction)
     # for targets whose allocas aren't in the generic address space
     gcframe = addrspacecast!(builder, frame_alloca, LLVM.PointerType(AS_GENERIC))
     take_name!(gcframe, target)
-    # the frame is zeroed with a non-volatile memset that only aliases the frame (Julia
-    # 1.14 and later; up to 1.13, a volatile one without TBAA, which keeps it from being
-    # removed)
+    # Use Julia 1.14's non-volatile memset and frame TBAA on every dialect.
+    # Earlier versions accidentally passed the TBAA tag as the volatility flag.
     size = pointer_size(p.gc) * (nroots + 2)
     memset = memset!(builder, gcframe, ConstantInt(LLVM.Int8Type(), 0),
                      ConstantInt(LLVM.Int64Type(), size), 16)
@@ -176,7 +173,8 @@ function lower_push_gc_frame!(p::FinalLowerGC, target::Instruction)
     # `JL_GC_ENCODE_PUSHARGS`
     store = store!(builder, ConstantInt(p.gc.T_size, nroots << 2), nroots_addr; align)
     store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).gcframe
-    # in the order of the C++ (whose compilers evaluate the store's operands right to left)
+    # The C++ builds these in separate store arguments, whose evaluation order varies
+    # between compilers. Either order is valid: the load and address are independent.
     prev_addr = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [ConstantInt(T_int32, 1)],
                               names ? "frame.prev" : "")
     prev = load!(builder, T_ptr, p.pgcstack, names ? "task.gcstack" : ""; align)
@@ -415,11 +413,12 @@ function final_lower_gc_module!(mod::LLVM.Module, am, opts::PassOptions)
             # Julia 1.10 declares the runtime functions in every module, and keeps them
             # from being removed while it runs (`doInitialization`, `doFinalization`)
             declared = declare_runtime_functions!(p)
-            union!(mod.compiler_used, declared)
+            added = setdiff(declared, mod.compiler_used)
+            union!(mod.compiler_used, added)
             for f in functions
                 final_lower_gc_function!(p, f; declare=false)
             end
-            setdiff!(mod.compiler_used, declared)
+            setdiff!(mod.compiler_used, added)
             return PreservedAnalyses(CFGAnalyses)
         end
         results = [final_lower_gc_function!(p, f; declare=true) for f in functions]

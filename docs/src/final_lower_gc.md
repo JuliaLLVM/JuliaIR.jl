@@ -17,12 +17,13 @@ lowers what that pass leaves behind to code for Julia's runtime:
 `jl-final-lower-gc` (`JuliaIR.FinalLowerGCPass`) ports the pass for the IR of every Julia
 version from 1.10 on, and `jlopt` runs it for Julia's name of the pass (`FinalLowerGC`). It
 is a required pass, so it also runs on `optnone` functions. Like Julia's, it only lowers
-functions that have a GC stack (a `julia.get_pgcstack` call, or from Julia 1.13 on an
-argument with the `gcstack` attribute): the intrinsics of other functions are left alone.
+functions with a GC stack: a `julia.get_pgcstack` or `julia.get_pgcstack_or_new` call
+in the entry block, or from Julia 1.13 on an argument with the `gcstack` attribute.
+Other functions keep their intrinsics.
 
 ## A module pass and a function pass
 
-Julia 1.10's pass is a module pass, later versions' a function pass. `jl-final-lower-gc` is
+Julia 1.10 uses a module pass; later versions use a function pass. `jl-final-lower-gc` is
 registered as both: in a pipeline, the name at the top level is the module pass
 (`-passes=jl-final-lower-gc`) and the name in a function pass manager the function pass
 (`-passes='function(jl-final-lower-gc)'`). Both lower each function the same way:
@@ -98,15 +99,17 @@ Fixes of later Julia versions, applied to the IR of every version:
 
 Deliberate differences:
 
-- A module that already declares a runtime function with another type than Julia's runtime
-  gives it makes the pass throw a [`JuliaIR.DeclarationError`](@ref) before it changes
-  anything, as does a call of `julia.queue_gc_root` whose type differs from the runtime
-  function's. The C++ pass calls the existing function with the wrong arguments, which
+- Julia 1.10's module pass preserves existing runtime entries in `llvm.compiler.used`.
+  It removes only the entries it added temporarily; the C++ pass removes both.
+
+- An existing runtime declaration with an incompatible type raises
+  [`JuliaIR.DeclarationError`](@ref) before the pass changes the module. The same check
+  applies to calls of `julia.queue_gc_root`. The C++ pass calls the existing function with the wrong arguments, which
   gives invalid IR. (When a global variable has the name, both declare the function under
   a new one, such as `ijl_gc_queue_root.1`.)
 - What the C++ pass takes from the host (`sizeof(void*)`, for the size of frame slots, the
   alignment of the frame's stores and loads, and the header of big objects) comes from the
-  module's data layout; this is the same for every target Julia supports.
+  module's data layout. This also supports targets with a different pointer size.
 - From Julia 1.14 on, the pass reports the control-flow graph as preserved unless it
   lowered a write barrier, like this package's LateLowerGCFrame. The C++ pass of Julia
   1.14 reports every analysis as invalidated.

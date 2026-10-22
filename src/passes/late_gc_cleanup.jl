@@ -63,6 +63,7 @@ function unsupported_functions(dialect::Dialect)
         "julia.gc_alloc_obj" => "allocations must be lowered first (e.g., by GPUCompiler's GPULowerGCFrame)",
         "julia.typeof" => "reading the type of an object needs the object headers of Julia's runtime",
         "julia.blackbox" => "julia.blackbox is lowered to inline assembly for the CPU",
+        "julia.safepoint" => "safepoints need Julia's runtime and must be lowered by FinalLowerGC",
     ]
     for name in dialect.write_barriers
         push!(reasons, name => "write barriers must be removed first (e.g., by GPUCompiler's GPULowerGCFrame)")

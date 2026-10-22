@@ -101,6 +101,7 @@ not contain:
 | a GC stack: a `julia.get_pgcstack` or `julia.get_pgcstack_or_new` call, or an argument with the `gcstack` attribute, even if unused | Julia's root placement pushes a frame onto it as soon as a value must be rooted | GPUCompiler's `GPULowerPTLS` removes unused `julia.get_pgcstack` calls; GPU code is compiled without `gcstack` arguments |
 | `julia.typeof` calls | reads the type tag from the object header | (not supported on GPUs) |
 | `julia.blackbox` calls | lowered to inline assembly for the CPU | (not supported on GPUs) |
+| `julia.safepoint` | polls the runtime's safepoint page; requires `FinalLowerGC` | the back-end's GC lowering |
 | GC frame intrinsics and `julia.gc_alloc_bytes`, `julia.queue_gc_root` | created by `LateLowerGCFrame` for Julia's runtime, lowered by `FinalLowerGC` | |
 | `gc-transition` operand bundles (Julia 1.12 and later) | GC state transitions of `ccall(...; gc_safe=true)` | (not supported on GPUs) |
 | `julia.gc_alloc_ptr_offsets` and `julia.gc_alloc_zeroinit` operand bundles (Julia 1.14 and later) | they ask for the fields of a new object to be initialized, which the lowering of `julia.gc_alloc_obj` must do | the back-end's GC lowering |
@@ -154,6 +155,8 @@ outcomes.
 
 Deliberate differences, on the IR of every Julia version:
 
+- Calls without Julia's operand bundles are kept in place. The C++ pass recreates them
+  even when they need no changes.
 - Operand bundles that are not Julia's are kept, also on the calls that replace jlcalls
   and allocations. The C++ pass removes every operand bundle from a call that has one,
   including, e.g., `align` assumptions and convergence control tokens.
@@ -164,8 +167,8 @@ Deliberate differences, on the IR of every Julia version:
   function. The C++ pass iterates over a hash map keyed by the allocas' addresses, so its
   order changes from run to run (upstream's tests check these slots with `CHECK-DAG`).
 - What the C++ pass takes from the host (`sizeof(void*)`, for alignments and for the
-  size of frame slots) comes from the module's data layout; this is the same for every
-  target Julia supports.
+  size of frame slots) comes from the module's data layout. This also supports targets
+  with a different pointer size.
 - The C++ pass declares `ijl_gc_small_alloc` in every module it runs on (Julia 1.12 and
   later); `jl-late-gc-cleanup` does not, since GPU modules don't link Julia's runtime.
 - For calls marked `julia.safepoint` (Julia 1.14 and later), the memory effects of the

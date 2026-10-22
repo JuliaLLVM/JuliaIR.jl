@@ -408,11 +408,11 @@ field that occupies memory, with the size and alignment of the field's value (re
 for inline fields). An empty result means that code generated for `dl` addresses values
 of type `T` like Julia does.
 
-Julia's code generator addresses fields by byte offsets that it maps onto the LLVM type's
-elements, so a divergence means that Julia's C++ also generates wrong code for that type
-and target. The lowering itself never consults a data layout; this is a diagnostic. Under
-the data layout of the running Julia's own target nothing diverges; GPU targets diverge
-for some types, see the documentation.
+Julia's code generator maps field byte offsets onto LLVM type elements. A divergence
+can therefore make field accesses or array strides incorrect unless the consumer adapts
+the representation. The lowering itself never consults a data layout; this is a
+diagnostic. The tests check agreement with the running Julia's data layout and known
+differences for GPU targets.
 """
 function check_layout(@nospecialize(T), dl::DataLayout)
     require_opaque_context()

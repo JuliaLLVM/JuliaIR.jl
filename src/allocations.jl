@@ -1,5 +1,5 @@
 # Escape analysis of Julia's GC allocations (`julia.gc_alloc_obj`), used by AllocOpt and
-# later JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (1.14).
+# JuliaLICM. Port of Julia's `src/llvm-alloc-helpers.cpp` (1.14).
 
 # Julia's address spaces (`src/llvm-codegen-shared.h`), which are the same in every dialect
 const AS_GENERIC = 0
@@ -17,8 +17,7 @@ struct JuliaFunctions
     gc_preserve_end::Union{Nothing,LLVM.Function}
     pointer_from_objref::Union{Nothing,LLVM.Function}
     gc_loaded::Union{Nothing,LLVM.Function}
-    # all write barriers, and the field barriers among them (whose odd operands are the
-    # slots that are written)
+    # all write barriers, and the field barriers whose even arguments are written slots
     write_barriers::Vector{LLVM.Function}
     field_write_barriers::Vector{LLVM.Function}
 end
@@ -115,6 +114,8 @@ mutable struct AllocUseInfo
     # memory accesses whose offset, size or value cannot be computed; a weaker form of
     # `addrescaped`, since `hasload` still says whether the memory is read
     hasunknownmem::Bool
+    # there are volatile accesses, which AllocOpt must not remove or make ordinary
+    hasvolatile::Bool
     # the object is returned
     returned::Bool
     # the object is used by an error function (in a block that ends in `unreachable`)
@@ -129,7 +130,7 @@ end
 
 AllocUseInfo() = AllocUseInfo(Set{Instruction}(), Instruction[], Instruction[], UInt32[],
                               Field[], false, false, false, false, false, false, false,
-                              false, false, false, 0, false, false, false)
+                              false, false, false, false, 0, false, false, false)
 
 function Base.empty!(info::AllocUseInfo)
     empty!(info.uses)
@@ -139,7 +140,7 @@ function Base.empty!(info::AllocUseInfo)
     empty!(info.fields)
     info.escaped = info.addrescaped = info.hasload = info.haspreserve = false
     info.refload = info.refstore = info.hastypeof = info.hasunknownmem = false
-    info.returned = info.haserror = false
+    info.hasvolatile = info.returned = info.haserror = false
     info.allockind = 0
     info.has_unknown_objref = info.has_unknown_objrefaggr = info.has_unknown_unboxed = false
     return info
@@ -331,6 +332,10 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
     # analyze a use; returns false if the allocation escapes
     function check(@nospecialize(inst::Instruction), use::Use)
         offset = stack[end][2]
+        if (inst isa LoadInst || inst isa StoreInst || inst isa AtomicCmpXchgInst ||
+            inst isa AtomicRMWInst) && inst.volatile
+            info.hasvolatile = true
+        end
         if inst isa LoadInst
             info.hasload = true
             if offset == UNKNOWN_OFFSET
@@ -344,6 +349,7 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             callee = inst.called_operand
             if callee isa LLVM.Function && LLVM.isintrinsic(callee)
                 if LLVM.isintrinsic(callee, Intrinsic("llvm.memset"))
+                    iszero(convert(UInt64, inst.arguments[4])) || (info.hasvolatile = true)
                     len = inst.arguments[3]
                     val = inst.arguments[2]
                     if offset == UNKNOWN_OFFSET || !(len isa ConstantInt) ||

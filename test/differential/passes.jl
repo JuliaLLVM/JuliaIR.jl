@@ -68,7 +68,7 @@ instcombine() = LLVM.version() >= v"18" ? "instcombine<no-verify-fixpoint>" : "i
 const AVAILABLE = Dict{String,Bool}()
 function available(pipeline::String)
     get!(AVAILABLE, pipeline) do
-        @dispose ctx=Context() begin
+        @dispose ctx=Context(; opaque_pointers=true) begin
             mod = LLVM.Module("probe")
             try
                 @dispose pb=PassBuilder() begin
@@ -123,10 +123,18 @@ end
 # What GPUCompiler does before Julia's LateLowerGCFrame, to the extent that it takes the
 # C++ pass onto its cleanup-only path (no GC frame): no GC stack, and none of the
 # intrinsics that `jl-late-gc-cleanup` rejects (GPUCompiler lowers allocations itself, and
-# its runtime has no write barriers or type tags). Both sides then see plain calls.
+# its runtime has no write barriers or type tags). Runtime safepoints are removed;
+# the other runtime operations become plain calls on both sides.
 const GPU_RENAMED = r"^julia\.(get_pgcstack(_or_new)?|gc_alloc_obj|\w*write_barrier[\w.]*|typeof|blackbox)$"
 function gpu_like!(mod::LLVM.Module)
     for f in collect(LLVM.functions(mod))
+        if LLVM.name(f) == "julia.safepoint"
+            for use in collect(LLVM.uses(f))
+                call = LLVM.user(use)
+                call isa LLVM.CallInst && call.called_operand == f || continue
+                LLVM.erase!(call)
+            end
+        end
         if occursin(GPU_RENAMED, LLVM.name(f))
             LLVM.name!(f, "gpu." * chopprefix(LLVM.name(f), "julia."))
         end
@@ -219,11 +227,14 @@ function host_triple!(mod::LLVM.Module)
 end
 for level in 0:3
     cpp = "julia<level=$level>"
+    inherits = PIPELINE_PASSES
     if level >= 2 && JuliaIR.Dialect(VERSION).minor < v"1.14"
         cpp = replace(JuliaIR.pipeline(; level, ports=false),
                       r"\bFinalLowerGC\b" => "jl-final-lower-gc")
+        # both sides run FinalLowerGC's port, so its deviations don't apply
+        inherits = filter(!=("FinalLowerGC"), inherits)
     end
     push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp, port=JuliaIR.pipeline(; level),
                                kind=:module, prepare=Pair{String,Any}["" => host_triple!],
-                               cpp_runs=8, aborts=true, inherits=PIPELINE_PASSES))
+                               cpp_runs=8, aborts=true, inherits))
 end
