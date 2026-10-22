@@ -96,14 +96,14 @@ end
 # chain, multiplications and divisions of it an `FMul` chain. `nothing` otherwise.
 function reduce_opcode(user::Instruction, @nospecialize(operand::Value))
     opcode = user.opcode
-    if opcode == API.LLVMFSub
-        return user.operands[1] == operand ? API.LLVMFAdd : nothing
-    elseif opcode == API.LLVMFAdd
-        return API.LLVMFAdd
-    elseif opcode == API.LLVMFDiv
-        return user.operands[1] == operand ? API.LLVMFMul : nothing
-    elseif opcode == API.LLVMFMul
-        return API.LLVMFMul
+    if opcode == LLVM.Opcode.FSub
+        return user.operands[1] == operand ? LLVM.Opcode.FAdd : nothing
+    elseif opcode == LLVM.Opcode.FAdd
+        return LLVM.Opcode.FAdd
+    elseif opcode == LLVM.Opcode.FDiv
+        return user.operands[1] == operand ? LLVM.Opcode.FMul : nothing
+    elseif opcode == LLVM.Opcode.FMul
+        return LLVM.Opcode.FMul
     else
         return nothing
     end
@@ -112,7 +112,7 @@ end
 # On Julia 1.12 and later: mark the `fmul` that only feeds an addition of a reduction as
 # `contract` (`checkCombine`).
 function check_combine!(ar, loop::Loop, @nospecialize(op::Value))
-    op isa Instruction && op.opcode == API.LLVMFMul || return
+    op isa Instruction && op.opcode == LLVM.Opcode.FMul || return
     op in loop || return
     if !has_one_use(op)
         # the C++ pass renders the instruction argument as its opcode name
@@ -178,7 +178,7 @@ function enable_unsafe_algebra_if_reduction!(ar, loop::Loop, phi::Instruction,
         k.fast_math.contract = true
         if dialect.simdloop_check_combine
             op = k.opcode
-            if op == API.LLVMFAdd || op == API.LLVMFSub
+            if op == LLVM.Opcode.FAdd || op == LLVM.Opcode.FSub
                 ops = k.operands
                 check_combine!(ar, loop, ops[1])
                 check_combine!(ar, loop, ops[2])

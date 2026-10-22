@@ -19,7 +19,7 @@ the IR.
 
 Every pass of Julia's optimization pipelines, Julia 1.10 to 1.15, is ported (see the
 table on the documentation's home page), and the pipeline itself is rebuilt from the
-ports for each Julia version. The package is not registered yet; it needs LLVM.jl 10.3 or
+ports for each Julia version. The package is not registered yet; it needs LLVM.jl 10.4 or
 later.
 
 ## What is supported

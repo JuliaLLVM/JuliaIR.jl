@@ -12,17 +12,17 @@
 
 # a pointer, or vector of pointers, in the tracked address space
 is_tracked_value(@nospecialize(v::Value)) =
-    let t = scalar_typeref(typeref(v))
-        is_pointer_type(t) && type_addrspace(t) == AS_TRACKED
+    let t = scalar_type(v.value_type)
+        t isa PointerType && t.addrspace == AS_TRACKED
     end
 
 # the address space of a pointer or vector of pointers
-value_addrspace(@nospecialize(v::Value)) = type_addrspace(scalar_typeref(typeref(v)))
+value_addrspace(@nospecialize(v::Value)) = scalar_type(v.value_type).addrspace
 
-is_pointer_value(@nospecialize(v::Value)) = is_pointer_type(typeref(v))
+is_pointer_value(@nospecialize(v::Value)) = v.value_type isa PointerType
 
 # the type at a path of indices in an aggregate type (`ExtractValueInst::getIndexedType`)
-function indexed_type(t::TypeRef, idxs)
+function indexed_type(@nospecialize(t::LLVMType), idxs)
     for i in idxs
         t = composite_element_type(t, i)
     end
@@ -59,18 +59,18 @@ end
 # calls returning an argument
 function strip_in_bounds_offsets(@nospecialize(v::Value))
     is_pointer_value(v) || return v
-    visited = Set{ValueRef}((vref(v),))
+    visited = Set{Value}((v,))
     while true
         op = operator_opcode(v)
-        if op == API.LLVMGetElementPtr
-            API.LLVMIsInBounds(v) != 0 || return v
-            v = Value(API.LLVMGetOperand(v, 0))
-        elseif op == API.LLVMBitCast
-            new = Value(API.LLVMGetOperand(v, 0))
+        if op == LLVM.Opcode.GetElementPtr
+            v.inbounds || return v
+            v = v.operands[1]
+        elseif op == LLVM.Opcode.BitCast
+            new = v.operands[1]
             is_pointer_value(new) || return v
             v = new
-        elseif op == API.LLVMAddrSpaceCast
-            v = Value(API.LLVMGetOperand(v, 0))
+        elseif op == LLVM.Opcode.AddrSpaceCast
+            v = v.operands[1]
         elseif v isa LLVM.CallBase
             ret = returned_argument(v)
             ret === nothing && return v
@@ -78,8 +78,8 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
         else
             return v
         end
-        vref(v) in visited && return v
-        push!(visited, vref(v))
+        v in visited && return v
+        push!(visited, v)
     end
 end
 
@@ -111,15 +111,6 @@ only_reads_memory(e::MemoryEffects) =
     all(loc -> !(e[loc] in (:write, :readwrite)), MEMORY_LOCATIONS)
 only_accesses_arg_pointees(e::MemoryEffects) =
     all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
-
-# the element `i` of a constant aggregate, or nothing
-function aggregate_element(c::LLVM.Constant, i::Integer)
-    ref = API.LLVMGetAggregateElement(c, i)
-    return ref == C_NULL ? nothing : Value(ref)
-end
-
-shuffle_mask(inst::Instruction) =
-    [Int(API.LLVMGetMaskValue(inst, i)) for i in 0:Int(API.LLVMGetNumMaskElements(inst))-1]
 
 # shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
 const UNDEF_MASK_ELEM = -1
@@ -174,14 +165,14 @@ end
 # `getSplatValue`
 function splat_value(@nospecialize(v::Value))
     if v isa LLVM.Constant
-        is_vector_type(typeref(v)) || return nothing
-        n = composite_num_elements(typeref(v))
+        is_vector_type(v.value_type) || return nothing
+        n = composite_num_elements(v.value_type)
         n == 0 && return nothing
         first_elt = aggregate_element(v, 0)
         first_elt === nothing && return nothing
         for i in 1:n-1
             e = aggregate_element(v, i)
-            (e === nothing || vref(e) != vref(first_elt)) && return nothing
+            (e === nothing || e != first_elt) && return nothing
         end
         return first_elt
     end
@@ -191,7 +182,7 @@ function splat_value(@nospecialize(v::Value))
         if ins isa LLVM.InsertElementInst
             idx = ins.operands[3]
             if idx isa LLVM.ConstantInt && convert(Int, idx) == 0 &&
-               all(m -> m == 0 || m == UNDEF_MASK_ELEM, shuffle_mask(v))
+               all(m -> m == 0 || m == UNDEF_MASK_ELEM, v.shuffle_mask)
                 return ins.operands[2]
             end
         end
@@ -201,27 +192,27 @@ end
 
 # `findScalarElement`
 function find_scalar_element(@nospecialize(v::Value), elt::Int)
-    t = typeref(v)
-    elt_type = API.LLVMGetElementType(t)
-    if type_kind(t) == API.LLVMVectorTypeKind && elt >= composite_num_elements(t)
-        return Value(API.LLVMGetPoison(elt_type))
+    t = v.value_type
+    elt_type = t.element_type
+    if t isa VectorType && elt >= composite_num_elements(t)
+        return PoisonValue(elt_type)
     end
     v isa LLVM.Constant && return aggregate_element(v, elt)
     if v isa LLVM.InsertElementInst
         idx = v.operands[3]
         idx isa LLVM.ConstantInt || return nothing
         convert(Int, idx) == elt && return v.operands[2]
-        vref(v.operands[1]) == vref(v) && return nothing
+        v.operands[1] == v && return nothing
         return find_scalar_element(v.operands[1], elt)
     end
-    if v isa LLVM.ShuffleVectorInst && type_kind(t) == API.LLVMVectorTypeKind
-        lhs_width = composite_num_elements(typeref(v.operands[1]))
-        in_elt = shuffle_mask(v)[elt+1]
-        in_elt < 0 && return Value(API.LLVMGetPoison(elt_type))
+    if v isa LLVM.ShuffleVectorInst && t isa VectorType
+        lhs_width = composite_num_elements(v.operands[1].value_type)
+        in_elt = v.shuffle_mask[elt+1]
+        in_elt < 0 && return PoisonValue(elt_type)
         in_elt < lhs_width && return find_scalar_element(v.operands[1], in_elt)
         return find_scalar_element(v.operands[2], in_elt - lhs_width)
     end
-    if type_kind(t) == API.LLVMScalableVectorTypeKind
+    if t isa ScalableVectorType
         splat = splat_value(v)
         splat !== nothing && elt < composite_num_elements(t) && return splat
     end
@@ -253,13 +244,13 @@ end
 
 # `simplifyExtractElementInst` with a constant index
 function simplify_extract_element(@nospecialize(vec::Value), idx::Int)
-    t = typeref(vec)
+    t = vec.value_type
     if vec isa LLVM.Constant
         return aggregate_element(vec, idx)
     end
     nelts = composite_num_elements(t)
-    if type_kind(t) == API.LLVMVectorTypeKind && idx >= nelts
-        return Value(API.LLVMGetPoison(API.LLVMGetElementType(t)))
+    if t isa VectorType && idx >= nelts
+        return PoisonValue(t.element_type)
     end
     if idx < nelts
         splat = splat_value(vec)
@@ -294,12 +285,12 @@ mutable struct State
     max_ptr_number::Int
     max_safepoint_number::Int
     # numbers of IR values, including derived ones
-    all_ptr_numbering::Dict{ValueRef,Int}
-    all_composite_numbering::Dict{ValueRef,Vector{Int}}
+    all_ptr_numbering::Dict{Value,Int}
+    all_composite_numbering::Dict{Value,Vector{Int}}
     reverse_ptr_numbering::Dict{Int,Value}
     # for each value, the values live at some safepoint with it (0-based numbers)
     neighbors::Vector{BitSet}
-    bb_states::Dict{ValueRef,BBState}
+    bb_states::Dict{BasicBlock,BBState}
     # if all values a value refines to are rooted, it is too (-1: externally rooted,
     # -2: permanently rooted)
     refinements::Dict{Int,Vector{Int}}
@@ -313,25 +304,25 @@ mutable struct State
     callee_roots::Vector{Vector{Int}}
     # allocas that are sunk into the GC frame, with their number of roots, in order
     array_allocas::Vector{Instruction}
-    array_alloca_roots::Dict{ValueRef,Int}
+    array_alloca_roots::Dict{Value,Int}
     # the allocas of single tracked pointers (`gc_root_allocas_first`)
     root_allocas::Vector{Instruction}
     tracked_stores::Vector{Tuple{Instruction,Int}}
 end
 
 State(f::LLVM.Function) =
-    State(f, -1, -1, Dict{ValueRef,Int}(), Dict{ValueRef,Vector{Int}}(), Dict{Int,Value}(),
-          BitSet[], Dict{ValueRef,BBState}(), Dict{Int,Vector{Int}}(),
+    State(f, -1, -1, Dict{Value,Int}(), Dict{Value,Vector{Int}}(), Dict{Int,Value}(),
+          BitSet[], Dict{BasicBlock,BBState}(), Dict{Int,Vector{Int}}(),
           Pair{Instruction,Vector{Int}}[], Instruction[], Int[], BitSet[], Vector{Int}[],
-          Vector{Int}[], Instruction[], Dict{ValueRef,Int}(), Instruction[],
+          Vector{Int}[], Instruction[], Dict{Value,Int}(), Instruction[],
           Tuple{Instruction,Int}[])
 
-bb_state(S::State, bb::BasicBlock) = get!(BBState, S.bb_states, vref(bb))
+bb_state(S::State, bb::BasicBlock) = get!(BBState, S.bb_states, bb)
 
-has_array_alloca(S::State, ai::Instruction) = haskey(S.array_alloca_roots, vref(ai))
+has_array_alloca(S::State, ai::Instruction) = haskey(S.array_alloca_roots, ai)
 function set_array_alloca!(S::State, ai::Instruction, n::Int)
-    haskey(S.array_alloca_roots, vref(ai)) || push!(S.array_allocas, ai)
-    S.array_alloca_roots[vref(ai)] = n
+    haskey(S.array_alloca_roots, ai) || push!(S.array_allocas, ai)
+    S.array_alloca_roots[ai] = n
 end
 
 # the functions of Julia's runtime interface in a module (`JuliaPassContext`)
@@ -457,9 +448,9 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
     while true
         if use_cache
             if is_pointer_value(cur)
-                haskey(S.all_ptr_numbering, vref(cur)) && return (cur, fld_idx)
+                haskey(S.all_ptr_numbering, cur) && return (cur, fld_idx)
             else
-                haskey(S.all_composite_numbering, vref(cur)) && return (cur, fld_idx)
+                haskey(S.all_composite_numbering, cur) && return (cur, fld_idx)
             end
         end
         if cur isa LLVM.BitCastInst
@@ -473,7 +464,7 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
         elseif cur isa LLVM.GetElementPtrInst
             cur = cur.operands[1]
             # GEP can make vectors from a single base pointer
-            if fld_idx != -1 && !is_vector_type(typeref(cur))
+            if fld_idx != -1 && !is_vector_type(cur.value_type)
                 fld_idx = -1
             end
         elseif cur isa LLVM.ExtractElementInst
@@ -482,12 +473,12 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
             fld_idx = Int(limited_value(idx))
             cur = cur.operands[1]
         elseif cur isa LLVM.LoadInst
-            if has_loaded_ty(typeref(cur))
+            if has_loaded_ty(cur.value_type)
                 # the old (deprecated) implementation of loaded pointers: new code uses
                 # julia.gc_loaded to pair the load with its tracked value
                 cur = cur.operands[1]
                 fld_idx = -1
-                is_special_ptr(typeref(cur)) || (cur = null_generic_pointer())
+                is_special_ptr(cur.value_type) || (cur = null_generic_pointer())
                 continue
             end
             break
@@ -498,16 +489,16 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
                intrinsic_is(cur, p.intrinsics.masked_gather)
                 # like a load followed by a select; never derived, so no lifting is
                 # needed, but loaded pointers walk to their base
-                t = typeref(cur)
-                if is_vector_type(t) && has_loaded_ty(API.LLVMGetElementType(t))
+                t = cur.value_type
+                if is_vector_type(t) && has_loaded_ty(t.element_type)
                     is_load = intrinsic_is(cur, p.intrinsics.masked_load)
                     cur = cur.operands[1]
                     if is_load
                         fld_idx = -1
-                        is_special_ptr(typeref(cur)) || (cur = null_generic_pointer())
+                        is_special_ptr(cur.value_type) || (cur = null_generic_pointer())
                     else
-                        ct = typeref(cur)
-                        if is_vector_type(ct) && !is_special_ptr(API.LLVMGetElementType(ct))
+                        ct = cur.value_type
+                        if is_vector_type(ct) && !is_special_ptr(ct.element_type)
                             cur = null_generic_pointer()
                             fld_idx = -1
                         end
@@ -516,8 +507,8 @@ function find_base_value(p::LateLowerGCFrame, S::State, @nospecialize(v::Value),
                 end
                 break
             elseif intrinsic_is(cur, p.intrinsics.vector_extract)
-                t = typeref(cur)
-                if is_vector_type(t) && has_loaded_ty(API.LLVMGetElementType(t))
+                t = cur.value_type
+                if is_vector_type(t) && has_loaded_ty(t.element_type)
                     cur = cur.operands[1]
                     fld_idx = -1
                     continue
@@ -571,13 +562,13 @@ function maybe_extract_scalar(p::LateLowerGCFrame, S::State, val_expr::Tuple{Val
                             LLVM.null(p.gc.T_prjlvalue)
         end
     elseif idx != -1
-        tracked = track_composite_type(typeref(v))
+        tracked = track_composite_type(v.value_type)
         idxs = tracked[idx+1]
         idxs_not_vec = idxs[1:end-1]
-        final_t = indexed_type(typeref(v), idxs_not_vec)
+        final_t = indexed_type(v.value_type, idxs_not_vec)
         is_vec = is_vector_type(final_t)
         t = composite_element_type(final_t, last(idxs))
-        if type_addrspace(t) != AS_TRACKED
+        if t.addrspace != AS_TRACKED
             # if v isn't tracked, get the shadow def
             numbers = number_all_base!(p, S, v)
             base = numbers[idx+1]
@@ -605,22 +596,22 @@ function get_ptr_for_number(p::LateLowerGCFrame, S::State, num::Int, insert_befo
     val = S.reverse_ptr_numbering[num]
     idx = -1
     if !is_pointer_value(val)
-        all_nums = S.all_composite_numbering[vref(val)]
+        all_nums = S.all_composite_numbering[val]
         idx = findfirst(==(num), all_nums) - 1
     end
     return maybe_extract_scalar(p, S, (val, idx), insert_before)
 end
 
 is_numbered(S::State, @nospecialize(v::Value)) =
-    is_pointer_value(v) ? haskey(S.all_ptr_numbering, vref(v)) :
-                          haskey(S.all_composite_numbering, vref(v))
+    is_pointer_value(v) ? haskey(S.all_ptr_numbering, v) :
+                          haskey(S.all_composite_numbering, v)
 
 function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
     is_numbered(S, si) && return  # already visited here
     numbers = Int[]
     num_roots = 1
-    sty = typeref(si)
-    is_pointer_type(sty) || (numbers = fill(-1, CountTrackedPointers(sty).count))
+    sty = si.value_type
+    sty isa PointerType || (numbers = fill(-1, CountTrackedPointers(sty).count))
     # find the base root for the arguments
     true_base = maybe_extract_scalar(p, S, find_base_value(p, S, si.operands[2], false), si)
     false_base = maybe_extract_scalar(p, S, find_base_value(p, S, si.operands[3], false), si)
@@ -640,47 +631,47 @@ function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
         true_elem = is_pointer_value(true_base) ? true_base : true_bases[i+1]
         false_elem = is_pointer_value(false_base) ? false_base : false_bases[i+1]
         cond = si.operands[1]
-        if is_vector_type(typeref(cond))
+        if is_vector_type(cond.value_type)
             position_before!(p.builder, si; debug=false)
             cond = new_extract_element!(p.builder, cond, ConstantInt(LLVM.Int32Type(), i))
         end
         position_before!(p.builder, si; debug=false)
         select_base = new_select!(p.builder, cond, true_elem, false_elem, "gclift")
         number = (S.max_ptr_number += 1)
-        S.all_ptr_numbering[vref(select_base)] = number
+        S.all_ptr_numbering[select_base] = number
         S.reverse_ptr_numbering[number] = select_base
-        if is_pointer_type(sty)
-            S.all_ptr_numbering[vref(si)] = number
+        if sty isa PointerType
+            S.all_ptr_numbering[si] = number
         else
             numbers[i+1] = number
         end
     end
-    if type_kind(sty) == API.LLVMVectorTypeKind && num_roots != length(numbers)
+    if sty isa VectorType && num_roots != length(numbers)
         # broadcast the scalar root number to fill the vector
         @assert num_roots == 1
-        numbers = fill(numbers[1], Int(API.LLVMGetVectorSize(sty)))
+        numbers = fill(numbers[1], sty.length)
     end
-    is_pointer_type(sty) || (S.all_composite_numbering[vref(si)] = numbers)
+    sty isa PointerType || (S.all_composite_numbering[si] = numbers)
     return
 end
 
 function lift_extract_element!(p::LateLowerGCFrame, S::State, eei::Instruction)
-    haskey(S.all_ptr_numbering, vref(eei)) && return
+    haskey(S.all_ptr_numbering, eei) && return
     base = maybe_extract_scalar(p, S, find_base_value(p, S, eei.operands[1], false), eei)
-    haskey(S.all_ptr_numbering, vref(eei)) && return  # handled recursively
+    haskey(S.all_ptr_numbering, eei) && return  # handled recursively
     if is_pointer_value(base)
-        S.all_ptr_numbering[vref(eei)] = number!(p, S, base)
+        S.all_ptr_numbering[eei] = number!(p, S, base)
         return
     end
     bases = maybe_extract_vector(p, S, base, eei)
     builder = p.builder
     position_before!(builder, eei; debug=true)
-    base_vec = Value(API.LLVMGetPoison(LLVM.VectorType(p.gc.T_prjlvalue, length(bases))))
+    base_vec = PoisonValue(LLVM.VectorType(p.gc.T_prjlvalue, length(bases)))
     for (i, b) in enumerate(bases)
         base_vec = insert_element!(builder, base_vec, b, ConstantInt(LLVM.Int64Type(), i - 1))
     end
     lift = extract_element!(builder, base_vec, eei.operands[2], "gclift")
-    S.all_ptr_numbering[vref(eei)] = number!(p, S, lift)
+    S.all_ptr_numbering[eei] = number!(p, S, lift)
     return
 end
 
@@ -689,8 +680,8 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
     lifted = Instruction[]
     numbers = Int[]
     num_roots = 1
-    pty = typeref(phi)
-    if !is_pointer_type(pty)
+    pty = phi.value_type
+    if !(pty isa PointerType)
         num_roots = CountTrackedPointers(pty).count
         numbers = zeros(Int, num_roots)
     end
@@ -698,16 +689,16 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
         position_before!(p.builder, phi; debug=false)
         lift = phi!(p.builder, p.gc.T_prjlvalue, "gclift")
         number = (S.max_ptr_number += 1)
-        S.all_ptr_numbering[vref(lift)] = number
+        S.all_ptr_numbering[lift] = number
         S.reverse_ptr_numbering[number] = lift
-        if is_pointer_type(pty)
-            S.all_ptr_numbering[vref(phi)] = number
+        if pty isa PointerType
+            S.all_ptr_numbering[phi] = number
         else
             numbers[i] = number
         end
         push!(lifted, lift)
     end
-    is_pointer_type(pty) || (S.all_composite_numbering[vref(phi)] = numbers)
+    pty isa PointerType || (S.all_composite_numbering[phi] = numbers)
     for (incoming, incoming_bb) in collect(phi.incoming)
         terminator = incoming_bb.terminator
         base = maybe_extract_scalar(p, S, find_base_value(p, S, incoming, false), terminator)
@@ -721,24 +712,24 @@ function lift_phi!(p::LateLowerGCFrame, S::State, phi::Instruction)
 end
 
 function number_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
-    n = get(S.all_ptr_numbering, vref(cur), nothing)
+    n = get(S.all_ptr_numbering, cur, nothing)
     n === nothing || return n
     if cur isa LLVM.Constant
         number = -2  # permanently rooted
     elseif cur isa LLVM.Argument || cur isa LLVM.AllocaInst ||
            (cur isa LLVM.AddrSpaceCastInst && !is_tracked_value(cur))
         number = -1  # rooted in the parent
-    elseif !is_special_ptr(typeref(cur))
+    elseif !is_special_ptr(cur.value_type)
         number = -1  # externally rooted somehow, hopefully
     elseif cur isa LLVM.SelectInst && !is_tracked_value(cur)
         lift_select!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.PHIInst && !is_tracked_value(cur)
         lift_phi!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.ExtractElementInst && !is_tracked_value(cur)
         lift_extract_element!(p, S, cur)
-        return S.all_ptr_numbering[vref(cur)]
+        return S.all_ptr_numbering[cur]
     elseif cur isa LLVM.ExtractValueInst
         numbers = number_all_base!(p, S, cur)
         @assert length(numbers) == 1
@@ -747,14 +738,14 @@ function number_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
         number = (S.max_ptr_number += 1)
         S.reverse_ptr_numbering[number] = cur
     end
-    S.all_ptr_numbering[vref(cur)] = number
+    S.all_ptr_numbering[cur] = number
     return number
 end
 
 function number!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
     cur, idx = find_base_value(p, S, v)
     number = idx == -1 ? number_base!(p, S, cur) : number_all_base!(p, S, cur)[idx+1]
-    vref(v) != vref(cur) && (S.all_ptr_numbering[vref(v)] = number)
+    v != cur && (S.all_ptr_numbering[v] = number)
     return number
 end
 
@@ -765,14 +756,14 @@ starts_with(elem::Vector{Int}, idxs::Vector{Int}) =
 # assign pointer numbers to a def instruction
 function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Value))
     if is_pointer_value(cur)
-        n = get(S.all_ptr_numbering, vref(cur), nothing)
+        n = get(S.all_ptr_numbering, cur, nothing)
         n === nothing || return [n]
     else
-        ns = get(S.all_composite_numbering, vref(cur), nothing)
+        ns = get(S.all_composite_numbering, cur, nothing)
         ns === nothing || return ns
     end
     numbers = Int[]
-    tracked = CountTrackedPointers(typeref(cur))
+    tracked = CountTrackedPointers(cur.value_type)
     tracked.count == 0 && return numbers
     if cur isa LLVM.Constant || cur isa LLVM.AllocaInst || cur isa LLVM.Argument ||
        (cur isa LLVM.AddrSpaceCastInst && !is_tracked_value(cur))
@@ -780,7 +771,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
     elseif cur isa LLVM.ShuffleVectorInst
         numbers1 = number_all!(p, S, cur.operands[1])
         numbers2 = number_all!(p, S, cur.operands[2])
-        for idx in shuffle_mask(cur)
+        for idx in cur.shuffle_mask
             if idx < 0
                 push!(numbers, -1)
             elseif idx < length(numbers1)
@@ -811,7 +802,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
         end
     elseif cur isa LLVM.InsertValueInst
         numbers = copy(number_all!(p, S, cur.operands[1]))
-        tracked_paths = track_composite_type(typeref(cur))
+        tracked_paths = track_composite_type(cur.value_type)
         insert_numbers = number_all!(p, S, cur.operands[2])
         idxs = collect(cur.indices)
         j = 0
@@ -822,7 +813,7 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
         end
     elseif cur isa LLVM.ExtractValueInst
         base_numbers = number_all!(p, S, cur.operands[1])
-        tracked_paths = track_composite_type(typeref(cur.operands[1]))
+        tracked_paths = track_composite_type(cur.operands[1].value_type)
         idxs = collect(cur.indices)
         for (i, elem) in enumerate(tracked_paths)
             starts_with(elem, idxs) && push!(numbers, base_numbers[i])
@@ -835,8 +826,8 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
         else
             error("LateLowerGCFrame: unexpected generating operation for derived values: $(string(cur))")
         end
-        numbers = is_pointer_value(cur) ? [S.all_ptr_numbering[vref(cur)]] :
-                                          S.all_composite_numbering[vref(cur)]
+        numbers = is_pointer_value(cur) ? [S.all_ptr_numbering[cur]] :
+                                          S.all_composite_numbering[cur]
     else
         # numbered sequentially
         for _ in 1:tracked.count
@@ -847,9 +838,9 @@ function number_all_base!(p::LateLowerGCFrame, S::State, @nospecialize(cur::Valu
     end
     if is_pointer_value(cur)
         @assert length(numbers) == 1
-        S.all_ptr_numbering[vref(cur)] = numbers[1]
+        S.all_ptr_numbering[cur] = numbers[1]
     else
-        S.all_composite_numbering[vref(cur)] = numbers
+        S.all_composite_numbering[cur] = numbers
     end
     return numbers
 end
@@ -857,13 +848,13 @@ end
 # the pointer number of every GC-tracked value inside `v`
 function number_all!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
     if is_pointer_value(v)
-        n = get(S.all_ptr_numbering, vref(v), nothing)
+        n = get(S.all_ptr_numbering, v, nothing)
         n === nothing || return [n]
     else
-        ns = get(S.all_composite_numbering, vref(v), nothing)
+        ns = get(S.all_composite_numbering, v, nothing)
         ns === nothing || return ns
     end
-    tracked = CountTrackedPointers(typeref(v))
+    tracked = CountTrackedPointers(v.value_type)
     tracked.count == 0 && return Int[]
     cur, idx = find_base_value(p, S, v)
     number = -1
@@ -879,11 +870,11 @@ function number_all!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value))
             numbers = fill(number, tracked.count)
         end
     end
-    if vref(cur) != vref(v)
+    if cur != v
         if is_pointer_value(v)
-            S.all_ptr_numbering[vref(v)] = number
+            S.all_ptr_numbering[v] = number
         else
-            S.all_composite_numbering[vref(v)] = numbers
+            S.all_composite_numbering[v] = numbers
         end
     end
     return numbers
@@ -907,8 +898,8 @@ end
 
 function maybe_note_def!(p::LateLowerGCFrame, S::State, BBS::BBState, @nospecialize(def::Value),
                          refined_ptr::Vector{Int}=Int[])
-    rt = typeref(def)
-    if is_pointer_type(rt)
+    rt = def.value_type
+    if rt isa PointerType
         is_special_ptr(rt) || return false
         @assert is_tracked_value(def) "returned value of GC interest, but not tracked"
         num = number!(p, S, def)
@@ -943,7 +934,7 @@ function note_use!(p::LateLowerGCFrame, S::State, @nospecialize(v::Value), uses:
     # short circuit to avoid having to deal with vectors of constants, etc.
     v isa LLVM.Constant && return
     if is_pointer_value(v)
-        if is_special_ptr(typeref(v))
+        if is_special_ptr(v.value_type)
             num = number!(p, S, v)
             num < 0 && return
             push!(uses, num)
@@ -999,11 +990,7 @@ end
 
 function is_const_gv(gv::LLVM.GlobalVariable)
     LLVM.isconstant(gv) && return true
-    kind = API.LLVMGetMDKindIDInContext(context(gv), "julia.constgv", length("julia.constgv"))
-    for (k, _) in gv.metadata
-        k == kind && return true
-    end
-    return false
+    return haskey(gv.metadata, "julia.constgv")
 end
 
 # Whether this can be traced through constant loads to a constant global, or an otherwise
@@ -1030,8 +1017,7 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     v isa LLVM.GlobalVariable && return is_const_gv(v)
     is_constant_data(v) && return true  # null pointer
     if v isa LLVM.ConstantExpr  # literal pointers
-        return API.LLVMGetConstOpcode(v) == API.LLVMIntToPtr &&
-               is_constant_data(Value(API.LLVMGetOperand(v, 0)))
+        return v.opcode == LLVM.Opcode.IntToPtr && is_constant_data(v.operands[1])
     end
     if v isa LLVM.SelectInst
         return is_load_from_const_gv_value(p, v.operands[2], task_local, seen) &&
@@ -1039,11 +1025,11 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     end
     if v isa LLVM.PHIInst
         if seen === nothing
-            seen = Set{ValueRef}((vref(v),))
-        elseif vref(v) in seen
+            seen = Set{Value}((v,))
+        elseif v in seen
             return true
         else
-            push!(seen, vref(v))
+            push!(seen, v)
         end
         for (incoming, _) in collect(v.incoming)
             is_load_from_const_gv_value(p, incoming, task_local, seen) || return false
@@ -1074,9 +1060,9 @@ end
 
 # loads from a jlcall argument array (Julia 1.12 and older)
 function looks_like_frame_ref(@nospecialize(v::Value))
-    is_special_ptr(typeref(v)) && return false
+    is_special_ptr(v.value_type) && return false
     v = strip_in_bounds_offsets(v)
-    is_special_ptr(typeref(v)) && return false
+    is_special_ptr(v.value_type) && return false
     return v isa LLVM.Argument
 end
 
@@ -1223,7 +1209,7 @@ function find_alloca_bases(@nospecialize(v::Value))
         return allocas
     end
     worklist = Value[v]
-    visited = Set{ValueRef}((vref(v),))
+    visited = Set{Value}((v,))
     while !isempty(worklist)
         w = pop!(worklist)
         stripped = strip_in_bounds_offsets(w)
@@ -1231,15 +1217,15 @@ function find_alloca_bases(@nospecialize(v::Value))
             any(a -> a == stripped, allocas) || push!(allocas, stripped)
         elseif w isa LLVM.PHIInst
             for (incoming, _) in collect(w.incoming)
-                if !(vref(incoming) in visited)
-                    push!(visited, vref(incoming))
+                if !(incoming in visited)
+                    push!(visited, incoming)
                     push!(worklist, incoming)
                 end
             end
         elseif w isa LLVM.SelectInst
             for op in (w.operands[2], w.operands[3])
-                if !(vref(op) in visited)
-                    push!(visited, vref(op))
+                if !(op in visited)
+                    push!(visited, op)
                     push!(worklist, op)
                 end
             end
@@ -1256,14 +1242,12 @@ is_static_alloca(ai::Instruction) =
 
 alloca_array_size(ai::Instruction) = convert(Int, ai.operands[1]::LLVM.ConstantInt)
 
-function is_tracked_pointer_type(t::LLVMType)
-    ref = Base.unsafe_convert(TypeRef, t)
-    return is_pointer_type(ref) && type_addrspace(ref) == AS_TRACKED
-end
+is_tracked_pointer_type(@nospecialize(t::LLVMType)) =
+    t isa PointerType && t.addrspace == AS_TRACKED
 
 function maybe_track_store!(p::LateLowerGCFrame, S::State, si::Instruction)
     ptr_base = strip_in_bounds_offsets(si.operands[2])
-    tracked = CountTrackedPointers(typeref(si.operands[1]))
+    tracked = CountTrackedPointers(si.operands[1].value_type)
     tracked.count == 0 && return false  # nothing to track is being stored
     # SROA and InstCombine can merge conditional stores to allocas into a select or phi
     # of allocas (JuliaLang/julia#60985)
@@ -1276,7 +1260,7 @@ function maybe_track_store!(p::LateLowerGCFrame, S::State, si::Instruction)
         if !is_static_alloca(ai) || is_tracked_pointer_type(sty) || has_array_alloca(S, ai)
             continue  # already numbered
         end
-        alloca_tracked = CountTrackedPointers(Base.unsafe_convert(TypeRef, sty))
+        alloca_tracked = CountTrackedPointers(sty)
         if alloca_tracked.count > 0
             @assert !alloca_tracked.derived
             if alloca_tracked.all
@@ -1330,7 +1314,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
                 elt = LLVM.allocated_type(ai)
                 if !(is_static_alloca(ai) && is_tracked_pointer_type(elt))
                     # a maximum, since calls may be cloned
-                    live_roots = get(S.array_alloca_roots, vref(ai), 0)
+                    live_roots = get(S.array_alloca_roots, ai, 0)
                     set_array_alloca!(S, ai, max(live_roots, return_roots))
                 end
             end
@@ -1338,8 +1322,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
     else
         elt = sret_type(call)
         elt === nothing && return false
-        eltref = Base.unsafe_convert(TypeRef, elt)
-        tracked = CountTrackedPointers(eltref, true)
+        tracked = CountTrackedPointers(elt, true)
         tracked.count == 0 && return false
         has_def_before = true
         sret_base = strip_in_bounds_offsets(call.arguments[1])
@@ -1400,9 +1383,9 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
         end
         if intrinsic_is(ci, p.intrinsics.masked_load) ||
            intrinsic_is(ci, p.intrinsics.masked_gather)
-            t = typeref(ci)
+            t = ci.value_type
             if is_vector_type(t)
-                elt = API.LLVMGetElementType(t)
+                elt = t.element_type
                 if CountTrackedPointers(elt).count > 0
                     # LLVM sometimes materializes these with undefined pointers in Julia's
                     # address spaces: make them null
@@ -1442,7 +1425,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
                 for v in ci.arguments
                     v isa LLVM.Constant && continue
                     if is_pointer_value(v)
-                        if is_special_ptr(typeref(v))
+                        if is_special_ptr(v.value_type)
                             num = number!(p, S, v)
                             num >= 0 && push!(args, num)
                         end
@@ -1501,11 +1484,11 @@ function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState,
         # A load from a rooted region is rooted as long as the object it loads from is,
         # so its uses are refined to that object.
         refined_ptr = Int[]
-        ty = scalar_typeref(typeref(inst))
+        ty = scalar_type(inst.value_type)
         refined_globally = false
         task_local = Ref(false)
         ptr = inst.operands[1]
-        if is_load_from_rooted_region(p, inst) && is_special_ptr(typeref(ptr))
+        if is_load_from_rooted_region(p, inst) && is_special_ptr(ptr.value_type)
             push!(refined_ptr, number!(p, S, ptr))
         elseif p.dialect.gc_frame_ref_refinement && is_pointer_value(inst) &&
                is_special_ptr(ty) && looks_like_frame_ref(ptr)
@@ -1524,21 +1507,21 @@ function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState,
         end
         note_operand_uses!(p, S, BBS, inst)
     elseif inst isa LLVM.AtomicCmpXchgInst
-        ty = scalar_typeref(typeref(inst.operands[3]))
-        if !(is_pointer_type(ty) && type_addrspace(ty) == AS_LOADED)
+        ty = scalar_type(inst.operands[3].value_type)
+        if !(ty isa PointerType && ty.addrspace == AS_LOADED)
             maybe_note_def!(p, S, BBS, inst) &&
                 (BBS.first_safepoint_after_first_def = BBS.first_safepoint)
         end
         note_operand_uses!(p, S, BBS, inst)
     elseif inst isa LLVM.AtomicRMWInst
-        ty = scalar_typeref(typeref(inst))
-        if !(is_pointer_type(ty) && type_addrspace(ty) == AS_LOADED)
+        ty = scalar_type(inst.value_type)
+        if !(ty isa PointerType && ty.addrspace == AS_LOADED)
             maybe_note_def!(p, S, BBS, inst) &&
                 (BBS.first_safepoint_after_first_def = BBS.first_safepoint)
         end
         note_operand_uses!(p, S, BBS, inst)
     elseif inst isa LLVM.SelectInst
-        tracked = CountTrackedPointers(typeref(inst))
+        tracked = CountTrackedPointers(inst.value_type)
         if tracked.count > 0 && !tracked.derived
             # record the select definition of these values
             refined_ptr = is_pointer_value(inst) ?
@@ -1550,7 +1533,7 @@ function scan_instruction!(p::LateLowerGCFrame, S::State, BBS::BBState,
             lift_select!(p, S, inst)
         end
     elseif inst isa LLVM.PHIInst
-        tracked = CountTrackedPointers(typeref(inst))
+        tracked = CountTrackedPointers(inst.value_type)
         if tracked.count > 0 && !tracked.derived
             # record the phi definition of these values
             refinements = is_pointer_value(inst) ? get_phi_refinements(p, inst, S) : Int[]
@@ -1611,8 +1594,7 @@ function local_scan(p::LateLowerGCFrame, f::LLVM.Function)
         BBS = bb_state(S, bb)
         # backwards, so that instructions inserted before the current one (lifted
         # selects and phis) are scanned too
-        last_ref = API.LLVMGetLastInstruction(bb)
-        inst = last_ref == C_NULL ? nothing : Instruction(last_ref)
+        inst = isempty(bb.instructions) ? nothing : last(bb.instructions)
         while inst !== nothing
             scan_instruction!(p, S, BBS, inst, phi_numbers)
             inst = inst.prev
@@ -1630,20 +1612,20 @@ end
 # the reachable blocks in post order
 function post_order(f::LLVM.Function)
     order = BasicBlock[]
-    visited = Set{ValueRef}()
+    visited = Set{BasicBlock}()
     entry = first(f.blocks)
     stack = [(entry, 1)]
-    push!(visited, vref(entry))
-    succs = Dict{ValueRef,Vector{BasicBlock}}()
-    successors_of(bb) = get!(() -> collect(bb.successors), succs, vref(bb))
+    push!(visited, entry)
+    succs = Dict{BasicBlock,Vector{BasicBlock}}()
+    successors_of(bb) = get!(() -> collect(bb.successors), succs, bb)
     while !isempty(stack)
         bb, i = stack[end]
         ss = successors_of(bb)
         if i <= length(ss)
             stack[end] = (bb, i + 1)
             s = ss[i]
-            if !(vref(s) in visited)
-                push!(visited, vref(s))
+            if !(s in visited)
+                push!(visited, s)
                 push!(stack, (s, 1))
             end
         else
@@ -1845,7 +1827,7 @@ slot_name(p::LateLowerGCFrame, prefix::String, slot::Integer) =
 # the values live in from all predecessors, at their last safepoint
 function add_in_predecessor_live_outs!(S::State, bb::BasicBlock, live_in::BitSet)
     first_pred = true
-    visited = Set{ValueRef}()
+    visited = Set{BasicBlock}()
     worklist = BasicBlock[bb]
     entry = first(S.f.blocks)
     while !isempty(worklist)
@@ -1856,8 +1838,8 @@ function add_in_predecessor_live_outs!(S::State, bb::BasicBlock, live_in::BitSet
             return
         end
         for pred in bb.predecessors
-            vref(pred) in visited && continue
-            push!(visited, vref(pred))
+            pred in visited && continue
+            push!(visited, pred)
             pred_state = bb_state(S, pred)
             if !pred_state.has_safepoint
                 push!(worklist, pred)
@@ -1968,11 +1950,10 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     ptr isa LLVM.GetElementPtrInst && return nothing
     (ptr isa LLVM.AllocaInst && has_array_alloca(S, ptr)) || return false
     # stop at a pointer operation that can't be analyzed or isn't a null store
-    (vol || !(val isa LLVM.Constant) || !is_null_value(val)) && return nothing
+    (vol || !(val isa LLVM.Constant) || !isnull(val)) && return nothing
     return true
 end
 
-is_null_value(c::LLVM.Constant) = API.LLVMIsNull(c) != 0
 
 function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                                        pre_assigned::Int, S::State)
@@ -2041,13 +2022,13 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     end
     # The C++ iterates over a hash map keyed by the allocas' addresses, which roughly
     # follows the order in which they were created; this uses their order in the function.
-    position = Dict{ValueRef,Int}()
+    position = Dict{Value,Int}()
     for (i, inst) in enumerate(entry.instructions)
-        inst isa LLVM.AllocaInst && (position[vref(inst)] = i)
+        inst isa LLVM.AllocaInst && (position[inst] = i)
     end
-    array_allocas = sort(S.array_allocas; by=ai -> get(position, vref(ai), typemax(Int)))
+    array_allocas = sort(S.array_allocas; by=ai -> get(position, ai, typemax(Int)))
     for ai in array_allocas
-        n = S.array_alloca_roots[vref(ai)]
+        n = S.array_alloca_roots[ai]
         replace_alloca(ai)
         alloca_slot += n
     end
@@ -2128,25 +2109,25 @@ function lower_gc_transition!(p::LateLowerGCFrame, call::Instruction, bundle::Op
     T_int8 = LLVM.Int8Type()
     gc_state = gc_state_address!(p.gc, ptls)
     last_gc_state = load!(builder, T_int8, gc_state; align,
-                          ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+                          ordering=LLVM.AtomicOrdering.Monotonic)
     store!(builder, ConstantInt(T_int8, JL_GC_STATE_SAFE), gc_state; align,
-           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+           ordering=LLVM.AtomicOrdering.Release)
     tbaa = tbaa_tags(p.gc).constant
     emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
     next = call.next
     position_before!(builder, next; debug=true)
     store!(builder, last_gc_state, gc_state; align,
-           ordering=LLVM.API.LLVMAtomicOrderingRelease)
+           ordering=LLVM.AtomicOrdering.Release)
     emit_gc_safepoint!(p.gc, ptls, tbaa; final=false)
 end
 
 function update_ptr_numbering!(S::Union{Nothing,State}, @nospecialize(from::Value),
                                @nospecialize(to))
     S === nothing && return
-    num = get(S.all_ptr_numbering, vref(from), nothing)
+    num = get(S.all_ptr_numbering, from, nothing)
     num === nothing && return
-    delete!(S.all_ptr_numbering, vref(from))
-    to === nothing || (S.all_ptr_numbering[vref(to)] = num)
+    delete!(S.all_ptr_numbering, from)
+    to === nothing || (S.all_ptr_numbering[to] = num)
     return
 end
 
@@ -2182,8 +2163,8 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     # many casts as possible from the tag, which is mostly loaded as an integer
     tag = strip_pointer_casts_and_aliases(call.arguments[3])
     if tag isa LLVM.ConstantExpr
-        if API.LLVMGetConstOpcode(tag) == API.LLVMIntToPtr
-            tag = Value(API.LLVMGetOperand(tag, 0))
+        if tag.opcode == LLVM.Opcode.IntToPtr
+            tag = tag.operands[1]
         end
     elseif tag isa LLVM.LoadInst
         # Make sure the load is marked as aligned, since LLVM might have removed it. Not
@@ -2219,7 +2200,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
 
     # set the tag in IR, rather than in the allocation function
     store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
-                   align=pointer_align(p.gc), ordering=LLVM.API.LLVMAtomicOrderingUnordered)
+                   align=pointer_align(p.gc), ordering=LLVM.AtomicOrdering.Unordered)
     store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
@@ -2262,9 +2243,9 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
     elseif v isa LLVM.GlobalVariable
         align = LLVM.alignment(v)
         align > 0 && return align
-        API.LLVMTypeIsSized(LLVM.global_value_type(v)) != 0 || return 1
+        issized(LLVM.global_value_type(v)) || return 1
         if !LLVM.isdeclaration(v)
-            return Int(API.LLVMPreferredAlignmentOfGlobal(p.gc.dl, v))
+            return preferred_alignment(p.gc.dl, v)
         end
         return abi_alignment(p.gc.dl, LLVM.global_value_type(v))
     elseif v isa LLVM.AllocaInst
@@ -2287,12 +2268,12 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         # constant addresses: their trailing zeros, up to LLVM's maximum alignment
         c = strip_pointer_casts(v)
         # LLVM 22 and later only look at integer constants cast to pointers
-        addr = if API.LLVMIsAConstantPointerNull(c) != C_NULL &&
+        addr = if c isa LLVM.PointerNull &&
                   library_facts(context(c)).null_pointer_alignment
             UInt64(0)
-        elseif c isa LLVM.ConstantExpr && API.LLVMGetConstOpcode(c) == API.LLVMIntToPtr &&
-               Value(API.LLVMGetOperand(c, 0)) isa LLVM.ConstantInt
-            convert(UInt64, Value(API.LLVMGetOperand(c, 0)))
+        elseif c isa LLVM.ConstantExpr && c.opcode == LLVM.Opcode.IntToPtr &&
+               c.operands[1] isa LLVM.ConstantInt
+            convert(UInt64, c.operands[1])
         else
             return 1
         end
@@ -2493,7 +2474,7 @@ function cleanup_instruction!(p::LateLowerGCFrame, inst::Instruction, S, frame::
     # Strip constant alias information, as it might depend on the GC having preserved a
     # root, which stops being true after this pass (JuliaLang/julia#32215).
     if inst isa LLVM.LoadInst && haskey(inst.metadata, LLVM.MD_invariant_load) &&
-       is_special_ptr(typeref(inst.operands[1]))
+       is_special_ptr(inst.operands[1].value_type)
         delete!(inst.metadata, LLVM.MD_invariant_load)
     end
     md = inst.metadata
@@ -2522,7 +2503,7 @@ end
 function is_perm_rooted(S, @nospecialize(v::Value))
     v isa LLVM.Constant && return true
     S === nothing && return false
-    num = get(S.all_ptr_numbering, vref(v), nothing)
+    num = get(S.all_ptr_numbering, v, nothing)
     num === nothing && return false
     refined = get(S.refinements, num, nothing)
     (refined === nothing || isempty(refined)) && return false
@@ -2543,7 +2524,7 @@ function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{
         parent = ci.arguments[1]
         # the insertion-barrier optimization, invalid for snapshot barriers (1.14 and later)
         if !(lowering === :deferred && snapshot) &&
-           all(child -> vref(child) == vref(parent) || is_perm_rooted(S, child),
+           all(child -> child == parent || is_perm_rooted(S, child),
                write_barrier_children(p.fns, ci))
             erase!(ci)
             continue

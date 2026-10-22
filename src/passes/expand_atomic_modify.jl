@@ -97,22 +97,24 @@ function can_reorder_with_rmw(target::Instruction, verifyop::Bool)
 end
 
 const RMW_BINOPS = Dict(
-    API.LLVMAdd => API.LLVMAtomicRMWBinOpAdd,
-    API.LLVMSub => API.LLVMAtomicRMWBinOpSub,
-    API.LLVMAnd => API.LLVMAtomicRMWBinOpAnd,
-    API.LLVMOr => API.LLVMAtomicRMWBinOpOr,
-    API.LLVMXor => API.LLVMAtomicRMWBinOpXor,
-    API.LLVMFAdd => API.LLVMAtomicRMWBinOpFAdd,
-    API.LLVMFSub => API.LLVMAtomicRMWBinOpFSub,
+    LLVM.Opcode.Add => LLVM.AtomicRMWBinOp.Add,
+    LLVM.Opcode.Sub => LLVM.AtomicRMWBinOp.Sub,
+    LLVM.Opcode.And => LLVM.AtomicRMWBinOp.And,
+    LLVM.Opcode.Or => LLVM.AtomicRMWBinOp.Or,
+    LLVM.Opcode.Xor => LLVM.AtomicRMWBinOp.Xor,
+    LLVM.Opcode.FAdd => LLVM.AtomicRMWBinOp.FAdd,
+    LLVM.Opcode.FSub => LLVM.AtomicRMWBinOp.FSub,
 )
 
 const RMW_INTRINSICS = [
-    "llvm.minnum" => API.LLVMAtomicRMWBinOpFMin,
-    "llvm.maxnum" => API.LLVMAtomicRMWBinOpFMax,
-    "llvm.smax" => API.LLVMAtomicRMWBinOpMax,
-    "llvm.umax" => API.LLVMAtomicRMWBinOpUMax,
-    "llvm.smin" => API.LLVMAtomicRMWBinOpMin,
-    "llvm.umin" => API.LLVMAtomicRMWBinOpUMin,
+    "llvm.minnum" => LLVM.AtomicRMWBinOp.FMin,
+    "llvm.maxnum" => LLVM.AtomicRMWBinOp.FMax,
+    "llvm.smax" => LLVM.AtomicRMWBinOp.Max,
+    "llvm.umax" => LLVM.AtomicRMWBinOp.UMax,
+    "llvm.smin" => LLVM.AtomicRMWBinOp.Min,
+    "llvm.umin" => LLVM.AtomicRMWBinOp.UMin,
+    # LLVM 20 and later (Julia 1.13's, the first dialect with these calls)
+    "llvm.usub.sat" => LLVM.AtomicRMWBinOp.USubSat,
 ]
 
 # the atomicrmw operation of a binary intrinsic, if any
@@ -120,14 +122,19 @@ function rmw_intrinsic(f::LLVM.Function)
     for (name, op) in RMW_INTRINSICS
         LLVM.isintrinsic(f, Intrinsic(name)) && return op
     end
-    # `atomicrmw usub_sat` exists since LLVM 20 (Julia 1.13's, the first dialect with
-    # these calls); the API of older versions doesn't define it
-    LLVM.isintrinsic(f, Intrinsic("llvm.usub.sat")) && return API.LLVMAtomicRMWBinOpUSubSat
     return nothing
 end
 
+# the opcodes of C++'s `BinaryOperator`
+const BINARY_OPCODES = (LLVM.Opcode.Add, LLVM.Opcode.FAdd, LLVM.Opcode.Sub, LLVM.Opcode.FSub,
+                        LLVM.Opcode.Mul, LLVM.Opcode.FMul, LLVM.Opcode.UDiv,
+                        LLVM.Opcode.SDiv, LLVM.Opcode.FDiv, LLVM.Opcode.URem,
+                        LLVM.Opcode.SRem, LLVM.Opcode.FRem, LLVM.Opcode.Shl,
+                        LLVM.Opcode.LShr, LLVM.Opcode.AShr, LLVM.Opcode.And, LLVM.Opcode.Or,
+                        LLVM.Opcode.Xor)
+
 is_binary_operator(@nospecialize(v::Value)) =
-    v isa Instruction && API.LLVMIsABinaryOperator(v) != C_NULL
+    v isa Instruction && v.opcode in BINARY_OPCODES
 
 # the operand of a two-operand instruction that `old` is used as (or as the second
 # operand, if the instruction is commutative)
@@ -154,7 +161,7 @@ function match_rmw_op(@nospecialize(old::Value), @nospecialize(retval))
         op = (old::Argument).parent
         (isdeclaration(op) || isinterposable(op) || LLVM.isintrinsic(op)) &&
             return false, nothing
-        has_no_uses(old) && return API.LLVMAtomicRMWBinOpXchg, nothing
+        has_no_uses(old) && return LLVM.AtomicRMWBinOp.Xchg, nothing
         has_one_use(old) || return false, nothing
         ret = nothing
         for bb in op.blocks
@@ -168,8 +175,8 @@ function match_rmw_op(@nospecialize(old::Value), @nospecialize(retval))
         retval = ret.operands[1]
         has_one_use(retval) || return false, nothing
     end
-    retval == old && return API.LLVMAtomicRMWBinOpOr, nothing
-    has_no_uses(old) && return API.LLVMAtomicRMWBinOpXchg, nothing
+    retval == old && return LLVM.AtomicRMWBinOp.Or, nothing
+    has_no_uses(old) && return LLVM.AtomicRMWBinOp.Xchg, nothing
 
     if is_binary_operator(retval)
         binop = retval::Instruction
@@ -180,16 +187,16 @@ function match_rmw_op(@nospecialize(old::Value), @nospecialize(retval))
             rmw_op === nothing || return rmw_op, (binop, 3 - idx)
         end
         # nand: `xor (and old, val), -1`
-        if opcode == API.LLVMXor
+        if opcode == LLVM.Opcode.Xor
             ops = binop.operands
             if ops[2] isa ConstantInt &&
                ops[2] == all_ones(ops[2].value_type)
                 and = ops[1]
                 if is_binary_operator(and) && has_one_use(and) &&
-                   and.opcode == API.LLVMAnd
+                   and.opcode == LLVM.Opcode.And
                     idx = old_operand(and, old, iscommutative(and))
                     if idx != 0 && can_reorder_with_rmw(and, verifyop)
-                        return API.LLVMAtomicRMWBinOpNand, (and, 3 - idx)
+                        return LLVM.AtomicRMWBinOp.Nand, (and, 3 - idx)
                     end
                 end
             end
@@ -224,12 +231,10 @@ end
 
 # the integer type of the size of a floating-point type (`getPrimitiveSizeInBits`)
 function float_bits(@nospecialize(T::LLVMType))
-    kind = API.LLVMGetTypeKind(T)
-    kind == API.LLVMHalfTypeKind && return 16
-    kind == API.LLVMBFloatTypeKind && return 16
-    kind == API.LLVMFloatTypeKind && return 32
-    kind == API.LLVMDoubleTypeKind && return 64
-    kind == API.LLVMX86_FP80TypeKind && return 80
+    T isa Union{HalfType,BFloatType} && return 16
+    T isa FloatType && return 32
+    T isa DoubleType && return 64
+    T isa X86FP80Type && return 80
     return 128  # fp128, ppc_fp128
 end
 
@@ -250,7 +255,7 @@ function insert_cmpxchg_loop!(rb::ReplacementBuilder, modify::Instruction,
     erase!(bb.terminator)
     position_rb!(rb, LLVM.at_end(bb))
     init_loaded = inserted!(rb, load!(builder, T, ptr;
-                                      ordering=API.LLVMAtomicOrderingUnordered, align))
+                                      ordering=LLVM.AtomicOrdering.Unordered, align))
     inserted!(rb, br!(builder, loop_bb))
 
     position_rb!(rb, LLVM.at_end(loop_bb))
@@ -259,8 +264,8 @@ function insert_cmpxchg_loop!(rb::ReplacementBuilder, modify::Instruction,
 
     new_val = perform_op(loaded)
 
-    success_ordering = ordering == API.LLVMAtomicOrderingUnordered ?
-                       API.LLVMAtomicOrderingMonotonic : ordering
+    success_ordering = ordering == LLVM.AtomicOrdering.Unordered ?
+                       LLVM.AtomicOrdering.Monotonic : ordering
     cmp, new = loaded, new_val
     need_bitcast = T isa LLVM.FloatingPointType
     if need_bitcast
@@ -269,7 +274,7 @@ function insert_cmpxchg_loop!(rb::ReplacementBuilder, modify::Instruction,
         cmp = fold!(inserted!(rb, bitcast!(builder, cmp, int_T)))
     end
     pair = inserted!(rb, atomic_cmpxchg!(builder, ptr, cmp, new, success_ordering,
-                                         API.LLVMAtomicOrderingMonotonic; scope, align))
+                                         LLVM.AtomicOrdering.Monotonic; scope, align))
     copy_metadata!(pair, modify)
     success = fold!(inserted!(rb, extract_value!(builder, pair, 1, "success")))
     new_loaded = fold!(inserted!(rb, extract_value!(builder, pair, 0, "newloaded")))
@@ -345,7 +350,7 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
     ops = modify.operands
     ptr = ops[1]
     op = ops[2]::LLVM.Function
-    ordering = API.LLVMAtomicOrdering(convert(UInt, ops[3]))
+    ordering = LLVM.AtomicOrdering.T(convert(UInt, ops[3]))
     # zero-extended: the scope IDs registered after the first 126 target-specific ones
     # are negative as an i8
     scope = SyncScope(convert(UInt, ops[4]), context(modify))
@@ -371,7 +376,7 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
     rmw_op, _ = match_rmw_op(op.parameters[1], nothing)
     if rmw_op !== false
         position_rb!(rb, LLVM.before(modify_op))
-        rmw = atomic_rmw!(builder, API.LLVMAtomicRMWBinOpXchg, ptr, UndefValue(T), ordering;
+        rmw = atomic_rmw!(builder, LLVM.AtomicRMWBinOp.Xchg, ptr, UndefValue(T), ordering;
                           scope, align)
         inserted!(rb, rmw)
         copy_metadata!(rmw, modify)
@@ -415,7 +420,7 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
                 if val_op !== nothing
                     move!(rmw, LLVM.before(val_op[1]); debug_records=true)
                     val = use_value(val_op)
-                elseif rmw_op == API.LLVMAtomicRMWBinOpXchg
+                elseif rmw_op == LLVM.AtomicRMWBinOp.Xchg
                     # the operation ignores the old value, so the new value is computed
                     # by the inlined body, which may come after the atomicrmw: move it
                     # down to the call, which the new value dominates (Julia 1.14)

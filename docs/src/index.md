@@ -35,7 +35,7 @@ like the C++ passes of the Julia version that produced the IR.
   supported when parsed into a context with opaque pointers
   (`Context(; opaque_pointers=true)`), which upgrades it.
 
-JuliaIR.jl is not registered yet. It needs LLVM.jl 10.3 or later.
+JuliaIR.jl is not registered yet. It needs LLVM.jl 10.4 or later.
 
 ## Using the passes
 

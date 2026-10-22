@@ -94,6 +94,7 @@ ir = """
     end
     @test occursin("target datalayout = \"e-i64:64\"\n", out)
     @test occursin("; ModuleID = '<stdin>'", out)
+    @test occursin("source_filename = \"<stdin>\"", out)
 
     # with the mapping disabled, Julia's C++ pass of that name runs instead of the port
     mktemp() do ledger, io

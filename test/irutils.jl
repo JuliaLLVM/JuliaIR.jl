@@ -43,8 +43,8 @@ using LLVM, LLVM.IR
             push!(users, (string(info.user.opcode), length(walk.stack)))
             JuliaIR.next!(walk)
         end
-        @test sort(users) == sort([(string(LLVM.API.LLVMCall), 1),
-                                   (string(LLVM.API.LLVMAdd), 2)])
+        @test sort(users) == sort([(string(LLVM.Opcode.Call), 1),
+                                   (string(LLVM.Opcode.Add), 2)])
 
         # the current use can be dropped before the walk continues
         walk = JuliaIR.constant_uses(f, mod, GlobalValue)

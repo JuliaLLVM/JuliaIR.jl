@@ -169,10 +169,10 @@ function lifted_clone!(p::PropagateAddrspaces, f::LLVM.Function, inst::Instructi
     position!(builder, LLVM.before(inst))
     new = if inst isa LLVM.GetElementPtrInst
         gep = gep!(builder, inst.source_element_type, tmp, collect(inst.indices))
+        gep.inbounds = inst.inbounds
         if LLVM.version() >= v"19"
-            API.LLVMGEPSetNoWrapFlags(gep, API.LLVMGEPGetNoWrapFlags(inst))
-        else
-            gep.inbounds = inst.inbounds
+            gep.nusw = inst.nusw
+            gep.nuw = inst.nuw
         end
         gep
     elseif inst isa LLVM.PHIInst

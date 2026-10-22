@@ -9,7 +9,7 @@
 # Mark `op` as `contract` if it is an `fmul` that only feeds the addition; return whether
 # it changed.
 function check_combine!(am, @nospecialize(op::Value))
-    op isa Instruction && op.opcode == API.LLVMFMul || return false
+    op isa Instruction && op.opcode == LLVM.Opcode.FMul || return false
     if !has_one_use(op)
         # the C++ pass renders the instruction argument as its opcode name
         am === nothing ||
@@ -29,7 +29,7 @@ function combine_muladd!(f::LLVM.Function, am, opts::PassOptions)
     changed = false
     for bb in f.blocks, inst in bb.instructions
         opcode = inst.opcode
-        opcode == API.LLVMFAdd || opcode == API.LLVMFSub || continue
+        opcode == LLVM.Opcode.FAdd || opcode == LLVM.Opcode.FSub || continue
         inst.fast_math.contract || continue
         # like the C++ pass, the second operand is only considered when the first one
         # wasn't changed

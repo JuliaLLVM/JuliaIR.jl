@@ -192,7 +192,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         #     <restore last_gc_state>
         next = LLVM.next(call)
         position_before!(builder, next; debug=true)
-        cmp = icmp!(builder, LLVM.API.LLVMIntNE, call, LLVM.null(LLVM.value_type(call)))
+        cmp = icmp!(builder, LLVM.IntPredicate.NE, call, LLVM.null(LLVM.value_type(call)))
         # (the C++ creates the phi before the split, and splits before it: the same IR)
         fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, next; weights=(9, 1))
         p.cfg_modified = true
@@ -232,7 +232,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
                                                tbaa_tags(gc).gcframe)
                 if p.dialect.ptls_exit_safepoint
                     store!(builder, last_gc_state, gc_state_address!(gc, ptls);
-                           align=GC_STATE_ALIGN, ordering=LLVM.API.LLVMAtomicOrderingRelease)
+                           align=GC_STATE_ALIGN, ordering=LLVM.AtomicOrdering.Release)
                     emit_gc_safepoint!(gc, ptls, tbaa_tags(gc).gcframe; final=true)
                 else
                     emit_gc_unsafe_leave!(gc, ptls, last_gc_state)
@@ -249,7 +249,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             # if offset != 0:  pgcstack = <thread pointer> + offset    (fast)
             # else:            pgcstack = <the image's getter>()       (slow)
             offset = load_slot!(p, p.gc.T_size, p.dialect.ptls_image_offset_slot)
-            cmp = icmp!(builder, LLVM.API.LLVMIntNE, offset, ConstantInt(p.gc.T_size, 0))
+            cmp = icmp!(builder, LLVM.IntPredicate.NE, offset, ConstantInt(p.gc.T_size, 0))
             fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, call;
                                                                         weights=(9, 1))
             p.cfg_modified = true
@@ -322,7 +322,7 @@ function check_slot(p::LowerPTLS, name::String)
     gv = named_global(p.mod, name)
     gv === nothing && return
     (gv isa GlobalVariable && LLVM.isdeclaration(gv) &&
-     LLVM.linkage(gv) == LLVM.API.LLVMExternalLinkage && !LLVM.threadlocal(gv) &&
+     LLVM.linkage(gv) == LLVM.Linkage.External && !LLVM.threadlocal(gv) &&
      LLVM.global_value_type(gv) == slot_type(p, name) &&
      global_addrspace(gv) == p.gc.dl.globals_addrspace) ||
         throw(LowerPTLSError("@$name is declared in the module, but not as an external, not thread-local variable of type $(string(slot_type(p, name))): $(string(gv))"))

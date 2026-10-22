@@ -149,7 +149,7 @@ function gpu_like!(mod::LLVM.Module)
             end
         end
         for i in 1:length(LLVM.parameters(f))
-            LLVM.API.LLVMRemoveStringAttributeAtIndex(f, i, "gcstack", length("gcstack"))
+            delete!(f.parameter_attributes[i], "gcstack")
         end
     end
     return mod

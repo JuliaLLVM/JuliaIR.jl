@@ -111,7 +111,7 @@ function terminating_musttail_call(bb::BasicBlock)
             (prev === nothing || rv != prev) && return nothing
         end
     end
-    prev isa LLVM.CallInst && LLVM.tailcall_kind(prev) == LLVM.API.LLVMTailCallKindMustTail &&
+    prev isa LLVM.CallInst && LLVM.tailcall_kind(prev) == LLVM.TailCallKind.MustTail &&
         return prev
     return nothing
 end
@@ -167,7 +167,7 @@ end
 function clear_region!(p::CancellationLowering)
     store = store!(p.builder, LLVM.null(LLVM.PointerType()), p.reset_ctx_ptr;
                    align=pointer_align(p.gc), volatile=true,
-                   ordering=LLVM.API.LLVMAtomicOrderingRelease)
+                   ordering=LLVM.AtomicOrdering.Release)
     set_reset_safe_md!(store)
     return store
 end
@@ -202,9 +202,9 @@ function lower_point!(p::CancellationLowering, point::Instruction,
     position!(builder, LLVM.at_end(check_bb))
     builder.debug_location = loc
     prev = load!(builder, T_ptr, p.reset_ctx_ptr, "reset_ctx_prev"; align, volatile=true,
-                 ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+                 ordering=LLVM.AtomicOrdering.Monotonic)
     set_reset_safe_md!(prev)
-    live = icmp!(builder, LLVM.API.LLVMIntEQ, prev, buffer, "region_live")
+    live = icmp!(builder, LLVM.IntPredicate.EQ, prev, buffer, "region_live")
     br!(builder, live, cont_bb, establish_bb)
 
     position!(builder, LLVM.at_end(establish_bb))
@@ -215,7 +215,7 @@ function lower_point!(p::CancellationLowering, point::Instruction,
 
     sp = ptrtoint!(builder, buffer, p.gc.T_size)
     stamp = store!(builder, sp, buffer; align=rt.reset_ctx_align, volatile=true,
-                   ordering=LLVM.API.LLVMAtomicOrderingMonotonic)
+                   ordering=LLVM.AtomicOrdering.Monotonic)
     set_reset_safe_md!(stamp)
     gcstack = load!(builder, T_ptr, p.pgcstack, "saved_gcstack"; align)
     gcstack_slot = gep!(builder, T_int8, buffer, [ConstantInt(T_int64, rt.reset_ctx_gcstack)],
@@ -237,7 +237,7 @@ function lower_point!(p::CancellationLowering, point::Instruction,
     push!(LLVM.function_attributes(setjmp), EnumAttribute("returns_twice"))
 
     publish = store!(builder, buffer, p.reset_ctx_ptr; align, volatile=true,
-                     ordering=LLVM.API.LLVMAtomicOrderingRelease)
+                     ordering=LLVM.AtomicOrdering.Release)
     set_reset_safe_md!(publish)
     br!(builder, cont_bb)
 

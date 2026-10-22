@@ -305,7 +305,7 @@ function run_probe(::Val{:smalltag})
                 base = inst.operands[1]
                 base isa LLVM.GlobalVariable && endswith(base.name, "jl_small_typeof") &&
                     (indexes = true)
-            elseif inst isa LLVM.ICmpInst && LLVM.predicate(inst) == LLVM.API.LLVMIntULT
+            elseif inst isa LLVM.ICmpInst && LLVM.predicate(inst) == LLVM.IntPredicate.ULT
                 bound = constant_integer(inst.operands[2])
                 bound === nothing || push!(bounds, bound)
             end
@@ -360,7 +360,7 @@ end
 # the value of an integer constant, also one converted to a pointer (`inttoptr`)
 function constant_integer(v::LLVM.Value)
     v isa LLVM.ConstantInt && return convert(Int, v)
-    if v isa LLVM.ConstantExpr && LLVM.API.LLVMGetConstOpcode(v) == LLVM.API.LLVMIntToPtr
+    if v isa LLVM.ConstantExpr && v.opcode == LLVM.Opcode.IntToPtr
         return constant_integer(LLVM.operands(v)[1])
     end
     return nothing
@@ -434,7 +434,7 @@ function run_probe(::Val{:safepoint})
         # (code coverage adds other volatile accesses)
         polls = Set{Tuple{Int,Int}}()
         for inst in instructions(mod)
-            (inst isa LLVM.LoadInst && LLVM.API.LLVMGetVolatile(inst) != 0) || continue
+            (inst isa LLVM.LoadInst && inst.volatile) || continue
             page = inst.operands[1]
             page isa LLVM.LoadInst || continue
             ptls, safepoint = base_offset(page.operands[1], dl)

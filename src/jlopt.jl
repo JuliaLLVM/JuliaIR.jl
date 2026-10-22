@@ -236,7 +236,7 @@ function parse_input(data::Vector{UInt8}, name::String)
     end
     mod.name = name
     if !bitcode && !occursin(r"^source_filename"m, text)
-        API.LLVMSetSourceFileName(mod, name, length(name))
+        mod.source_filename = name
     end
     return mod
 end
