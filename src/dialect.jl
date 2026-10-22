@@ -4,7 +4,7 @@
 # Julia minor versions whose dialect is known. Newer versions, current Julia master (as
 # tested with the nightly build) among them, have the newest one's dialect until their IR
 # diverges from it; only then does their minor version need to be added.
-const KNOWN_MINORS = (v"1.10", v"1.11", v"1.12", v"1.13", v"1.14")
+const KNOWN_MINORS = (v"1.10", v"1.11", v"1.12", v"1.13", v"1.14", v"1.15")
 const NEWEST_MINOR = last(KNOWN_MINORS)
 
 # GC write-barrier build configurations (`GC_BARRIER_SNAPSHOT`, `GC_BARRIER_FIELD_PRECISE`
@@ -119,6 +119,11 @@ struct Dialect
     "Whether allocations carry the `julia.gc_alloc_ptr_offsets` and
     `julia.gc_alloc_zeroinit` operand bundles."
     alloc_bundles::Bool
+    "Whether the code generator allocates every new `GenericMemory` with
+    `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later),
+    which AllocOpt can remove or move to the stack and LateLowerGCFrame expands, rather than
+    with `julia.gc_alloc_obj` or a call of `jl_alloc_genericmemory_unchecked`."
+    has_gc_alloc_memory::Bool
 
     # operand bundles
     "Whether calls carry `gc-transition` operand bundles."
@@ -363,6 +368,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                                minor == v"1.11" ? :store : :memset,
         alloc_layout = minor <= v"1.11" ? :legacy : :chunked,
         alloc_bundles = minor >= v"1.14",
+        has_gc_alloc_memory = minor >= v"1.15",
         has_gc_transition_bundle = minor >= v"1.12",
         has_zeroinit_indirect_bundle = minor >= v"1.14",
         tbaa_downgrade,

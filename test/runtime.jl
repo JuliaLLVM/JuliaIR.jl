@@ -133,6 +133,11 @@ end
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
                         reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,
                         smalltag_shift=10, max_small_tag=64, task_world_age=200,
+                        cfunction_cache=:cfuncdata, cfuncdata_size=64),
+            v"1.15" => (; task_gcstack=192, task_ptls=208, task_eh=224, tls_safepoint=16,
+                        tls_gc_state=128, handler_size=280, task_reset_ctx=264,
+                        reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,
+                        smalltag_shift=10, max_small_tag=64, task_world_age=200,
                         cfunction_cache=:cfuncdata, cfuncdata_size=64))
         minor = JuliaIR.dialect_minor(VERSION)
         exact = isempty(VERSION.prerelease) &&
