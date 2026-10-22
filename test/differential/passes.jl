@@ -68,7 +68,7 @@ instcombine() = LLVM.version() >= v"18" ? "instcombine<no-verify-fixpoint>" : "i
 const AVAILABLE = Dict{String,Bool}()
 function available(pipeline::String)
     get!(AVAILABLE, pipeline) do
-        @dispose ctx=Context() begin
+        @dispose ctx=Context(; opaque_pointers=true) begin
             mod = LLVM.Module("probe")
             try
                 @dispose pb=PassBuilder() begin
@@ -227,11 +227,14 @@ function host_triple!(mod::LLVM.Module)
 end
 for level in 0:3
     cpp = "julia<level=$level>"
+    inherits = PIPELINE_PASSES
     if level >= 2 && JuliaIR.Dialect(VERSION).minor < v"1.14"
         cpp = replace(JuliaIR.pipeline(; level, ports=false),
                       r"\bFinalLowerGC\b" => "jl-final-lower-gc")
+        # both sides run FinalLowerGC's port, so its deviations don't apply
+        inherits = filter(!=("FinalLowerGC"), inherits)
     end
     push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp, port=JuliaIR.pipeline(; level),
                                kind=:module, prepare=Pair{String,Any}["" => host_triple!],
-                               cpp_runs=8, aborts=true, inherits=PIPELINE_PASSES))
+                               cpp_runs=8, aborts=true, inherits))
 end

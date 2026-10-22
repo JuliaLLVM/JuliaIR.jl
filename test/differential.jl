@@ -123,6 +123,34 @@ end
     @test canonical_frame_zero_alignment(changed_size) == changed_size
 end
 
+@testset "overaligned padding fixture in pipelines" begin
+    lines = ["define void @before() {", "  call void @f()", "  ret void", "}",
+             "define void @overaligned_gc_padding(<4 x ptr> %0) {", "  %2 = alloca ptr, i32 20, align 64",
+             "  ret void", "}",
+             "define void @after() {", "  ret void", "}"]
+    @test without_padding_fixture(lines) == [lines[1:4]; lines[9:11]]
+    # the rest of the module is compared as it is
+    changed = [l == "  call void @f()" ? "  call void @g()" : l for l in lines]
+    @test without_padding_fixture(changed) != without_padding_fixture(lines)
+    other = filter(!startswith("define void @overaligned"), lines)
+    @test without_padding_fixture(other) == other
+end
+
+@testset "exception order" begin
+    # canonicalizations see the lines as the other exceptions rewrote them, whatever the
+    # order of the exceptions
+    CANONICALIZATIONS["test"] = lines -> [l == "b" ? "c" : l for l in lines]
+    canonicalize = Recorded("p", "*", r".*", String[], "", "both", r"", :canonicalize,
+                            "test", "", "")
+    rewrite = Recorded("p", "*", r".*", String[], "", "both", r"^a$", :replace, "b", "", "")
+    for exceptions in ([canonicalize, rewrite], [rewrite, canonicalize])
+        lines, used = rewritten("a", "cpp", exceptions)
+        @test lines == ["c"]
+        @test sort(used) == [1, 2]
+    end
+    delete!(CANONICALIZATIONS, "test")
+end
+
 @testset "GPU cleanup preparation" begin
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
         declare void @julia.safepoint(ptr)

@@ -482,7 +482,8 @@ glob_regex(glob) = Regex("^" * join(["\\Q$(part)\\E" for part in split(glob, '*'
 function load_exceptions(file)
     isfile(file) || return Recorded[]
     exceptions = Recorded[]
-    for (pass, entries) in TOML.parsefile(file), e in entries
+    # (in a fixed order: the rewrites of different passes can apply to the same line)
+    for (pass, entries) in sort(collect(TOML.parsefile(file)); by=first), e in entries
         where = "an entry of $pass in $file"
         for k in keys(e)
             k in ("input", "julia", "prefix", "side", "lines", "replace", "accept",
@@ -526,12 +527,15 @@ applies(e::Recorded, job::Job) = (e.pass == job.spec.name || e.pass in job.spec.
     (isempty(e.prefix) || e.prefix == job.prefix)
 
 # The lines of an output that are compared (blank lines carry nothing), after the rewrites
-# of `exceptions` for that side. Returns them and the indices of the exceptions that
-# changed a line.
+# of `exceptions` for that side: first those of lines, then the canonicalizations, which
+# see the lines as rewritten. Returns them and the indices of the exceptions that changed
+# a line.
 function rewritten(text, side, exceptions)
     lines = filter(l -> !isempty(strip(l)), split(text, '\n'))
     used = Int[]
-    for (i, e) in enumerate(exceptions)
+    order = sort(eachindex(exceptions); by=i -> exceptions[i].action === :canonicalize)
+    for i in order
+        e = exceptions[i]
         e.action === :accept && continue
         e.side == side || e.side == "both" || continue
         if e.action === :canonicalize
@@ -660,6 +664,18 @@ function canonical_padding_fixture(lines)
     return lines
 end
 CANONICALIZATIONS["overaligned padding fixture"] = canonical_padding_fixture
+
+# Once FinalLowerGC lowered the frame of that function, its slots are byte offsets that
+# later passes optimize, and the order can't be canonicalized: leave the function out of
+# the comparison of Julia's pipeline (LateLowerGCFrame's comparison still checks it).
+function without_padding_fixture(lines)
+    start = findfirst(l -> startswith(l, "define void @overaligned_gc_padding("), lines)
+    start === nothing && return lines
+    finish = findnext(==("}"), lines, start)
+    finish === nothing && return lines
+    return [lines[1:start-1]; lines[finish+1:end]]
+end
+CANONICALIZATIONS["without overaligned padding fixture"] = without_padding_fixture
 
 # FinalLowerGC builds the previous-frame load and address as two C++ call arguments.
 # Compilers can emit them in either order. Normalize only an adjacent independent pair
