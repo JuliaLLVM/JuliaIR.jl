@@ -18,7 +18,9 @@ that the function pushes onto its task's GC stack. The pass
    stores the values to their slots before the safepoints they need to survive, and
    moves allocas of tracked pointers into the frame (`julia.get_gc_frame_slot`);
 5. cleans up: lowers allocations (`julia.gc_alloc_obj` to `julia.gc_alloc_bytes` and a
-   store of the type tag), `julia.typeof`, write barriers, jlcalls (`julia.call*`),
+   store of the type tag; `julia.gc_alloc_memory` to the same, or to a call of the
+   runtime, followed by the initialization of the Memory's header), `julia.typeof`,
+   write barriers, jlcalls (`julia.call*`),
    calls with a `gc-transition` bundle (switching the thread to the GC-safe state around
    them), `julia.pointer_from_objref` and `julia.gc_loaded`, and removes the metadata,
    intrinsics and operand bundles that only hold before this pass.
@@ -43,23 +45,24 @@ without a GC frame, as GPU back-ends emit them, after checking an input contract
 The pass follows the C++ pass of the running Julia's version. The differences between
 versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
-|-----------|------|------|------|------|----------------|
-| loads that are rooted by the object they load from | `!invariant.load`, or TBAA of `jtbaa_immut`, `jtbaa_const`, `jtbaa_datatype` | same, and `jtbaa_memoryptr`, `jtbaa_memorylen`, `jtbaa_memoryown` | same | same | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten |
-| loads through an argument (jlcall argument arrays) rooted by the caller | yes | yes | yes | no | no |
-| no frame without a safepoint after the first definition | no | no | no | yes | yes |
-| roots returned in memory | `sret` arguments and the alloca passed after them | same | same | same | `julia.return_roots` argument attributes |
-| frame slots reset to null when their value dies | no | no | yes | yes | yes |
-| null stores to rooted allocas in the prologue removed | no | no | yes | yes | yes |
-| allocas of single tracked pointers placed first | yes | yes | no | no | no |
-| GC stack in a `gcstack` argument | no | no | no | yes | yes |
-| names (`jlcallframe`, `gc_slot_addr`, `.tag_addr`, `.tag`), volatile tag loads | no | yes | yes | yes | yes |
-| `julia.gc_alloc_bytes(ptls, size)` with the tag and allocation attributes | no | yes | yes | yes | yes |
-| extractions simplified (`InstSimplifyFolder`) | no | no | yes | yes | yes |
-| task-local state addressed in pointers or bytes | pointers | pointers | bytes | bytes | bytes |
-| write barriers | lowered | lowered, named at debug level 2 | lowered, named | lowered, also queuing image objects | elided when unnecessary, otherwise left to FinalLowerGC |
-| `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same |
-| `ijl_gc_small_alloc` declared | no | no | yes | yes | yes |
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 | 1.15 and later |
+|-----------|------|------|------|------|------|----------------|
+| loads that are rooted by the object they load from | `!invariant.load`, or TBAA of `jtbaa_immut`, `jtbaa_const`, `jtbaa_datatype` | same, and `jtbaa_memoryptr`, `jtbaa_memorylen`, `jtbaa_memoryown` | same | same | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten |
+| loads through an argument (jlcall argument arrays) rooted by the caller | yes | yes | yes | no | no | no |
+| no frame without a safepoint after the first definition | no | no | no | yes | yes | yes |
+| roots returned in memory | `sret` arguments and the alloca passed after them | same | same | same | `julia.return_roots` argument attributes | `julia.return_roots` argument attributes |
+| frame slots reset to null when their value dies | no | no | yes | yes | yes | yes |
+| null stores to rooted allocas in the prologue removed | no | no | yes | yes | yes | yes |
+| allocas of single tracked pointers placed first | yes | yes | no | no | no | no |
+| GC stack in a `gcstack` argument | no | no | no | yes | yes | yes |
+| names (`jlcallframe`, `gc_slot_addr`, `.tag_addr`, `.tag`), volatile tag loads | no | yes | yes | yes | yes | yes |
+| `julia.gc_alloc_bytes(ptls, size)` with the tag and allocation attributes | no | yes | yes | yes | yes | yes |
+| extractions simplified (`InstSimplifyFolder`) | no | no | yes | yes | yes | yes |
+| task-local state addressed in pointers or bytes | pointers | pointers | bytes | bytes | bytes | bytes |
+| write barriers | lowered | lowered, named at debug level 2 | lowered, named | lowered, also queuing image objects | elided when unnecessary, otherwise left to FinalLowerGC | elided when unnecessary, otherwise left to FinalLowerGC |
+| `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same | same |
+| `ijl_gc_small_alloc` declared | no | no | yes | yes | yes | yes |
+| `julia.gc_alloc_memory` lowered | no | no | no | no | no | yes |
 
 From Julia 1.14 on, the `gc_barrier` policy of the dialect selects the write-barrier build
 configuration: with `:snapshot` (or `:snapshot_field_precise`), barriers are never
@@ -97,6 +100,7 @@ not contain:
 | Construct | Why | Who removes it |
 |-----------|-----|----------------|
 | `julia.gc_alloc_obj` calls | Julia's allocator and object headers | the back-end's GC lowering (GPUCompiler: calls of `gpu_gc_pool_alloc`) |
+| `julia.gc_alloc_memory` calls (Julia 1.15 and later) | Julia's allocator and object headers | the back-end's GC lowering |
 | write barriers (`julia.write_barrier`; from Julia 1.14 on `julia.object_write_barrier` and `julia.field_write_barrier.p11/.p13`) | there is no generational GC | the back-end's GC lowering |
 | a GC stack: a `julia.get_pgcstack` or `julia.get_pgcstack_or_new` call, or an argument with the `gcstack` attribute, even if unused | Julia's root placement pushes a frame onto it as soon as a value must be rooted | GPUCompiler's `GPULowerPTLS` removes unused `julia.get_pgcstack` calls; GPU code is compiled without `gcstack` arguments |
 | `julia.typeof` calls | reads the type tag from the object header | (not supported on GPUs) |
@@ -166,9 +170,10 @@ Deliberate differences, on the IR of every Julia version:
 - Allocas that are moved into the GC frame get their slots in the order of the
   function. The C++ pass iterates over a hash map keyed by the allocas' addresses, so its
   order changes from run to run (upstream's tests check these slots with `CHECK-DAG`).
-- What the C++ pass takes from the host (`sizeof(void*)`, for alignments and for the
-  size of frame slots) comes from the module's data layout. This also supports targets
-  with a different pointer size.
+- What the C++ pass takes from the host (`sizeof(void*)`, for alignments, for the size
+  of frame slots, and for the layout of a Memory's header and the size of the largest
+  pooled object) comes from the module's data layout. This also supports targets with a
+  different pointer size.
 - The C++ pass declares `ijl_gc_small_alloc` in every module it runs on (Julia 1.12 and
   later); `jl-late-gc-cleanup` does not, since GPU modules don't link Julia's runtime.
 - For calls marked `julia.safepoint` (Julia 1.14 and later), the memory effects of the

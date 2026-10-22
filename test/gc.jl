@@ -188,6 +188,48 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
         }"""
     @test occursin("ret void", llgcf(plain, foreign, ""))
     @test_throws JuliaIR.RuntimeError llgcf(transition(X86_64), foreign, "")
+
+    # `julia.gc_alloc_memory` (Julia 1.15 and later): a pooled object with inline data if
+    # its size is a constant that fits, the runtime's allocation otherwise; the header is
+    # initialized for the pointer size of the target
+    memory(prefix, nbytes, len, zeroinit; T="i64") = """
+        $prefix
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_memory(ptr, $T, ptr addrspace(10), $T, i1)
+        define ptr addrspace(10) @f(ptr %task, $T %n) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %mem = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T $nbytes, ptr addrspace(10) @tag, $T $len, i1 $zeroinit)
+          ret ptr addrspace(10) %mem
+        }"""
+    facts64 = "task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128"
+    facts32 = "task-gcstack=76;task-ptls=84;tls-safepoint=8;tls-gc-state=13"
+    out = llgcf(memory(X86_64, 32, 4, true), v"1.15", facts64)
+    @test has(out, r"^%mem = call noalias nonnull dereferenceable\(48\) ptr addrspace\(10\) @julia.gc_alloc_bytes\(ptr %ptls_load, i64 48, ")
+    @test has(out, r"^%(\d+) = getelementptr inbounds i8, ptr %\d+, i64 16$")
+    @test has(out, r"^%\d+ = getelementptr inbounds i8, ptr addrspace\(11\) %\d+, i64 8$")
+    @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 32, i1 false\)$")
+    @test has(out, r"^store i64 4, ptr addrspace\(11\) %\d+, align 8$")
+    # the largest data that fits a pool of a 32-bit target
+    out = llgcf(memory(I686, 2012, "%n", false; T="i32"), v"1.15", facts32)
+    @test has(out, r"@julia.gc_alloc_bytes\(ptr %ptls_load, i32 2028, ")
+    @test has(out, r"^%\d+ = getelementptr inbounds i8, ptr addrspace\(11\) %\d+, i64 4$")
+    @test !occursin("memset", out)
+    @test has(out, r"^store i32 %n, ptr addrspace\(11\) %\d+, align 4$")
+    out = llgcf(memory(I686, 2013, "%n", true; T="i32"), v"1.15", facts32)
+    @test has(out, r"^%mem = call noalias nonnull align 16 dereferenceable\(8\) ptr addrspace\(10\) @jl_alloc_genericmemory_unchecked\(ptr %ptls_load, i32 2013, ptr addrspacecast \(ptr addrspace\(10\) @tag to ptr\)\)")
+    @test occursin(r"declare noalias nonnull ptr addrspace\(10\) @jl_alloc_genericmemory_unchecked\(ptr, i32, ptr\) #\d+", out)
+    @test has(out, r"^%(\d+) = load ptr, ptr addrspace\(11\) %\d+, align 4$")
+    @test has(out, r"^call void @llvm.memset.p0.i32\(ptr align 4 %\d+, i8 0, i32 2013, i1 false\)$")
+    out = llgcf(memory(X86_64, "%n", "%n", true), v"1.15", facts64)
+    @test has(out, r"@jl_alloc_genericmemory_unchecked\(ptr %ptls_load, i64 %n, ")
+    @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 %n, i1 false\)$")
+    # no data to zero
+    @test !occursin("memset", llgcf(memory(X86_64, 0, 4, true), v"1.15", facts64))
+    # older versions don't have the intrinsic
+    out = llgcf(memory(X86_64, 32, 4, true), v"1.14", facts64)
+    @test has(out, r"^%mem = call ptr addrspace\(10\) @julia.gc_alloc_memory\(")
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 

@@ -272,6 +272,11 @@ kind = "port"
 ports = ["LateLowerGCFrame"]
 status = "run"
 
+[fixtures."late-lower-gc-alloc-memory.ll"]
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
+
 [fixtures."late-lower-gc-alloc-zeroing.ll"]
 kind = "port"
 ports = ["LateLowerGCFrame"]
