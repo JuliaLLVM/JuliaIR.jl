@@ -361,3 +361,51 @@ side = "cpp"
 accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
 reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
 decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
+
+[[AllocOpt]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "the port keeps allocations with volatile accesses, here the Memory of stack_memory_volatile, whose data pointer is stored with a volatile store; the C++ moves it to the stack"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=1>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=2>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=3>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=2>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^declare ptr @julia\.pointer_from_objref\(ptr\) local_unnamed_addr #\{ nounwind speculatable willreturn memory\(none\) \}$'
+reason = "as for the function itself: the Memory of stack_memory_volatile that the port keeps on the heap uses julia.pointer_from_objref until GC lowering, which leaves its declaration"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=3>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^declare ptr @julia\.pointer_from_objref\(ptr\) local_unnamed_addr #\{ nounwind speculatable willreturn memory\(none\) \}$'
+reason = "as for the function itself: the Memory of stack_memory_volatile that the port keeps on the heap uses julia.pointer_from_objref until GC lowering, which leaves its declaration"
+decision = "docs/src/index.md: AllocOpt volatile accesses"

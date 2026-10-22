@@ -677,6 +677,18 @@ function without_padding_fixture(lines)
 end
 CANONICALIZATIONS["without overaligned padding fixture"] = without_padding_fixture
 
+# alloc-opt-memory.ll's stack_memory_volatile stores the data pointer of a Memory with a
+# volatile store: the port keeps such allocations on the heap, where the C++ moves them to
+# the stack, which changes the whole function (the fixture's checks hold for both).
+function without_volatile_memory_fixture(lines)
+    start = findfirst(l -> startswith(l, "define double @stack_memory_volatile("), lines)
+    start === nothing && return lines
+    finish = findnext(==("}"), lines, start)
+    finish === nothing && return lines
+    return [lines[1:start-1]; lines[finish+1:end]]
+end
+CANONICALIZATIONS["without volatile Memory fixture"] = without_volatile_memory_fixture
+
 # FinalLowerGC builds the previous-frame load and address as two C++ call arguments.
 # Compilers can emit them in either order. Normalize only an adjacent independent pair
 # used solely by the following store; leave every operand, flag and metadata unchanged.
