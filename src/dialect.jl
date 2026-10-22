@@ -218,6 +218,9 @@ struct Dialect
     "Whether every function processed gets a declaration of `ijl_gc_small_alloc`
     (Julia 1.12 and later)."
     gc_declare_small_alloc::Bool
+    "Whether write barriers on an object allocated since the last safepoint on every path
+    to them are removed, since a fresh object can't be old (Julia 1.15 and later)."
+    gc_fresh_barrier_elision::Bool
     "The condition under which a GC state transition polls a safepoint: `:and` (when
     leaving a GC-safe state for the unsafe one: `(old != 0) & (new == 0)`; Julia 1.10),
     `:or` (`(old == 0) | (new == 0)`, always when entering the unsafe state; 1.11), or
@@ -394,6 +397,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_safepoint_load = minor >= v"1.14" ? :monotonic_named :
                             minor == v"1.13" ? :monotonic : :plain,
         gc_declare_small_alloc = minor >= v"1.12",
+        gc_fresh_barrier_elision = minor >= v"1.15",
         gc_state_condition,
         ptls_stack_argument = minor >= v"1.13" ? :gcstack : :swiftself,
         ptls_argument_takes_name = minor >= v"1.11",

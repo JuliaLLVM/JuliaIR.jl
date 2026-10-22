@@ -101,6 +101,7 @@ end
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
+    @test !d14.gc_fresh_barrier_elision && dm.gc_fresh_barrier_elision
 
     # type lowering
     @test (d11.cpointer_type, d12.cpointer_type) == (:integer, :pointer)

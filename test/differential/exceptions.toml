@@ -137,6 +137,15 @@ reason = "GC state transitions are outside the input contract of jl-late-gc-clea
 decision = "docs/src/late_lower_gc_frame.md: Input contract"
 
 [[LateGCCleanup]]
+input = "llvmpasses/late-lower-gc-fresh-barrier.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| gc-transition operand bundle: GC state transitions need Julia.s runtime( \(at [^()|]*\))? \| [^|]+)+$'
+replace = '! ok'
+reason = "as for gc_safe_call*: gc_transition's GC state transition is outside the input contract of jl-late-gc-cleanup"
+decision = "docs/src/late_lower_gc_frame.md: Input contract"
+
+[[LateGCCleanup]]
 input = "llvmpasses/final-lower-gc*.ll"
 side = "port"
 lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| julia\.\w+: GC frames and allocations of Julia.s runtime are lowered by FinalLowerGC( \(at [^()|]*\))? \| [^|]+)+$'

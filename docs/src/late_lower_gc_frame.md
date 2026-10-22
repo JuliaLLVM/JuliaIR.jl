@@ -63,6 +63,7 @@ versions are fields of `JuliaIR.Dialect`:
 | `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same | same |
 | `ijl_gc_small_alloc` declared | no | no | yes | yes | yes | yes |
 | `julia.gc_alloc_memory` lowered | no | no | no | no | no | yes |
+| write barriers on an object allocated since the last safepoint on every path to them removed | no | no | no | no | no | yes |
 
 From Julia 1.14 on, the `gc_barrier` policy of the dialect selects the write-barrier build
 configuration: with `:snapshot` (or `:snapshot_field_precise`), barriers are never

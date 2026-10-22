@@ -2582,6 +2582,106 @@ function module_debug_level(mod::LLVM.Module)
     return convert(Int, Value(flags["julia.debug_level"]))
 end
 
+# A fresh object can't become old before a safepoint (cf. `jl_gc_wb_fresh`): remove the
+# write barriers whose parent allocation has run since the last safepoint on every path to
+# them (Julia 1.15 and later, `ElideFreshWriteBarriers`).
+#
+# Allocations are safepoints themselves, so at most one allocation is known fresh at any
+# point. A forward must-analysis tracks it per block: safepoints clear it, an allocation
+# replaces it, and joins keep it only when all reachable predecessors agree. A state is
+# `missing` (not known yet, the top of the lattice), `nothing` (no fresh allocation), or
+# the fresh allocation.
+function elide_fresh_write_barriers!(p::LateLowerGCFrame, f::LLVM.Function, S::State)
+    fns = p.fns
+    safepoints = Set{Instruction}(S.safepoint_numbering)
+    function parent_alloc(inst::Instruction)
+        inst isa LLVM.CallInst && is_write_barrier(fns, inst.called_operand) || return nothing
+        parent = strip_pointer_casts(inst.arguments[1])
+        parent isa LLVM.CallInst && parent in safepoints || return nothing
+        callee = parent.called_operand
+        is_fn(fns.alloc_obj, callee) || is_fn(fns.alloc_memory, callee) || return nothing
+        return parent
+    end
+    allocs = Set{Instruction}()
+    barrier_bbs = BasicBlock[]
+    for bb in f.blocks, inst in bb.instructions
+        alloc = parent_alloc(inst)
+        alloc === nothing && continue
+        push!(allocs, alloc)
+        bb in barrier_bbs || push!(barrier_bbs, bb)
+    end
+    isempty(allocs) && return
+
+    # LateLowerGCFrame's cleanup adds safepoints around GC transitions, even if the call
+    # itself isn't one; `local_scan` doesn't classify invokes, which Julia doesn't emit
+    is_safepoint(inst) = inst in safepoints ||
+        (inst isa LLVM.CallBase &&
+         (!(inst isa LLVM.CallInst) ||
+          any(b -> LLVM.tag(b) == "gc-transition", LLVM.operand_bundles(inst))))
+
+    # The transfer function of each reachable block: allocations and safepoints both
+    # overwrite the state, so a block either sets it to its last allocation (or `nothing`
+    # after a safepoint), or passes its entry state through (`missing`).
+    rpo = reverse_postorder_blocks(f)
+    last_def = Dict{BasicBlock,Union{Missing,Nothing,Instruction}}()
+    for bb in rpo
+        def = missing
+        for inst in bb.instructions
+            if inst in allocs
+                def = inst
+            elseif is_safepoint(inst)
+                def = nothing
+            end
+        end
+        last_def[bb] = def
+    end
+
+    # The fresh allocation on entry to each reachable block, iterated to the greatest
+    # fixpoint. In reverse post-order, only a back edge can come from a block not visited
+    # yet, so the first pass ignores those edges and later passes include them in the meet
+    # once their states are known. States only descend (missing, an allocation, nothing).
+    entry = first(f.blocks)
+    in_state = Dict{BasicBlock,Union{Missing,Nothing,Instruction}}(entry => nothing)
+    changed = true
+    while changed
+        changed = false
+        for bb in rpo
+            bb == entry && continue
+            new_in = missing
+            for pred in LLVM.predecessors(bb)
+                # an unreachable predecessor has neither state, so it is skipped like one
+                # that wasn't visited yet
+                pred_out = get(last_def, pred, missing)
+                pred_out === missing && (pred_out = get(in_state, pred, missing))
+                pred_out === missing && continue
+                if new_in === missing
+                    new_in = pred_out
+                elseif !isequal(new_in, pred_out)
+                    new_in = nothing
+                end
+            end
+            if !isequal(new_in, get(in_state, bb, missing))
+                in_state[bb] = new_in
+                changed = true
+            end
+        end
+    end
+
+    for bb in barrier_bbs
+        fresh = get(in_state, bb, missing)
+        fresh === missing && continue  # unreachable
+        for inst in collect(bb.instructions)
+            if fresh !== nothing && isequal(parent_alloc(inst), fresh)
+                erase!(inst)
+            elseif inst in allocs
+                fresh = inst
+            elseif is_safepoint(inst)
+                fresh = nothing
+            end
+        end
+    end
+end
+
 function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{Instruction})
     lowering = p.dialect.gc_barrier_lowering
     snapshot = p.dialect.gc_barrier in (:snapshot, :snapshot_field_precise)
@@ -2683,6 +2783,7 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         if p.pgcstack !== nothing
             drop_safepoint_memory_effects!(f)
             S = local_scan(p, f)
+            dialect.gc_fresh_barrier_elision && elide_fresh_write_barriers!(p, f, S)
             # without a safepoint after the first def, no roots are needed (Julia 1.13)
             needs_frame = !dialect.gc_frame_elision ||
                 any(f.blocks) do bb

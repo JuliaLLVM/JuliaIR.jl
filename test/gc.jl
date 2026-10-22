@@ -230,6 +230,38 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     # older versions don't have the intrinsic
     out = llgcf(memory(X86_64, 32, 4, true), v"1.14", facts64)
     @test has(out, r"^%mem = call ptr addrspace\(10\) @julia.gc_alloc_memory\(")
+
+    # Write barriers on an object allocated since the last safepoint on every path to them
+    # are removed (Julia 1.15 and later): a fresh object can't be old.
+    barrier(body) = """
+        $X86_64
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+        declare void @julia.object_write_barrier(ptr addrspace(10), ...)
+        declare void @safepoint()
+        define ptr addrspace(10) @f(ptr %task, ptr addrspace(10) %child, i1 %c) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) @tag)
+        $body
+          call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %obj, ptr addrspace(10) %child)
+          ret ptr addrspace(10) %obj
+        }"""
+    has_barrier(out) = has(out, r"^call void \(ptr addrspace\(10\), \.\.\.\) @julia.object_write_barrier\(")
+    fresh = barrier("  br label %next\nnext:")
+    @test !has_barrier(llgcf(fresh, v"1.15", facts64))
+    @test has_barrier(llgcf(fresh, v"1.14", facts64))
+    # not after a safepoint
+    @test has_barrier(llgcf(barrier("  call void @safepoint()"), v"1.15", facts64))
+    # nor after a join where one of the paths passes one
+    joined = barrier("""
+          br i1 %c, label %sp, label %next
+        sp:
+          call void @safepoint()
+          br label %next
+        next:""")
+    @test has_barrier(llgcf(joined, v"1.15", facts64))
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 

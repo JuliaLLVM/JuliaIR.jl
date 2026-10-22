@@ -292,6 +292,11 @@ kind = "port"
 ports = ["LateLowerGCFrame"]
 status = "run"
 
+[fixtures."late-lower-gc-fresh-barrier.ll"]
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
+
 [fixtures."late-lower-gc-select-store.ll"]
 kind = "port"
 ports = ["LateLowerGCFrame"]
