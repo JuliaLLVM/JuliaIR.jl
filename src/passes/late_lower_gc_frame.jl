@@ -112,15 +112,6 @@ only_reads_memory(e::MemoryEffects) =
 only_accesses_arg_pointees(e::MemoryEffects) =
     all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
 
-# the element `i` (0-based) of a constant aggregate, or nothing
-# (`Constant::getAggregateElement`). Which constants have elements depends on the version
-# of LLVM (e.g., scalable `zeroinitializer`, and vector splats since LLVM 20), and LLVM.jl's
-# `c.elements` only covers some of them, so this calls the C API.
-function aggregate_element(c::LLVM.Constant, i::Integer)
-    ref = API.LLVMGetAggregateElement(c, i)
-    return ref == C_NULL ? nothing : Value(ref)
-end
-
 # shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
 const UNDEF_MASK_ELEM = -1
 
