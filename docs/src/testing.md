@@ -303,7 +303,7 @@ Each comparison is one of:
 - *excepted*: the outputs differ only in ways recorded in
   `test/differential/exceptions.toml`. An entry there names the pass, optionally the
   inputs (a glob), dialects (Julia minor versions; a newer Julia has the newest known
-  one's, so `julia = ["1.14"]` also applies to 1.15) and prefix it applies to, the
+  one's, so `julia = ["1.15"]` also applies to 1.16) and prefix it applies to, the
   reason, a documentation or upstream reference, and a rewrite of one side's output.
   The rewrite matches lines with a regex, including status lines for errors and invalid
   IR, and replaces the matched text or deletes the line. The outputs must be identical

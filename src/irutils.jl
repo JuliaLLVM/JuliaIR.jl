@@ -145,6 +145,30 @@ function get_or_insert_function!(mod::LLVM.Module, name::String, ft::LLVM.Functi
     return LLVM.Function(mod, name, ft)
 end
 
+# the blocks of a function that are reachable from its entry, in reverse post-order (like
+# LLVM's `ReversePostOrderTraversal`, visiting successors in order)
+function reverse_postorder_blocks(f::LLVM.Function)
+    entry = first(f.blocks)
+    order = BasicBlock[]
+    seen = Set{BasicBlock}([entry])
+    # depth first: each block with the successors it has left to visit
+    stack = [(entry, collect(LLVM.successors(LLVM.terminator(entry))), 1)]
+    while !isempty(stack)
+        bb, succs, i = stack[end]
+        if i > length(succs)
+            pop!(stack)
+            push!(order, bb)
+            continue
+        end
+        stack[end] = (bb, succs, i + 1)
+        succ = succs[i]
+        succ in seen && continue
+        push!(seen, succ)
+        push!(stack, (succ, collect(LLVM.successors(LLVM.terminator(succ))), 1))
+    end
+    return reverse!(order)
+end
+
 # position the builder before `inst`, with `inst`'s debug location like C++'s
 # `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
 function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)

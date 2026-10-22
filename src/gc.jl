@@ -24,6 +24,46 @@ const JL_GC_STATE_SAFE = 2
 # a GC frame starts with two words (`jl_gcframe_t`: nroots, prev)
 const GC_FRAME_HEADER_SLOTS = 2
 
+# the alignment of objects the GC allocates (`JL_HEAP_ALIGNMENT`)
+const JL_HEAP_ALIGNMENT = JL_SMALL_BYTE_ALIGNMENT
+
+
+## GenericMemory
+
+# The layout of a GenericMemory, which depends on the size of a pointer: the header
+# (`jl_genericmemory_t`) holds the length, then the data pointer. Julia's C++ computes these
+# for the pointers of the machine it runs on; the ports use the target's.
+
+genericmemory_length_offset(ptrsize::Integer) = 0
+genericmemory_ptr_offset(ptrsize::Integer) = ptrsize
+genericmemory_header_size(ptrsize::Integer) = 2 * ptrsize
+
+# the size of the largest objects in GC pools (`GC_MAX_SZCLASS`)
+gc_max_szclass(ptrsize::Integer) = 2032 - ptrsize
+
+# A GenericMemory whose data fits a GC pool together with its header is allocated as a
+# single object, with the data at this offset (`JL_GENERICMEMORY_INLINE_DATA_OFFSET`).
+# Larger ones get their data from `jl_gc_managed_malloc`.
+genericmemory_inline_data_offset(ptrsize::Integer) =
+    cld(genericmemory_header_size(ptrsize), JL_SMALL_BYTE_ALIGNMENT) * JL_SMALL_BYTE_ALIGNMENT
+genericmemory_data_inline(nbytes::Integer, ptrsize::Integer) =
+    nbytes <= gc_max_szclass(ptrsize) - genericmemory_inline_data_offset(ptrsize)
+
+# If `call` is a `julia.gc_alloc_memory` (the function `alloc_memory`, Julia 1.15 and
+# later) of a constant size whose data will be inline, the size of the whole object
+# (`JuliaPassContext::getInlineMemorySize`); otherwise `nothing`.
+function inline_memory_size(alloc_memory::Union{Nothing,LLVM.Function},
+                            call::Instruction, dl::DataLayout)
+    alloc_memory === nothing && return nothing
+    call isa CallInst && call.called_operand == alloc_memory || return nothing
+    nbytes = call.arguments[2]
+    nbytes isa ConstantInt || return nothing
+    n = convert(UInt64, nbytes)
+    ptrsize = storage_size(dl, LLVM.PointerType(AS_GENERIC))
+    genericmemory_data_inline(n, ptrsize) || return nothing
+    return Int(genericmemory_inline_data_offset(ptrsize) + n)
+end
+
 
 ## tracked pointers
 
@@ -303,6 +343,9 @@ function gc_declaration_name(dialect::Dialect, which::Symbol)
         "ijl_gc_alloc_typed"
     elseif which === :gc_alloc_typed_reset_safe
         "ijl_gc_alloc_typed_reset_safe"
+    elseif which === :gc_alloc_genericmemory
+        # not among the functions that the library exports with an `ijl_` prefix
+        "jl_alloc_genericmemory_unchecked"
     else
         error("unknown GC intrinsic $which")
     end
@@ -338,6 +381,9 @@ function gc_declaration_type(g::GCCodegen, which::Symbol)
     elseif which in (:gc_alloc_typed, :gc_alloc_typed_reset_safe)
         # Julia 1.10 passes a null pointer instead of the tag
         LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_size, isempty(tag) ? T_ptr : T_size])
+    elseif which === :gc_alloc_genericmemory
+        # the thread-local state, the size of the data and the type
+        LLVM.FunctionType(g.T_prjlvalue, [T_ptr, T_size, T_ptr])
     else
         error("unknown GC intrinsic $which")
     end
@@ -386,6 +432,9 @@ function get_or_declare(g::GCCodegen, which::Symbol; check::Bool=false)
         add_gc_alloc_attributes!(g, f)
     elseif which === :gc_small_alloc
         push!(f.function_attributes, alloc_size_attr(2))
+        add_gc_alloc_attributes!(g, f)
+    elseif which === :gc_alloc_genericmemory
+        # without `allocsize`: its size is that of the data, not of the object
         add_gc_alloc_attributes!(g, f)
     elseif which in (:gc_big_alloc_reset_safe, :gc_alloc_typed_reset_safe)
         push!(f.function_attributes, alloc_size_attr(1))

@@ -89,6 +89,11 @@ kind = "port"
 ports = ["AllocOpt"]
 status = "run"
 
+[fixtures."alloc-opt-memory.ll"]
+kind = "port"
+ports = ["AllocOpt"]
+status = "run"
+
 [fixtures."alloc-opt-pass.ll"]
 kind = "port"
 ports = ["AllocOpt"]
@@ -272,12 +277,22 @@ kind = "port"
 ports = ["LateLowerGCFrame"]
 status = "run"
 
+[fixtures."late-lower-gc-alloc-memory.ll"]
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
+
 [fixtures."late-lower-gc-alloc-zeroing.ll"]
 kind = "port"
 ports = ["LateLowerGCFrame"]
 status = "run"
 
 [fixtures."late-lower-gc-dynamic-index.ll"]
+kind = "port"
+ports = ["LateLowerGCFrame"]
+status = "run"
+
+[fixtures."late-lower-gc-fresh-barrier.ll"]
 kind = "port"
 ports = ["LateLowerGCFrame"]
 status = "run"

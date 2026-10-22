@@ -125,7 +125,7 @@ end
 # intrinsics that `jl-late-gc-cleanup` rejects (GPUCompiler lowers allocations itself, and
 # its runtime has no write barriers or type tags). Runtime safepoints are removed;
 # the other runtime operations become plain calls on both sides.
-const GPU_RENAMED = r"^julia\.(get_pgcstack(_or_new)?|gc_alloc_obj|\w*write_barrier[\w.]*|typeof|blackbox)$"
+const GPU_RENAMED = r"^julia\.(get_pgcstack(_or_new)?|gc_alloc_(obj|memory)|\w*write_barrier[\w.]*|typeof|blackbox)$"
 function gpu_like!(mod::LLVM.Module)
     for f in collect(LLVM.functions(mod))
         if LLVM.name(f) == "julia.safepoint"
@@ -174,7 +174,7 @@ end
 
 const PASS_SPECS = [
     PassSpec("RemoveNI"; kind=:module, inputs=r"^target datalayout = \".*ni:"m),
-    PassSpec("AllocOpt"; inputs=r"julia\.gc_alloc_obj", prefixes=["raw", "early"]),
+    PassSpec("AllocOpt"; inputs=r"julia\.gc_alloc_(obj|memory)", prefixes=["raw", "early"]),
     PassSpec("PropagateJuliaAddrspaces";
              inputs=r"addrspace\(1[0-3]\)", prefixes=["raw", "simplified"]),
     PassSpec("DemoteFloat16"; inputs=r"\b(half|bfloat)\b", prefixes=["raw", "simplified"],

@@ -1,6 +1,5 @@
 # Julia 1.14's pipeline (`src/pipeline.cpp` at 54d14c8eb9, unchanged on the release-1.14
-# branch and on master up to 1.15.0-DEV.14, c4ee9157f9). Julia 1.15 uses 1.14's dialect,
-# so this recipe serves it too, until its pipeline changes.
+# branch and on master up to 1.15.0-DEV.77, 82e07fcb36, whose recipe uses this one).
 
 aggressive_simplifycfg(::Recipe{14}) = aggressive_simplifycfg(Recipe{13}())
 

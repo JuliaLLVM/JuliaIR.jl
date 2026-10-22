@@ -8,7 +8,7 @@ using JuliaIR: Dialect
                        (v"1.11.9", v"1.11"), (v"1.11.0-DEV.200", v"1.11"),
                        (v"1.12.7", v"1.12"), (v"1.13.2", v"1.13"),
                        (v"1.13.0-DEV.1", v"1.13"), (v"1.13.0-rc1", v"1.13"),
-                       (v"1.14.0-DEV.3782", v"1.14")]
+                       (v"1.14.0-DEV.3782", v"1.14"), (v"1.15.0-DEV.77", v"1.15")]
         d = Dialect(v)
         @test d.julia == v
         @test d.minor == minor
@@ -22,13 +22,14 @@ using JuliaIR: Dialect
     @test Dialect(v"1.10.0-DEV.100").minor == v"1.10"
 
     # newer versions, Julia master among them, get the newest known dialect
-    @test Dialect(v"1.15.0-DEV.14") == Dialect(v"1.14.0-DEV")
-    @test Dialect(v"1.15.0-DEV.14").julia == v"1.15.0-DEV.14"
-    @test Dialect(v"2.0").minor == v"1.14"
+    @test Dialect(v"1.16.0-DEV.1") == Dialect(v"1.15.0-DEV")
+    @test Dialect(v"1.16.0-DEV.1").julia == v"1.16.0-DEV.1"
+    @test Dialect(v"2.0").minor == v"1.15"
 end
 
 @testset "drift" begin
-    d10, d11, d12, d13, dm = Dialect.((v"1.10", v"1.11", v"1.12", v"1.13", v"1.14.0-DEV"))
+    d10, d11, d12, d13, d14, dm = Dialect.((v"1.10", v"1.11", v"1.12", v"1.13", v"1.14.0-DEV",
+                                            v"1.15.0-DEV"))
 
     @test d13.write_barriers == ["julia.write_barrier"]
     @test d13.barrier_flavour === :write_barrier
@@ -56,6 +57,7 @@ end
           (:legacy, :legacy, :chunked, :chunked)
     @test !d10.alloc_callsite_attrs && d11.alloc_callsite_attrs
     @test !d13.alloc_bundles && dm.alloc_bundles
+    @test !d14.has_gc_alloc_memory && dm.has_gc_alloc_memory
     @test !d11.has_gc_transition_bundle && d12.has_gc_transition_bundle
     @test !d13.has_zeroinit_indirect_bundle && dm.has_zeroinit_indirect_bundle
 
@@ -99,6 +101,7 @@ end
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
+    @test !d14.gc_fresh_barrier_elision && dm.gc_fresh_barrier_elision
 
     # type lowering
     @test (d11.cpointer_type, d12.cpointer_type) == (:integer, :pointer)
@@ -131,6 +134,7 @@ end
     @test Dialect(v"1.12.0") == Dialect(v"1.12.7")
     @test hash(Dialect(v"1.12.0")) == hash(Dialect(v"1.12.7"))
     @test Dialect(v"1.12") != Dialect(v"1.13")
+    @test Dialect(v"1.14") != Dialect(v"1.15")
     @test Dialect(v"1.12") != Dialect(v"1.12"; fp16=:keep)
     @test Dialect(v"1.12") != Dialect(v"1.12"; bf16=:keep)
     @test hash(Dialect(v"1.12")) != hash(Dialect(v"1.12"; bf16=:keep))

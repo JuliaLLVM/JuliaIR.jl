@@ -42,6 +42,7 @@ include("pipeline/julia-1.11.jl")
 include("pipeline/julia-1.12.jl")
 include("pipeline/julia-1.13.jl")
 include("pipeline/julia-1.14.jl")
+include("pipeline/julia-1.15.jl")
 
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")

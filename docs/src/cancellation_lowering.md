@@ -36,7 +36,8 @@ For each function, in this order:
 4. It closes the region before every *unsafe point* that a publication can reach:
    stores, atomic read-modify-writes, and volatile loads that the code generator didn't
    mark `!julia.reset_safe`, and calls that are either not marked or are runtime calls
-   (callees named `julia.call*`, `jl_*` or `ijl_*`, except `setjmp`). Calls that don't
+   (callees named `julia.call*`, `jl_*` or `ijl_*`, except `setjmp`, and from Julia 1.15
+   on Memory allocations that become calls of the runtime, see step 6). Calls that don't
    need it: lifetime markers, debug intrinsics, `llvm.assume`, `llvm.expect`,
    `llvm.prefetch`, `setjmp`, `julia.safepoint`, `julia.pointer_from_objref`,
    `julia.gc_loaded`, allocations and write barriers. Other intrinsic calls are unsafe
@@ -45,7 +46,11 @@ For each function, in this order:
    `musttail` call, which must stay next to its return).
 6. It marks every allocation (`julia.gc_alloc_obj`) and write barrier that may run with
    the region open with `!julia.reset_region`. FinalLowerGC lowers these to the runtime's
-   `*_reset_safe` entry points, which close and reopen the region themselves.
+   `*_reset_safe` entry points, which close and reopen the region themselves. From Julia
+   1.15 on, that includes the allocations of Memory (`julia.gc_alloc_memory`) whose size
+   is a constant that fits a GC pool, which LateLowerGCFrame lowers like other objects;
+   the others become calls of `jl_alloc_genericmemory_unchecked`, which has no reset-safe
+   variant, so the region is closed before them.
 
 A function with the `"julia.ipo_reset_safe"` attribute (its own effects are reset-safe,
 so its callers may keep their region open across a call to it) may run inside its

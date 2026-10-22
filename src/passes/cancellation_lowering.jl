@@ -1,6 +1,6 @@
 # CancellationLowering: lower the `julia.cancellation_point()` calls that the code
 # generator of Julia 1.14 and later emits for `Base.@cancel_check` into reset regions.
-# Port of Julia's `src/llvm-cancellation-lowering.cpp` (1.14).
+# Port of Julia's `src/llvm-cancellation-lowering.cpp` (1.15).
 #
 # At a cancellation point, the function publishes a stack buffer, a `jl_reset_ctx_t`, in
 # its task's `reset_ctx` field, after saving the task's GC stack and exception handler in
@@ -11,7 +11,9 @@
 # are not marked `!julia.reset_safe` (and runtime calls even when they are), and before
 # the function returns. Allocations and write barriers may run with the region open:
 # they are marked `!julia.reset_region`, and FinalLowerGC lowers them to runtime entry
-# points that close and reopen the region themselves. Functions marked
+# points that close and reopen the region themselves. That excludes the allocations of
+# Memory (Julia 1.15 and later) whose size is not known to fit a GC pool, which become
+# calls of the runtime. Functions marked
 # `"julia.ipo_reset_safe"` may run inside their caller's region, so their calls close it
 # too, even when they have no cancellation points of their own.
 #
@@ -94,6 +96,16 @@ function is_implicit_runtime_call(p::CancellationLowering, call::Instruction)
     (startswith(name, "ijl_") || startswith(name, "jl_")) || return false
     return name != p.gc.layout.setjmp
 end
+
+# Allocations that FinalLowerGC lowers to a reset-safe entry point. A Memory allocation
+# (Julia 1.15 and later) only qualifies if its size is known to fit inline; otherwise it
+# becomes a call of `jl_alloc_genericmemory_unchecked`, which is not reset-safe.
+is_reset_safe_alloc(p::CancellationLowering, call::Instruction) =
+    is_fn(p.fns.alloc_obj, call.called_operand) ||
+    inline_memory_size(p.fns.alloc_memory, call, p.gc.dl) !== nothing
+is_runtime_memory_alloc(p::CancellationLowering, call::Instruction) =
+    is_fn(p.fns.alloc_memory, call.called_operand) &&
+    inline_memory_size(p.fns.alloc_memory, call, p.gc.dl) === nothing
 
 # `BasicBlock::getTerminatingMustTailCall`
 function terminating_musttail_call(bb::BasicBlock)
@@ -305,7 +317,7 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     is_fn(fns.gc_loaded, callee) && return true
     # allocations and write barriers are annotated instead (FinalLowerGC lowers them to
     # entry points that close and reopen the region)
-    is_fn(fns.alloc_obj, callee) && return true
+    is_reset_safe_alloc(p, call) && return true
     is_write_barrier(fns, callee) && return true
     # the name of setjmp last, so that its fact is read only for calls that are left
     return name == p.gc.layout.setjmp
@@ -346,7 +358,8 @@ function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_
                                    id == Intrinsic("llvm.lifetime.start") ||
                                    id == Intrinsic("llvm.lifetime.end")) &&
                     continue
-                if !has_reset_safe_md(inst) || is_implicit_runtime_call(p, inst)
+                if !has_reset_safe_md(inst) || is_implicit_runtime_call(p, inst) ||
+                   is_runtime_memory_alloc(p, inst)
                     is_exempt_call(p, inst) || push!(unsafe, inst)
                 end
             end
@@ -464,7 +477,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
                     callee = called_function(inst)
                     callee === nothing && continue
                     if region_open &&
-                       (is_fn(fns.alloc_obj, callee) || is_write_barrier(fns, callee))
+                       (is_reset_safe_alloc(p, inst) || is_write_barrier(fns, callee))
                         inst.metadata[RESET_REGION_MD] = MDNode(Metadata[])
                         changed = true
                     end

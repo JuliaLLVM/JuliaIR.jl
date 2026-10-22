@@ -335,6 +335,7 @@ struct GCFunctions
     pointer_from_objref::Union{Nothing,LLVM.Function}
     gc_loaded::Union{Nothing,LLVM.Function}
     alloc_obj::Union{Nothing,LLVM.Function}
+    alloc_memory::Union{Nothing,LLVM.Function}
     typeof::Union{Nothing,LLVM.Function}
     blackbox::Union{Nothing,LLVM.Function}
     write_barriers::Vector{LLVM.Function}
@@ -356,8 +357,9 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                        lookup("llvm.julia.gc_preserve_end"),
                        lookup("julia.pointer_from_objref"),
                        dialect.has_gc_loaded ? lookup("julia.gc_loaded") : nothing,
-                       lookup("julia.gc_alloc_obj"), lookup("julia.typeof"),
-                       lookup("julia.blackbox"), barriers, field_barriers,
+                       lookup("julia.gc_alloc_obj"),
+                       dialect.has_gc_alloc_memory ? lookup("julia.gc_alloc_memory") : nothing,
+                       lookup("julia.typeof"), lookup("julia.blackbox"), barriers, field_barriers,
                        lookup("ijl_pop_handler_noexcept"), lookup("julia.call"),
                        lookup("julia.call2"),
                        dialect.has_call3 ? lookup("julia.call3") : nothing,
@@ -2137,23 +2139,24 @@ function replace_call!(@nospecialize(new::Value), call::Instruction, S)
     update_ptr_numbering!(S, call, new)
 end
 
-# `julia.gc_alloc_obj(task, size, tag)` => `julia.gc_alloc_bytes(ptls, size[, tag])`, and
-# a store of the tag to the object's header
 # the operand bundles of a call that are not Julia's, which the lowerings keep (a
 # deviation, see the docs)
 other_bundles(call::Instruction) =
     OperandBundle[b for b in call.operand_bundles if !(LLVM.tag(b) in JULIA_BUNDLES)]
 
-function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
+# An allocation of `size` bytes with the type tag `tag`, to replace the allocation `call`:
+# `julia.gc_alloc_bytes(ptls, size[, tag])`, and a store of the tag to the object's header
+# (`EmitGCAllocBytes`). The builder must be at `call`.
+function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecialize(size::Value),
+                              @nospecialize(tag::Value))
     builder = p.builder
-    position_before!(builder, call; debug=true)
     T_size = p.gc.T_size
 
     new_call = nothing
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = intcast!(builder, call.arguments[2], T_size)
+        size = intcast!(builder, size, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
         take_name!(new_call, call)
@@ -2161,7 +2164,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
 
     # LLVM's alignment and bit checks don't look through address space casts, so strip as
     # many casts as possible from the tag, which is mostly loaded as an integer
-    tag = strip_pointer_casts_and_aliases(call.arguments[3])
+    tag = strip_pointer_casts_and_aliases(tag)
     if tag isa LLVM.ConstantExpr
         if tag.opcode == LLVM.Opcode.IntToPtr
             tag = tag.operands[1]
@@ -2186,7 +2189,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         # its tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = intcast!(builder, call.arguments[2], T_size)
+        size = intcast!(builder, size, T_size)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
                          Value[ptls, size, tagint], other_bundles(call))
@@ -2202,6 +2205,17 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
                    align=pointer_align(p.gc), ordering=LLVM.AtomicOrdering.Unordered)
     store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
+    return new_call
+end
+
+# `julia.gc_alloc_obj(task, size, tag)` => `julia.gc_alloc_bytes(ptls, size[, tag])`, a
+# store of the tag to the object's header, and the initialization of reference fields
+# that the operand bundles ask for
+function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
+    builder = p.builder
+    position_before!(builder, call; debug=true)
+    T_size = p.gc.T_size
+    new_call = emit_gc_alloc_bytes!(p, call, call.arguments[2], call.arguments[3])
 
     # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
     # sees valid pointers before the object is initialized
@@ -2227,6 +2241,58 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
         end
     end
 
+    replace_uses!(call, new_call)
+    update_ptr_numbering!(S, call, new_call)
+end
+
+# `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later) =>
+# a single object with inline data if `nbytes` is a constant that fits a GC pool, or a call
+# of `jl_alloc_genericmemory_unchecked` otherwise, which sets the data pointer. Right after
+# the allocation, so that the GC never sees the object partially initialized, the header is
+# initialized and the data zeroed if requested (`LowerGCAllocMemory`).
+function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
+    builder = p.builder
+    position_before!(builder, call; debug=true)
+    g = p.gc
+    task, nbytes, tag, len, zeroinit = call.arguments
+    zeroinit = convert(UInt64, zeroinit::ConstantInt) == 1
+    ptrsize = pointer_size(g)
+    T_int8 = LLVM.Int8Type()
+    T_int64 = LLVM.Int64Type()
+    T_ptr = LLVM.PointerType(AS_GENERIC)
+    T_derived = LLVM.PointerType(AS_DERIVED)
+    ptr_offset = ConstantInt(T_int64, genericmemory_ptr_offset(ptrsize))
+    size = inline_memory_size(p.fns.alloc_memory, call, g.dl)
+    if size !== nothing
+        new_call = emit_gc_alloc_bytes!(p, call, ConstantInt(g.T_size, size), tag)
+        push!(new_call.return_attributes, EnumAttribute("dereferenceable", size))
+        derived = addrspacecast!(builder, new_call, T_derived)
+        objref = addrspacecast!(builder, derived, T_ptr)
+        data = inbounds_gep!(builder, T_int8, objref,
+                             [ConstantInt(T_int64, genericmemory_inline_data_offset(ptrsize))])
+        ptr_field = inbounds_gep!(builder, T_int8, derived, [ptr_offset])
+        store!(builder, data, ptr_field; align=pointer_align(g))
+    else
+        # the runtime initializes the data pointer, and the owner if the data is malloc'd
+        alloc = get_or_declare(g, :gc_alloc_genericmemory)
+        ptls = current_ptls_from_task!(g, task, tbaa_tags(g).gcframe)
+        untracked_tag = addrspacecast!(builder, tag, T_ptr)
+        new_call = call!(builder, alloc.function_type, alloc, Value[ptls, nbytes, untracked_tag])
+        copy_function_attributes!(new_call, alloc)
+        push!(new_call.return_attributes, EnumAttribute("align", JL_HEAP_ALIGNMENT))
+        push!(new_call.return_attributes,
+              EnumAttribute("dereferenceable", genericmemory_header_size(ptrsize)))
+        take_name!(new_call, call)
+        derived = addrspacecast!(builder, new_call, T_derived)
+        ptr_field = inbounds_gep!(builder, T_int8, derived, [ptr_offset])
+        data = load!(builder, T_ptr, ptr_field; align=pointer_align(g))
+    end
+    if zeroinit && !(nbytes isa ConstantInt && iszero(convert(UInt64, nbytes)))
+        memset!(builder, data, ConstantInt(T_int8, 0), nbytes, pointer_align(g))
+    end
+    len_field = inbounds_gep!(builder, T_int8, derived,
+                              [ConstantInt(T_int64, genericmemory_length_offset(ptrsize))])
+    store!(builder, len, len_field; align=pointer_align(g))
     replace_uses!(call, new_call)
     update_ptr_numbering!(S, call, new_call)
 end
@@ -2424,6 +2490,8 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         lower_blackbox!(p, call, S)
     elseif is_fn(fns.alloc_obj, callee)
         lower_alloc_obj!(p, call, S)
+    elseif is_fn(fns.alloc_memory, callee)
+        lower_alloc_memory!(p, call, S)
     elseif is_fn(fns.typeof, callee)
         lower_typeof!(p, call, S)
     elseif is_fn(fns.call, callee) || is_fn(fns.call2, callee) || is_fn(fns.call3, callee)
@@ -2512,6 +2580,106 @@ function module_debug_level(mod::LLVM.Module)
     flags = mod.flags
     haskey(flags, "julia.debug_level") || return 1
     return convert(Int, Value(flags["julia.debug_level"]))
+end
+
+# A fresh object can't become old before a safepoint (cf. `jl_gc_wb_fresh`): remove the
+# write barriers whose parent allocation has run since the last safepoint on every path to
+# them (Julia 1.15 and later, `ElideFreshWriteBarriers`).
+#
+# Allocations are safepoints themselves, so at most one allocation is known fresh at any
+# point. A forward must-analysis tracks it per block: safepoints clear it, an allocation
+# replaces it, and joins keep it only when all reachable predecessors agree. A state is
+# `missing` (not known yet, the top of the lattice), `nothing` (no fresh allocation), or
+# the fresh allocation.
+function elide_fresh_write_barriers!(p::LateLowerGCFrame, f::LLVM.Function, S::State)
+    fns = p.fns
+    safepoints = Set{Instruction}(S.safepoint_numbering)
+    function parent_alloc(inst::Instruction)
+        inst isa LLVM.CallInst && is_write_barrier(fns, inst.called_operand) || return nothing
+        parent = strip_pointer_casts(inst.arguments[1])
+        parent isa LLVM.CallInst && parent in safepoints || return nothing
+        callee = parent.called_operand
+        is_fn(fns.alloc_obj, callee) || is_fn(fns.alloc_memory, callee) || return nothing
+        return parent
+    end
+    allocs = Set{Instruction}()
+    barrier_bbs = BasicBlock[]
+    for bb in f.blocks, inst in bb.instructions
+        alloc = parent_alloc(inst)
+        alloc === nothing && continue
+        push!(allocs, alloc)
+        bb in barrier_bbs || push!(barrier_bbs, bb)
+    end
+    isempty(allocs) && return
+
+    # LateLowerGCFrame's cleanup adds safepoints around GC transitions, even if the call
+    # itself isn't one; `local_scan` doesn't classify invokes, which Julia doesn't emit
+    is_safepoint(inst) = inst in safepoints ||
+        (inst isa LLVM.CallBase &&
+         (!(inst isa LLVM.CallInst) ||
+          any(b -> LLVM.tag(b) == "gc-transition", LLVM.operand_bundles(inst))))
+
+    # The transfer function of each reachable block: allocations and safepoints both
+    # overwrite the state, so a block either sets it to its last allocation (or `nothing`
+    # after a safepoint), or passes its entry state through (`missing`).
+    rpo = reverse_postorder_blocks(f)
+    last_def = Dict{BasicBlock,Union{Missing,Nothing,Instruction}}()
+    for bb in rpo
+        def = missing
+        for inst in bb.instructions
+            if inst in allocs
+                def = inst
+            elseif is_safepoint(inst)
+                def = nothing
+            end
+        end
+        last_def[bb] = def
+    end
+
+    # The fresh allocation on entry to each reachable block, iterated to the greatest
+    # fixpoint. In reverse post-order, only a back edge can come from a block not visited
+    # yet, so the first pass ignores those edges and later passes include them in the meet
+    # once their states are known. States only descend (missing, an allocation, nothing).
+    entry = first(f.blocks)
+    in_state = Dict{BasicBlock,Union{Missing,Nothing,Instruction}}(entry => nothing)
+    changed = true
+    while changed
+        changed = false
+        for bb in rpo
+            bb == entry && continue
+            new_in = missing
+            for pred in LLVM.predecessors(bb)
+                # an unreachable predecessor has neither state, so it is skipped like one
+                # that wasn't visited yet
+                pred_out = get(last_def, pred, missing)
+                pred_out === missing && (pred_out = get(in_state, pred, missing))
+                pred_out === missing && continue
+                if new_in === missing
+                    new_in = pred_out
+                elseif !isequal(new_in, pred_out)
+                    new_in = nothing
+                end
+            end
+            if !isequal(new_in, get(in_state, bb, missing))
+                in_state[bb] = new_in
+                changed = true
+            end
+        end
+    end
+
+    for bb in barrier_bbs
+        fresh = get(in_state, bb, missing)
+        fresh === missing && continue  # unreachable
+        for inst in collect(bb.instructions)
+            if fresh !== nothing && isequal(parent_alloc(inst), fresh)
+                erase!(inst)
+            elseif inst in allocs
+                fresh = inst
+            elseif is_safepoint(inst)
+                fresh = nothing
+            end
+        end
+    end
 end
 
 function cleanup_write_barriers!(p::LateLowerGCFrame, S, write_barriers::Vector{Instruction})
@@ -2615,6 +2783,7 @@ function late_lower_gc_frame!(f::LLVM.Function, am, opts::PassOptions;
         if p.pgcstack !== nothing
             drop_safepoint_memory_effects!(f)
             S = local_scan(p, f)
+            dialect.gc_fresh_barrier_elision && elide_fresh_write_barriers!(p, f, S)
             # without a safepoint after the first def, no roots are needed (Julia 1.13)
             needs_frame = !dialect.gc_frame_elision ||
                 any(f.blocks) do bb

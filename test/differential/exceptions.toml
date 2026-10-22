@@ -113,7 +113,7 @@ reason = "overaligned_gc_padding has two four-pointer buffers with identical ali
 decision = "https://github.com/JuliaLLVM/JuliaIR.jl/issues/48"
 
 [[LateGCCleanup]]
-julia = ["1.12", "1.13", "1.14"]
+julia = ["1.12", "1.13", "1.14", "1.15"]
 side = "cpp"
 lines = '^declare noalias nonnull ptr addrspace\(10\) @ijl_gc_small_alloc\(ptr, i32, i32, i64\) #\{ nounwind willreturn allockind\("alloc"\) allocsize\(2\) memory\(argmem: read, inaccessiblemem: readwrite\) \}$'
 reason = "no declaration of ijl_gc_small_alloc (the C++ of 1.12 and later declares it in every module)"
@@ -129,11 +129,20 @@ decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
 [[LateGCCleanup]]
 input = "corpus/gc_safe_call*"
-julia = ["1.12", "1.13", "1.14"]
+julia = ["1.12", "1.13", "1.14", "1.15"]
 side = "port"
 lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| gc-transition operand bundle: GC state transitions need Julia.s runtime( \(at [^()|]*\))? \| [^|]+)+$'
 replace = '! ok'
 reason = "GC state transitions are outside the input contract of jl-late-gc-cleanup (GPU code has none)"
+decision = "docs/src/late_lower_gc_frame.md: Input contract"
+
+[[LateGCCleanup]]
+input = "llvmpasses/late-lower-gc-fresh-barrier.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^! error: UnsupportedInputError: function \S+ contains constructs that LateGCCleanup does not support( \| gc-transition operand bundle: GC state transitions need Julia.s runtime( \(at [^()|]*\))? \| [^|]+)+$'
+replace = '! ok'
+reason = "as for gc_safe_call*: gc_transition's GC state transition is outside the input contract of jl-late-gc-cleanup"
 decision = "docs/src/late_lower_gc_frame.md: Input contract"
 
 [[LateGCCleanup]]
@@ -248,7 +257,7 @@ decision = "docs/src/final_lower_gc.md: non-volatile frame initialization"
 
 [["julia<level=0>"]]
 input = "llvmpasses/late-lower-gc.ll"
-julia = ["1.13", "1.14"]
+julia = ["1.13", "1.14", "1.15"]
 side = "both"
 canonicalize = "without overaligned padding fixture"
 reason = "as for late-lower-gc-s*.ll: the over-aligned frame of overaligned_gc_padding holds two allocas, whose frame slots the C++ orders by address; once lowered, they can't be canonicalized, so that function is compared by LateLowerGCFrame's comparison only"
@@ -256,7 +265,7 @@ decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
 [["julia<level=1>"]]
 input = "llvmpasses/late-lower-gc.ll"
-julia = ["1.13", "1.14"]
+julia = ["1.13", "1.14", "1.15"]
 side = "both"
 canonicalize = "without overaligned padding fixture"
 reason = "as for late-lower-gc-s*.ll: the over-aligned frame of overaligned_gc_padding holds two allocas, whose frame slots the C++ orders by address; once lowered, they can't be canonicalized, so that function is compared by LateLowerGCFrame's comparison only"
@@ -264,7 +273,7 @@ decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
 [["julia<level=2>"]]
 input = "llvmpasses/late-lower-gc.ll"
-julia = ["1.13", "1.14"]
+julia = ["1.13", "1.14", "1.15"]
 side = "both"
 canonicalize = "without overaligned padding fixture"
 reason = "as for late-lower-gc-s*.ll: the over-aligned frame of overaligned_gc_padding holds two allocas, whose frame slots the C++ orders by address; once lowered, they can't be canonicalized, so that function is compared by LateLowerGCFrame's comparison only"
@@ -272,7 +281,7 @@ decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
 
 [["julia<level=3>"]]
 input = "llvmpasses/late-lower-gc.ll"
-julia = ["1.13", "1.14"]
+julia = ["1.13", "1.14", "1.15"]
 side = "both"
 canonicalize = "without overaligned padding fixture"
 reason = "as for late-lower-gc-s*.ll: the over-aligned frame of overaligned_gc_padding holds two allocas, whose frame slots the C++ orders by address; once lowered, they can't be canonicalized, so that function is compared by LateLowerGCFrame's comparison only"
@@ -361,3 +370,51 @@ side = "cpp"
 accept = '^  %\d+ = alloca (ptr, i32 \d+|\[\d+ x ptr\])'
 reason = "as for late-lower-gc-s*.ll: the C++ orders the frame slots of the root buffers of sret calls (here push!'s) by address, which varies between runs"
 decision = "docs/src/late_lower_gc_frame.md: Differences with Julia's C++ pass"
+
+[[AllocOpt]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "the port keeps allocations with volatile accesses, here the Memory of stack_memory_volatile, whose data pointer is stored with a volatile store; the C++ moves it to the stack"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=1>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=2>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=3>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "both"
+canonicalize = "without volatile Memory fixture"
+reason = "as AllocOpt's: the port keeps the Memory of stack_memory_volatile on the heap"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=2>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^declare ptr @julia\.pointer_from_objref\(ptr\) local_unnamed_addr #\{ nounwind speculatable willreturn memory\(none\) \}$'
+reason = "as for the function itself: the Memory of stack_memory_volatile that the port keeps on the heap uses julia.pointer_from_objref until GC lowering, which leaves its declaration"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
+
+[["julia<level=3>"]]
+input = "llvmpasses/alloc-opt-memory.ll"
+julia = ["1.15"]
+side = "port"
+lines = '^declare ptr @julia\.pointer_from_objref\(ptr\) local_unnamed_addr #\{ nounwind speculatable willreturn memory\(none\) \}$'
+reason = "as for the function itself: the Memory of stack_memory_volatile that the port keeps on the heap uses julia.pointer_from_objref until GC lowering, which leaves its declaration"
+decision = "docs/src/index.md: AllocOpt volatile accesses"
