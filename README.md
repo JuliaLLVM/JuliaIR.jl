@@ -1,5 +1,16 @@
 # JuliaIR.jl
 
+[![][docs-dev-img]][docs-dev-url] [![][github-img]][github-url] [![][codecov-img]][codecov-url]
+
+[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-dev-url]: https://JuliaLLVM.github.io/JuliaIR.jl/dev
+
+[github-img]: https://github.com/JuliaLLVM/JuliaIR.jl/actions/workflows/CI.yml/badge.svg?branch=main
+[github-url]: https://github.com/JuliaLLVM/JuliaIR.jl/actions/workflows/CI.yml
+
+[codecov-img]: https://codecov.io/gh/JuliaLLVM/JuliaIR.jl/branch/main/graph/badge.svg
+[codecov-url]: https://codecov.io/gh/JuliaLLVM/JuliaIR.jl
+
 JuliaIR.jl ports Julia's C++ LLVM passes to Julia using
 [LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API. The passes operate
 on *Julia's LLVM IR dialect*: GC pointers in address spaces 10 to 13, intrinsics such
