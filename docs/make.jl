@@ -30,7 +30,10 @@ function main()
     )
 
     if ci
-        deploydocs(repo = "github.com/JuliaLLVM/JuliaIR.jl.git")
+        deploydocs(
+            repo = "github.com/JuliaLLVM/JuliaIR.jl.git",
+            push_preview = true
+        )
     end
 end
 
