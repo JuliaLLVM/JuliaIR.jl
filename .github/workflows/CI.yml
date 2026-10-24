@@ -97,7 +97,7 @@ jobs:
         run: |
           julia --project=test/differential test/differential/corpus.jl corpus
           julia --project=test/differential test/differential/run.jl --quiet --out differential julia-src/test/llvmpasses corpus test/differential/inputs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure() && matrix.os == 'ubuntu-latest'
         with:
           name: differential-${{ matrix.julia.version }}
@@ -172,7 +172,7 @@ jobs:
       # an archive, as artifacts don't keep the tools' permissions
       - name: Archive the library and tools
         run: tar -cf standalone.tar standalone
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: standalone-llvm
           path: standalone.tar
@@ -264,7 +264,7 @@ jobs:
         run: julia --project=test test/upstream/run.jl julia-src
       - name: Process the generated IR with the standalone LLVM
         run: julia --project=test test/compatibility/run.jl corpus
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: compatibility-${{ matrix.julia.version }}
