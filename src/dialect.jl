@@ -263,6 +263,13 @@ struct Dialect
     "Whether the GC state restored at the returns of a C-callable function is followed
     by a safepoint (Julia 1.12 and later)."
     ptls_exit_safepoint::Bool
+    "The image's TLS offset when the loader found none: `0` (Julia 1.13 and older) or
+    `-1` (1.14 and later, where 0 is the offset of RISC-V's TLS, variant 1)."
+    ptls_image_offset_none::Int
+    "Whether code for AArch64 macOS reads the GC stack through the thread pointer, from
+    the array of pthread keys at `tpidrro_el0`, and code for other Darwin targets never
+    does (Julia 1.14 and later; before, code reads it where the runtime uses ELF TLS)."
+    ptls_darwin_tls::Bool
 
     # type lowering
     "How `Ptr{T}` is lowered: `:integer` (an integer of the pointer's size; Julia 1.10 and
@@ -420,6 +427,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         ptls_jit_getter = minor >= v"1.14" ? :resolved : :address,
         ptls_tp_inbounds = minor >= v"1.12",
         ptls_exit_safepoint = minor >= v"1.12",
+        ptls_image_offset_none = minor >= v"1.14" ? -1 : 0,
+        ptls_darwin_tls = minor >= v"1.14",
         cpointer_type = minor <= v"1.11" ? :integer : :pointer,
         bottom_aliases = minor <= v"1.11" ? :bottom :
                          minor >= v"1.14" ? :some_type : :typeofbottom_super,

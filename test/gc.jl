@@ -52,7 +52,7 @@ has(out, re::Regex) = any(l -> occursin(re, l), body(out))
           ret void
         }"""
     ptls(ir, v, facts=FACTS) =
-        lower(JuliaIR.lower_ptls!, JuliaIR.LOWER_PTLS, ir, v, "tls-offset=-8;$facts";
+        lower(JuliaIR.lower_ptls!, JuliaIR.LOWER_PTLS, ir, v, "tls-offset=-8;tls-elf-support=yes;$facts";
               target=:module)
 
     # the task and its thread-local state: pointer-sized GEPs up to Julia 1.11

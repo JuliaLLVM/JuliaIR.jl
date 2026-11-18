@@ -55,7 +55,8 @@ end
     @test rt.tls_offset == unsafe_load(cglobal(:jl_tls_offset, Int))
     if Sys.islinux() && Sys.ARCH === :x86_64
         @test rt.tls_offset == -8
-    elseif Sys.isapple() || Sys.iswindows()
+    elseif Sys.iswindows() || (Sys.isapple() && VERSION < v"1.14-")
+        # (from Julia 1.14 on, macOS has an offset into its array of pthread keys)
         @test rt.tls_offset == -1
     end
     @test rt.pgcstack_getter isa UInt && rt.pgcstack_getter != 0

@@ -20,6 +20,9 @@
 ; RUN: %if julia-ge-1.12 %{ opt -mtriple=riscv64-unknown-linux-gnu -passes='jl-lower-ptls<tls-offset=-8>' -S %t/arch.ll | FileCheck %t/arch.ll --check-prefix=RISCV %}
 ; RUN: %if julia-1.10 || julia-1.11 %{ not opt -mtriple=riscv64-unknown-linux-gnu -passes='jl-lower-ptls<tls-offset=-8>' -S %t/arch.ll 2>&1 | FileCheck %t/arch.ll --check-prefix=NOTP-RISCV %}
 ; RUN: not opt -mtriple=powerpc64le-unknown-linux-gnu -passes='jl-lower-ptls<tls-offset=-8>' -S %t/arch.ll 2>&1 | FileCheck %t/arch.ll --check-prefix=NOTP-PPC
+; on macOS, from Julia 1.14 on, through the pthread keys on AArch64 and never on x86-64
+; RUN: %if julia-ge-1.14 %{ opt -mtriple=arm64-apple-macosx -passes='jl-lower-ptls<tls-offset=16>' -S %t/arch.ll | FileCheck %t/arch.ll --check-prefix=DARWIN-AARCH64 %}
+; RUN: %if julia-1.14 %{ opt -mtriple=x86_64-apple-darwin -passes='jl-lower-ptls<tls-offset=16>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
 ; a module without a triple is for the running Julia's host
 ; RUN: %if x86_64 %{ opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/no-triple.ll | FileCheck %t/no-triple.ll %}
 
@@ -31,13 +34,14 @@
 ; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-getters>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
 ; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ not opt -passes='jl-lower-ptls<tls-offset=-8;tls-getters>' -S %t/getter.ll 2>&1 | FileCheck %t/getter.ll --check-prefix=NO-TLS-GETTERS %}
 
-; imaging mode, with ELF TLS (the TLS offset, or the getter where the loader left it 0)
-; and without (the getter, with the key on Darwin)
-; RUN: %if julia-1.10 || julia-1.11 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,NOINB -DOFFSET=jl_tls_offset %}
-; RUN: %if julia-1.12 || julia-1.13 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,INB -DOFFSET=jl_tls_offset %}
-; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,INB -DOFFSET=jl_image_tls_offset %}
+; imaging mode, with ELF TLS (the TLS offset, or the getter where the loader found none:
+; 0, from Julia 1.14 on -1) and without (the getter, with the key on Darwin)
+; RUN: %if julia-1.10 || julia-1.11 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,NOINB -DOFFSET=jl_tls_offset -DNONE=0 %}
+; RUN: %if julia-1.12 || julia-1.13 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,INB -DOFFSET=jl_tls_offset -DNONE=0 %}
+; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefixes=ELF,INB -DOFFSET=jl_image_tls_offset -DNONE=-1 %}
 ; RUN: opt -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefix=NOELF
 ; RUN: opt -mtriple=x86_64-apple-darwin -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefix=NOELF-KEY
+; RUN: %if julia-1.14 %{ opt -mtriple=arm64-apple-macosx -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/imaging.ll | FileCheck %t/imaging.ll --check-prefix=DARWIN-AARCH64 %}
 ; the image's variables are reused when the module declares them, and must match
 ; RUN: opt -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/reuse.ll | FileCheck %t/reuse.ll
 ; RUN: not opt -passes='jl-lower-ptls<imaging;tls-elf-support=no>' -S %t/conflict.ll 2>&1 | FileCheck %t/conflict.ll
@@ -169,6 +173,9 @@ declare i32 @sigsetjmp(ptr, i32) returns_twice
 ; I686:            %thread_ptr = call ptr asm "movl %gs:0, $0", "=r"()
 ; RISCV-LABEL:   define ptr @get()
 ; RISCV:           %thread_ptr = call ptr asm "mv $0, tp", "=r"()
+; DARWIN-AARCH64-LABEL: define ptr @get()
+; DARWIN-AARCH64:    %thread_ptr = call ptr asm "mrs $0, tpidrro_el0\0A\09and $0, $0, #-8", "=r"()
+; DARWIN-AARCH64-NEXT: %tls_ppgcstack = getelementptr inbounds i8, ptr %thread_ptr, i64 16
 ; NOTP-RISCV:    LowerPTLSError: can't read the thread pointer for target riscv64-unknown-linux-gnu; use the getter instead
 ; NOTP-PPC:      LowerPTLSError: can't read the thread pointer for target powerpc64le-unknown-linux-gnu; use the getter instead
 define ptr @get() {
@@ -246,7 +253,7 @@ declare void @use(ptr)
 ; ELF-LABEL:   define void @get()
 ; ELF-NEXT:    top:
 ; ELF-NEXT:      %0 = load i64, ptr @[[OFFSET]], align 8, !tbaa ![[CONST:[0-9]+]], !invariant.load ![[EMPTY:[0-9]+]]
-; ELF-NEXT:      %1 = icmp ne i64 %0, 0
+; ELF-NEXT:      %1 = icmp ne i64 %0, [[NONE]]
 ; ELF-NEXT:      br i1 %1, label %2, label %3, !prof ![[WEIGHTS:[0-9]+]]
 ; ELF-EMPTY:
 ; ELF-NEXT:    2:
@@ -274,6 +281,9 @@ declare void @use(ptr)
 ; NOELF-KEY-NEXT:    %0 = load ptr, ptr @jl_pgcstack_func_slot, align 8, !tbaa ![[CONST:[0-9]+]], !invariant.load
 ; NOELF-KEY-NEXT:    %1 = load i64, ptr @jl_pgcstack_key_slot, align 8, !tbaa ![[CONST]], !invariant.load
 ; NOELF-KEY-NEXT:    %pgcstack = call ptr %0(i64 %1) #[[ATTRS:[0-9]+]]
+; DARWIN-AARCH64-LABEL: define void @get()
+; DARWIN-AARCH64:      %1 = icmp ne i64 %0, -1
+; DARWIN-AARCH64:      %thread_ptr = call ptr asm "mrs $0, tpidrro_el0\0A\09and $0, $0, #-8", "=r"()
 define void @get() {
 top:
   %pgcstack = call ptr @julia.get_pgcstack()

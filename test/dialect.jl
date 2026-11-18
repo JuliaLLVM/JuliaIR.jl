@@ -102,6 +102,8 @@ end
     @test (d13.ptls_jit_getter, dm.ptls_jit_getter) == (:address, :resolved)
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
+    @test (d13.ptls_image_offset_none, d14.ptls_image_offset_none) == (0, -1)
+    @test !d13.ptls_darwin_tls && d14.ptls_darwin_tls
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
     @test !d13.gc_fresh_barrier_elision && d14.gc_fresh_barrier_elision
 

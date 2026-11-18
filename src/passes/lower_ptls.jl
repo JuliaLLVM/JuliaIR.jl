@@ -55,12 +55,22 @@ end
 # the assembly that reads the thread pointer, or `nothing` if there is none
 function thread_pointer_asm(p::LowerPTLS)
     t = p.triple
+    # on macOS, the slot of the GC stack's pthread key (`JL_TLS_LOAD_ASM`)
+    p.dialect.ptls_darwin_tls && LLVM.isaarch64(t) && LLVM.isdarwin(t) &&
+        return "mrs \$0, tpidrro_el0\n\tand \$0, \$0, #-8"
     LLVM.isaarch64(t) && return "mrs \$0, tpidr_el0"
     LLVM.isarm(t) && return "mrc p15, 0, \$0, c13, c0, 3"
     p.dialect.ptls_tp_inbounds && LLVM.isriscv(t) && return "mv \$0, tp"
     t.arch === :x86_64 && return "movq %fs:0, \$0"
     LLVM.isx86(t) && return "movl %gs:0, \$0"
     return nothing
+end
+
+# whether code for the target can read the GC stack through the thread pointer
+# (`inline_tls`): where the runtime uses ELF TLS, and from Julia 1.14 on, on AArch64 macOS
+function inline_tls(p::LowerPTLS)
+    p.dialect.ptls_darwin_tls && LLVM.isdarwin(p.triple) && return LLVM.isaarch64(p.triple)
+    return layout(p).tls_elf_support
 end
 
 # `Function::callsFunctionThatReturnsTwice`
@@ -244,12 +254,13 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
     T_ptr = LLVM.PointerType(AS_GENERIC)
     if p.imaging
         position_before!(builder, call; debug=true)
-        if layout(p).tls_elf_support
+        if inline_tls(p)
             # offset = <the image's TLS offset>
-            # if offset != 0:  pgcstack = <thread pointer> + offset    (fast)
-            # else:            pgcstack = <the image's getter>()       (slow)
+            # if offset != none:  pgcstack = <thread pointer> + offset    (fast)
+            # else:               pgcstack = <the image's getter>()       (slow)
             offset = load_slot!(p, p.gc.T_size, p.dialect.ptls_image_offset_slot)
-            cmp = icmp!(builder, LLVM.IntPredicate.NE, offset, ConstantInt(p.gc.T_size, 0))
+            none = ConstantInt(p.gc.T_size, p.dialect.ptls_image_offset_none, true)
+            cmp = icmp!(builder, LLVM.IntPredicate.NE, offset, none)
             fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, call;
                                                                         weights=(9, 1))
             p.cfg_modified = true
@@ -279,7 +290,8 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             set_called_operand!(call, getter_ptr)
         end
         set_pgcstack_attrs!(call)
-    elseif !p.tls_getters && layout(p).tls_offset != -1
+    elseif !p.tls_getters && layout(p).tls_offset != -1 &&
+           (!p.dialect.ptls_darwin_tls || inline_tls(p))
         replace_uses!(call, emit_pgcstack_tp!(p, nothing, call))
         erase!(call)
     elseif p.dialect.ptls_jit_getter === :address
@@ -404,8 +416,9 @@ function check_lower_ptls(p::LowerPTLS, getters)
     p.imaging && foreach(name -> check_slot(p, name), slot_names(p))
     if needs_tp
         # whether a call is lowered to a read of the thread pointer
-        reads_tp = p.imaging ? layout(p).tls_elf_support :
-                               !p.tls_getters && layout(p).tls_offset != -1
+        reads_tp = p.imaging ? inline_tls(p) :
+                               !p.tls_getters && layout(p).tls_offset != -1 &&
+                               (!p.dialect.ptls_darwin_tls || inline_tls(p))
         if reads_tp && thread_pointer_asm(p) === nothing
             throw(LowerPTLSError(unsupported_target(p)))
         end
