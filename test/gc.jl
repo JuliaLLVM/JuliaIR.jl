@@ -197,7 +197,7 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
         @tag = external addrspace(10) global {}, align 16
         declare ptr @julia.get_pgcstack()
         declare ptr addrspace(10) @julia.gc_alloc_memory(ptr, $T, ptr addrspace(10), $T, i1)
-        define ptr addrspace(10) @f(ptr %task, $T %n) {
+        define ptr addrspace(10) @f(ptr %task, $T %n, i1 %z) {
         top:
           %pgcstack = call ptr @julia.get_pgcstack()
           %mem = call ptr addrspace(10) @julia.gc_alloc_memory(ptr %task, $T $nbytes, ptr addrspace(10) @tag, $T $len, i1 $zeroinit)
@@ -226,9 +226,13 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     @test has(out, r"@jl_alloc_genericmemory_unchecked\(ptr %ptls_load, i64 %n, ")
     @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 %n, i1 false\)$")
     # no data to zero
-    @test !occursin("memset", llgcf(memory(X86_64, 0, 4, true), v"1.15", facts64))
+    @test !occursin("memset", llgcf(memory(X86_64, 0, 4, true), v"1.14", facts64))
+    # a zeroing flag that LLVM made a variable by merging allocations
+    out = llgcf(memory(X86_64, 32, 4, "%z"), v"1.14", facts64)
+    @test has(out, r"^%(\d+) = select i1 %z, i64 32, i64 0$")
+    @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 %\d+, i1 false\)$")
     # older versions don't have the intrinsic
-    out = llgcf(memory(X86_64, 32, 4, true), v"1.14", facts64)
+    out = llgcf(memory(X86_64, 32, 4, true), v"1.13", facts64)
     @test has(out, r"^%mem = call ptr addrspace\(10\) @julia.gc_alloc_memory\(")
 
     # Write barriers on an object allocated since the last safepoint on every path to them

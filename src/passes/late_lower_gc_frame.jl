@@ -2258,7 +2258,6 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
     position_before!(builder, call; debug=true)
     g = p.gc
     task, nbytes, tag, len, zeroinit = call.arguments
-    zeroinit = convert(UInt64, zeroinit::ConstantInt) == 1
     ptrsize = pointer_size(g)
     T_int8 = LLVM.Int8Type()
     T_int64 = LLVM.Int64Type()
@@ -2290,8 +2289,13 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
         ptr_field = inbounds_gep!(builder, T_int8, derived, [ptr_offset])
         data = load!(builder, T_ptr, ptr_field; align=pointer_align(g))
     end
-    if zeroinit && !(nbytes isa ConstantInt && iszero(convert(UInt64, nbytes)))
-        memset!(builder, data, ConstantInt(T_int8, 0), nbytes, pointer_align(g))
+    # LLVM may merge the allocations of Memory types that differ in whether their data is
+    # zeroed, which makes the flag a variable (JuliaLang/julia#64250)
+    if !(zeroinit isa ConstantInt && iszero(convert(UInt64, zeroinit))) &&
+       !(nbytes isa ConstantInt && iszero(convert(UInt64, nbytes)))
+        zerobytes = zeroinit isa ConstantInt ? nbytes :
+                    select!(builder, zeroinit, nbytes, ConstantInt(g.T_size, 0))
+        memset!(builder, data, ConstantInt(T_int8, 0), zerobytes, pointer_align(g))
     end
     len_field = inbounds_gep!(builder, T_int8, derived,
                               [ConstantInt(T_int64, genericmemory_length_offset(ptrsize))])
