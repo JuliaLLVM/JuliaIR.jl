@@ -298,13 +298,15 @@ function barrier_children(call::Instruction)
 end
 
 # a write barrier (Julia 1.14 and later), the stock GC's: like Julia 1.13's in
-# LateLowerGCFrame, without the children that are null (a field that is cleared)
+# LateLowerGCFrame (on 1.15 with the levels of permanent objects), without the children
+# that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
     children = barrier_children(target)
     isempty(children) && return
     p.cfg_modified = true
-    queue_root = emit_write_barrier!(p.gc, target, parent, children, :image, 1)
+    queue_root = emit_write_barrier!(p.gc, target, parent, children,
+                                     p.dialect.gc_final_barrier, 1)
     # the slow path runs in the barrier's cancellation reset region, if any
     if p.dialect.gc_alloc_reset_safe
         reset_region = get(target.metadata, "julia.reset_region", nothing)

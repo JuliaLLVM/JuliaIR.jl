@@ -13,8 +13,8 @@
 ; RUN: opt -passes=FinalLowerGC -S %t/declarations.ll | FileCheck %t/declarations.ll --check-prefixes=%if julia-1.10 %{V110%}%if julia-1.11 %{GCSTACK%}%if julia-1.12 %{GCSTACK%}%if julia-ge-1.13 %{USES%}
 ; RUN: opt -passes=FinalLowerGC -S %t/no-julia.ll | FileCheck %t/no-julia.ll --check-prefixes=%if julia-1.10 %{V110%} %else %{NONE%}
 ; RUN: %if julia-ge-1.13 %{ opt -passes=FinalLowerGC -S %t/gcstack-arg.ll | FileCheck %t/gcstack-arg.ll %}
-; RUN: %if julia-1.14 %{ opt -passes=FinalLowerGC -S %t/barriers.ll | FileCheck %t/barriers.ll --check-prefixes=CHECK,NORESET %}
-; RUN: %if julia-ge-1.15 %{ opt -passes=FinalLowerGC -S %t/barriers.ll | FileCheck %t/barriers.ll --check-prefixes=CHECK,RESET %}
+; RUN: %if julia-1.14 %{ opt -passes=FinalLowerGC -S %t/barriers.ll | FileCheck %t/barriers.ll --check-prefixes=CHECK,IMAGE,NORESET %}
+; RUN: %if julia-ge-1.15 %{ opt -passes=FinalLowerGC -S %t/barriers.ll | FileCheck %t/barriers.ll --check-prefixes=CHECK,LEVELS,RESET %}
 ; RUN: opt -passes=FinalLowerGC -S %t/amdgcn.ll | FileCheck %t/amdgcn.ll
 ; RUN: opt -passes=FinalLowerGC -S %t/i686.ll | FileCheck %t/i686.ll
 ; RUN: opt -passes='function(LateLowerGCFrame,FinalLowerGC)' -S %t/overaligned.ll | FileCheck %t/overaligned.ll
@@ -328,13 +328,16 @@ declare void @julia.queue_gc_root(ptr addrspace(10))
 ; CHECK-NEXT: %parent_old_marked = icmp eq i64 %parent_bits, 3
 ; CHECK-NEXT: br i1 %parent_old_marked, label %may_trigger_wb, label
 ; CHECK: may_trigger_wb:
-; CHECK-NEXT: %parent_in_image = and i64 %p.tag, 12
-; CHECK-NEXT: %parent_is_image = icmp eq i64 %parent_in_image, 4
+; IMAGE-NEXT: %parent_in_image = and i64 %p.tag, 12
+; IMAGE-NEXT: %parent_is_image = icmp eq i64 %parent_in_image, 4
+; LEVELS-NEXT: %parent_threshold = and i64 %p.tag, 4
 ; CHECK-NEXT: %c.tag_addr = getelementptr inbounds i64, ptr addrspace(10) %c, i64 -1
 ; CHECK-NEXT: %c.tag = load atomic volatile i64
-; CHECK-NEXT: %child_bit = and i64 %c.tag, 1
-; CHECK-NEXT: %child_not_marked = icmp eq i64 %child_bit, 0
-; CHECK-NEXT: %should_trigger_wb = or i1 %parent_is_image, %child_not_marked
+; IMAGE-NEXT: %child_bit = and i64 %c.tag, 1
+; IMAGE-NEXT: %child_not_marked = icmp eq i64 %child_bit, 0
+; IMAGE-NEXT: %should_trigger_wb = or i1 %parent_is_image, %child_not_marked
+; LEVELS-NEXT: %child_level = and i64 %c.tag, 9
+; LEVELS-NEXT: %should_trigger_wb = icmp ule i64 %child_level, %parent_threshold
 ; CHECK-NEXT: br i1 %should_trigger_wb, label %trigger_wb, label {{%[0-9]+}}, !prof [[WEIGHTS:![0-9]+]]
 ; CHECK: trigger_wb:
 ; CHECK-NEXT: call void @ijl_gc_queue_root(ptr addrspace(10) %p)

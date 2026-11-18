@@ -216,6 +216,11 @@ struct Dialect
     `:deferred` (only elided when unnecessary, and lowered by FinalLowerGC; 1.14 and
     later)."
     gc_barrier_lowering::Symbol
+    "How FinalLowerGC lowers write barriers (Julia 1.14 and later): `:image` (the parent
+    is queued if it is in the system image but not yet in its remembered set, or a child
+    isn't marked; 1.14) or `:levels` (if the lowest level of the children, of young, old
+    and permanent objects, is at most the parent's threshold; 1.15 and later)."
+    gc_final_barrier::Symbol
     "How calls with a `gc-transition` operand bundle are lowered: `:none` (the bundle is
     dropped; Julia 1.11 and older), `:pgcstack` (the GC state is switched through the
     task of the GC stack; 1.12), or `:bundle` (through the bundle's thread-local state;
@@ -412,6 +417,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_extract_simplify = minor >= v"1.12",
         gc_ptls_gep = minor <= v"1.11" ? :pointer : :byte,
         gc_barrier_lowering,
+        gc_final_barrier = minor >= v"1.15" ? :levels : :image,
         gc_transition_lowering,
         gc_safepoint_load = minor >= v"1.14" ? :monotonic_named :
                             minor == v"1.13" ? :monotonic : :plain,

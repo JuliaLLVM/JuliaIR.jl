@@ -61,7 +61,7 @@ versions are fields of `JuliaIR.Dialect`:
 | typed allocator | `ijl_gc_alloc_typed(ptls, size, null)` | `ijl_gc_alloc_typed(ptls, size, tag)` | same | same | same | same |
 | alignment of allocations | none | the call's, at least a pointer's | same | same | same | same |
 | allocations and root queuing in a cancellation reset region (`!julia.reset_region`) | | | | | | the `_reset_safe` variants of the runtime functions |
-| write barriers | | | | | lowered here (LateLowerGCFrame leaves them), without null children | same |
+| write barriers | | | | | lowered here (LateLowerGCFrame leaves them), without null children | same, comparing the lowest level of the children (the AND of their tags) with the parent's threshold, which also skips permanent children (JuliaLang/julia#64913) |
 
 The size of a big object's allocation includes the type tag; the typed allocator is given
 the size of the object without it. The result of an allocation of a constant size is
