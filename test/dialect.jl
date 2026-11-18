@@ -4,9 +4,9 @@ using JuliaIR: Dialect
 
 @testset "resolution" begin
     # every known minor version, as released and as prerelease
-    for (v, minor) in [(v"1.10.12", v"1.10"), (v"1.10.0", v"1.10"),
+    for (v, minor) in [(v"1.10.13", v"1.10"), (v"1.10.0", v"1.10"),
                        (v"1.11.9", v"1.11"), (v"1.11.0-DEV.200", v"1.11"),
-                       (v"1.12.7", v"1.12"), (v"1.13.2", v"1.13"),
+                       (v"1.12.7", v"1.12"), (v"1.13.4", v"1.13"),
                        (v"1.13.0-DEV.1", v"1.13"), (v"1.13.0-rc1", v"1.13"),
                        (v"1.14.0-DEV.3782", v"1.14"), (v"1.15.0-DEV.77", v"1.15")]
         d = Dialect(v)
@@ -56,10 +56,10 @@ end
     @test (d10.alloc_layout, d11.alloc_layout, d12.alloc_layout, dm.alloc_layout) ==
           (:legacy, :legacy, :chunked, :chunked)
     @test !d10.alloc_callsite_attrs && d11.alloc_callsite_attrs
-    @test !d13.alloc_bundles && dm.alloc_bundles
+    @test !d12.alloc_bundles && d13.alloc_bundles
     @test !d13.has_gc_alloc_memory && d14.has_gc_alloc_memory
     @test !d11.has_gc_transition_bundle && d12.has_gc_transition_bundle
-    @test !d13.has_zeroinit_indirect_bundle && dm.has_zeroinit_indirect_bundle
+    @test !d12.has_zeroinit_indirect_bundle && d13.has_zeroinit_indirect_bundle
 
     @test d10.tbaa_downgrade == ["jtbaa_const"]
     @test d11.tbaa_downgrade == d13.tbaa_downgrade == ["jtbaa_const", "jtbaa_memoryptr", "jtbaa_memorylen"]

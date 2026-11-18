@@ -283,7 +283,7 @@ end
 
     # the pin of a Julia version: its minor's, or for a newer prerelease, the newest
     # one if it follows the nightly build
-    @test UpstreamHarness.pin_minor(manifest, v"1.13.2") == "1.13"
+    @test UpstreamHarness.pin_minor(manifest, v"1.13.4") == "1.13"
     @test UpstreamHarness.pin_minor(manifest, v"1.14.0-DEV.3787") == "1.14"
     @test UpstreamHarness.pin_minor(manifest, v"1.15.0-DEV.14") == "1.15"
     @test UpstreamHarness.pin_minor(manifest, v"1.16.0-DEV.1") == "1.15"

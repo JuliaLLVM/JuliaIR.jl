@@ -118,7 +118,8 @@ struct Dialect
     (alignment-sized integer chunks, aligned like the allocation but at least to 16)."
     alloc_layout::Symbol
     "Whether allocations carry the `julia.gc_alloc_ptr_offsets` and
-    `julia.gc_alloc_zeroinit` operand bundles."
+    `julia.gc_alloc_zeroinit` operand bundles (Julia 1.13.4 and later; the passes also
+    accept 1.13's allocations without them)."
     alloc_bundles::Bool
     "Whether the code generator allocates every new `GenericMemory` with
     `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.14 and later),
@@ -129,7 +130,8 @@ struct Dialect
     # operand bundles
     "Whether calls carry `gc-transition` operand bundles."
     has_gc_transition_bundle::Bool
-    "Whether calls carry `julia.gc_alloc_zeroinit_indirect` operand bundles."
+    "Whether calls carry `julia.gc_alloc_zeroinit_indirect` operand bundles (Julia 1.13.4
+    and later, like `alloc_bundles`)."
     has_zeroinit_indirect_bundle::Bool
 
     # metadata
@@ -371,10 +373,10 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         alloc_initialization = minor == v"1.10" ? :none :
                                minor == v"1.11" ? :store : :memset,
         alloc_layout = minor <= v"1.11" ? :legacy : :chunked,
-        alloc_bundles = minor >= v"1.14",
+        alloc_bundles = minor >= v"1.13",
         has_gc_alloc_memory = minor >= v"1.14",
         has_gc_transition_bundle = minor >= v"1.12",
-        has_zeroinit_indirect_bundle = minor >= v"1.14",
+        has_zeroinit_indirect_bundle = minor >= v"1.13",
         tbaa_downgrade,
         simdloop_check_combine = minor >= v"1.12",
         verifier_vector_pointers = minor >= v"1.12",

@@ -1,4 +1,6 @@
-# Julia 1.13's pipeline (`src/pipeline.cpp` at v1.13.2).
+# Julia 1.13's pipeline (`src/pipeline.cpp` at v1.13.4). Julia 1.13.4 moved IRCE after the
+# cleanup of the loop passes, with a cleanup of its own (JuliaLang/julia#64018); the
+# earlier patch releases run it before.
 
 aggressive_simplifycfg(::Recipe{13}) =
     SimplifyCFGPass(; forward_switch_cond=true, switch_range_to_icmp=true,
@@ -89,9 +91,10 @@ function loop_optimization!(fpm, p::JuliaPipeline, ::Recipe{13})
                 add!(lpm, SimpleLoopUnswitchPass(; nontrivial=true, trivial=true))
             end
         end
-        p.level >= 2 && add!(fpm, IRCEPass())
+        p.level >= 2 && p.julia < v"1.13.4" && add!(fpm, IRCEPass())
         add!(fpm, basic_simplifycfg())
         add!(fpm, InstCombinePass())
+        p.level >= 2 && p.julia >= v"1.13.4" && add!(fpm, IRCE_WITH_CLEANUP.name)
         add!(fpm, LoopPassManager()) do lpm
             add!(lpm, "BeforeLoopSimplification")
             if p.level >= 2
@@ -172,6 +175,7 @@ function vectorization!(fpm, p::JuliaPipeline, r::Recipe{13})
         add!(fpm, EarlyCSEPass())
         add!(fpm, CorrelatedValuePropagationPass())
         add!(fpm, InstCombinePass())
+        p.julia >= v"1.13.4" && add!(fpm, aggressive_simplifycfg(r))
         add!(fpm, SLPVectorizerPass())
         add!(fpm, VectorCombinePass())
         add!(fpm, LoopUnrollPass(; opt_level=p.level))

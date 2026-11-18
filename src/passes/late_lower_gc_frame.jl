@@ -2220,7 +2220,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     T_size = p.gc.T_size
     new_call = emit_gc_alloc_bytes!(p, call, call.arguments[2], call.arguments[3])
 
-    # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
+    # null the reference fields, or zero a region (Julia 1.13.4 and later), so that the GC
     # sees valid pointers before the object is initialized
     bundles = Dict(LLVM.tag(b) => b for b in call.operand_bundles)
     ptr_offsets = get(bundles, "julia.gc_alloc_ptr_offsets", nothing)
@@ -2459,7 +2459,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     return length(frame_values)
 end
 
-# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia 1.14 and later, on
+# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia 1.13.4 and later, on
 # `jl_alloc_genericmemory_unchecked`): zero `size` bytes at the data pointer stored at
 # `offset` in the new object, after the call
 function zeroinit_indirect!(p::LateLowerGCFrame, call::Instruction, bundle::OperandBundle)
