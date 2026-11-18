@@ -192,6 +192,9 @@ const REQUIRE_GLOBALS_AA = "require<globals-aa>"
 # `InferAlignmentPass()`
 const INFER_ALIGNMENT = "infer-alignment"
 
+# `InvalidateAnalysisPass<MemorySSAAnalysis>()`
+const INVALIDATE_MEMORYSSA = "invalidate<memoryssa>"
+
 
 ## markers
 #

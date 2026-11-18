@@ -65,7 +65,7 @@ previous version's. The recipe is chosen by the running Julia's version:
 | 1.12 | `Recipe{12}` | InferFunctionAttrs; no level-1 scalar optimizations; DSE before GVN after the GC lowering; no CombineMulAdd |
 | 1.13 | `Recipe{13}` | SROA modifying the CFG, EarlyCSE and GlobalOpt in the early simplifications; eagerly invalidating function pass manager; a single loop pass manager with MemorySSA; `vector-combine<early>`; ExpandAtomicModify; from 1.13.4 on, IRCE with cleanup after the loop passes' cleanup, and SimplifyCFG before SLP vectorization |
 | 1.14 | `Recipe{14}` | no CGSCC pass manager; a full unroll of small loops before IRCE; EarlyCSE instead of GVN after the GC lowering; alignment inference after the intrinsic lowering; float2int and lower-constant-intrinsics in the vectorization; no sanitizers (stock builds) |
-| 1.15 | `Recipe{15}` | CancellationLowering before LateLowerGCFrame (Julia 1.14 reverted it before its release) |
+| 1.15 | `Recipe{15}` | CancellationLowering before LateLowerGCFrame (Julia 1.14 reverted it before its release); EarlyCSE with a fresh MemorySSA before IndVarSimplify |
 
 A Julia newer than the newest recipe uses it until its pipeline changes.
 
