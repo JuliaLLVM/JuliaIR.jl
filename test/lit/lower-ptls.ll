@@ -8,9 +8,9 @@
 ; RUN: split-file %s %t
 
 ; JIT mode, through the thread pointer
-; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,NOINB,SWIFT,KEEPNAME %}
-; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,NOINB,SWIFT,TAKENAME %}
-; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,INB,SWIFT,TAKENAME %}
+; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,NOINB,SWIFT,KEEPNAME %}
+; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,NOINB,SWIFT,TAKENAME %}
+; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,INB,SWIFT,TAKENAME %}
 ; RUN: %if julia-1.13 || julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefixes=CHECK,INB,GCSTACK %}
 ; from Julia 1.15 on, like in imaging mode, through the runtime's variables
 ; RUN: %if julia-ge-1.15 %{ opt -passes='jl-lower-ptls<tls-elf-support=yes>' -S %t/jit.ll | FileCheck %t/jit.ll --check-prefix=SLOTS %}
@@ -35,8 +35,8 @@
 ; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0x2000>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=ADDRESS %}
 ; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ opt -mtriple=x86_64-apple-darwin -passes='jl-lower-ptls<tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0x2000>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=ADDRESS-KEY %}
 ; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-1>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
-; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-getters>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
-; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ not opt -passes='jl-lower-ptls<tls-offset=-8;tls-getters>' -S %t/getter.ll 2>&1 | FileCheck %t/getter.ll --check-prefix=NO-TLS-GETTERS %}
+; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;tls-getters>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=RESOLVED %}
+; RUN: %if julia-1.10 || julia-1.11 || julia-1.12 || julia-1.13 %{ not opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;tls-getters>' -S %t/getter.ll 2>&1 | FileCheck %t/getter.ll --check-prefix=NO-TLS-GETTERS %}
 ; from Julia 1.15 on, from the runtime's variable (always with `tls-getters`)
 ; RUN: %if julia-ge-1.15 %{ opt -passes='jl-lower-ptls<tls-elf-support=no>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=SLOT %}
 ; RUN: %if julia-ge-1.15 %{ opt -passes='jl-lower-ptls<tls-elf-support=yes;tls-getters>' -S %t/getter.ll | FileCheck %t/getter.ll --check-prefix=SLOT %}
@@ -57,20 +57,20 @@
 ; `julia.get_pgcstack_or_new`: adopting the thread, entering and leaving the GC-unsafe
 ; state (1.12 has 1.13's fix of the entry safepoint); the safepoint page is loaded
 ; atomically from 1.13 on, through an address named from 1.14 on
-; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V110,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
-; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V111,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
-; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,PLAINSP,V112 -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
-; RUN: %if julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,ATOMICSP -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
-; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,NAMEDSP,ATOMICSP -DTASK=-192 -DPTLS=208 -DSTATE=128 %}
+; RUN: %if julia-1.10 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V110,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
+; RUN: %if julia-1.11 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=112;task-ptls=128;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,LEGACY,V111,PLAINSP -DTASK=-14 -DPTLS=16 -DSTATE=25 %}
+; RUN: %if julia-1.12 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,PLAINSP,V112 -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
+; RUN: %if julia-1.13 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,UNNAMEDSP,ATOMICSP -DTASK=-152 -DPTLS=168 -DSTATE=25 %}
+; RUN: %if julia-1.14 %{ opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>' -S %t/or-new.ll | FileCheck %t/or-new.ll --check-prefixes=CHECK,NEW,NAMEDSP,ATOMICSP -DTASK=-192 -DPTLS=208 -DSTATE=128 %}
 ; in imaging mode (and JIT mode from Julia 1.15 on), the GC stack found through the image's
 ; (the runtime's) variables
 ; RUN: opt -passes='jl-lower-ptls<imaging;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/or-new-imaging.ll | FileCheck %t/or-new-imaging.ll
 ; RUN: %if julia-ge-1.15 %{ opt -passes='jl-lower-ptls<tls-elf-support=yes;task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128>' -S %t/or-new-imaging.ll | FileCheck %t/or-new-imaging.ll %}
 
 ; uses that the pass can't lower are rejected before it changes anything
-; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/errors.ll 2>&1 | FileCheck %t/errors.ll --check-prefix=NONCALL
-; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8>' -S %t/invoke.ll 2>&1 | FileCheck %t/invoke.ll
-; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/dominate.ll 2>&1 | FileCheck %t/dominate.ll
+; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/errors.ll 2>&1 | FileCheck %t/errors.ll --check-prefix=NONCALL
+; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes>' -S %t/invoke.ll 2>&1 | FileCheck %t/invoke.ll
+; RUN: not opt -passes='jl-lower-ptls<tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25>' -S %t/dominate.ll 2>&1 | FileCheck %t/dominate.ll
 
 ; a module without getters is left alone, without reading any fact
 ; RUN: opt -passes=jl-lower-ptls -S %t/none.ll | FileCheck %t/none.ll

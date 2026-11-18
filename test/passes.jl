@@ -1042,7 +1042,7 @@ end
         @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
                                     pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
         if dialect.ptls_jit_getter === :resolved
-            _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8")
+            _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8;tls-elf-support=yes")
             @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
         elseif dialect.ptls_jit_getter === :slots
             _, out = lower(ir(get_ir), "tls-getters;tls-elf-support=yes")
@@ -1062,7 +1062,7 @@ end
         # the GC stack through the thread pointer, or the getter: the CFG is unchanged
         # (from Julia 1.15 on, which chooses at run time, only with the getter)
         pa, out = lower(ir(get_ir), dialect.ptls_jit_getter === :slots ?
-                                    "tls-elf-support=no" : "tls-offset=-8")
+                                    "tls-elf-support=no" : "tls-offset=-8;tls-elf-support=yes")
         @test pa == PreservedAnalyses(CFGAnalyses)
         @test occursin(dialect.ptls_jit_getter === :slots ? "@jl_pgcstack_func_slot" :
                        "movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
@@ -1071,7 +1071,7 @@ end
         # the ELF TLS fast path and thread adoption split blocks
         pa, out = lower(ir(get_ir), "imaging;tls-elf-support=yes")
         @test pa == PreservedAnalyses()
-        pa, out = lower(ir(or_new_ir), "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+        pa, out = lower(ir(or_new_ir), "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
         @test pa == PreservedAnalyses()
         @test occursin("call ptr @$(dialect.ptls_adopt_thread)()", out)
     end
@@ -1104,7 +1104,7 @@ end
             done:
               ret void
             }""")
-        @test occursin("doesn't dominate a return", rejection(bad, "tls-offset=-8"))
+        @test occursin("doesn't dominate a return", rejection(bad, "tls-offset=-8;tls-elf-support=yes"))
         # names of the image's variables that are taken by other kinds of globals
         for decl in ["@x = global ptr null\n@jl_pgcstack_func_slot = alias ptr, ptr @x",
                      "@jl_pgcstack_func_slot = external thread_local global ptr",
@@ -1114,7 +1114,7 @@ end
         end
         # the function that adopts a thread must be declared like the getter
         adopt = dialect.ptls_adopt_thread
-        facts = "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
+        facts = "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
         for decl in ["@x = global ptr null\n@$adopt = alias ptr, ptr @x",
                      "declare ptr @$adopt(i32)",
                      "declare ptr @$adopt() addrspace(1)"]
@@ -1123,7 +1123,7 @@ end
         end
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
-        @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8")
+        @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8;tls-elf-support=yes")
         _, out = lower(ir(get_ir; triple), "tls-offset=-1;tls-elf-support=no;pgcstack-getter=0x1000;pgcstack-key=0")
         @test !occursin("asm", out)
         _, out = lower(ir(get_ir; triple), "imaging;tls-elf-support=no")
@@ -1140,7 +1140,7 @@ end
               %pgcstack = call addrspace(1) ptr @julia.get_pgcstack_or_new()
               call void @use(ptr %pgcstack)
               ret void
-            }""", "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+            }""", "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
         @test occursin("call addrspace(1) ptr @$(dialect.ptls_adopt_thread)()", out)
         @test occursin("declare ptr @$(dialect.ptls_adopt_thread)() addrspace(1)", out)
         # the getter's replacements are in the default address space
