@@ -31,8 +31,12 @@ end
     task = current_task()
     ptls = ccall(:jl_get_ptls_states, Ptr{Cvoid}, ())
 
-    # the task: gcstack follows the Julia-visible fields after a 4-byte one; ptls by value
-    @test rt.task_gcstack == cld(sizeof(Task) + 4, W) * W
+    # the task: gcstack follows the Julia-visible fields after a 4-byte one (from Julia
+    # 1.14 on, `sizeof(Task)` also counts some of the hidden fields); ptls by value
+    n = fieldcount(Task)
+    T = fieldtype(Task, n)
+    visible = fieldoffset(Task, n) + (isbitstype(T) ? sizeof(T) : W)
+    @test rt.task_gcstack == cld(visible + 4, W) * W
     GC.@preserve task begin
         @test unsafe_load(Ptr{Ptr{Cvoid}}(pointer_from_objref(task) + rt.task_ptls)) == ptls
     end
