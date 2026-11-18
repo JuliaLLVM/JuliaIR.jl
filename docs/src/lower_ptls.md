@@ -7,7 +7,8 @@ that C code may call from a thread Julia doesn't know yet (a `@cfunction`). Juli
 
 - in a function that receives the GC stack as an argument (the `swiftself` argument up to
   Julia 1.12, the `"gcstack"` one from 1.13 on), that argument;
-- in *JIT mode* (the default), code that only works in the process that compiled it:
+- in *JIT mode* (the default) up to Julia 1.14, code that only works in the process that
+  compiled it:
   - where the runtime keeps the GC stack in ELF TLS at a known offset from the thread
     pointer (`jl_tls_offset`, not -1), a read of the thread pointer with inline assembly
     and a load at that offset; from Julia 1.14 on also on AArch64 macOS, where the offset
@@ -22,7 +23,10 @@ that C code may call from a thread Julia doesn't know yet (a `@cfunction`). Juli
   `jl_tls_offset` (`jl_image_tls_offset` from Julia 1.14 on). Where JIT code would read
   the thread pointer, the code reads it when the loader found an offset (one that is
   not 0, or from 1.14 on not -1: on RISC-V, 0 is a valid offset) and calls the getter
-  otherwise.
+  otherwise;
+- from Julia 1.15 on, in JIT mode as in imaging mode, except that the variables are the
+  runtime's: JIT code declares them, and links to them (JuliaLang/julia#64648), so it no
+  longer depends on the process that compiled it.
 
 For `julia.get_pgcstack_or_new`, the code then checks whether the thread has a GC stack
 (the branch weights make it likely), and if not, calls the runtime to adopt the thread
@@ -47,7 +51,7 @@ code keeps the names and the structure of the C++ (`fix_pgcstack_use!`,
 | `imaging` | `imaging` | imaging mode instead of JIT mode |
 | `tls-getters` | `tls_getters` | always call the getter in JIT mode (Julia 1.14 and later, like the C++) |
 | `tls-elf-support=yes\|no` | `tls_elf_support` (`true` or `false`) | whether the runtime uses ELF TLS (imaging mode; from Julia 1.14 on also JIT mode, outside Darwin) |
-| `tls-offset=N` | `tls_offset` | the GC stack's offset from the thread pointer, or -1 (JIT mode) |
+| `tls-offset=N` | `tls_offset` | the GC stack's offset from the thread pointer, or -1 (JIT mode, up to 1.14) |
 | `pgcstack-getter=0x...` | `pgcstack_getter` | the getter's address in the process (JIT mode, up to 1.13) |
 | `pgcstack-key=0x...` | `pgcstack_key` | the key of the GC stack's thread-local variable (Darwin) |
 | `task-gcstack=N`, `task-ptls=N`, `tls-safepoint=N`, `tls-gc-state=N` | same, with `_` | the offsets of the task and thread-local state fields (`julia.get_pgcstack_or_new`) |
@@ -70,7 +74,7 @@ The differences between versions are fields of `JuliaIR.Dialect`:
 | `inbounds` thread-pointer GEP, RISC-V thread pointer (`ptls_tp_inbounds`) | no | no | yes | yes | yes |
 | thread adoption (`ptls_adopt_thread`) | `ijl_adopt_thread` | `ijl_adopt_thread` | `ijl_autoinit_and_adopt_thread` | same | same |
 | the image's TLS offset (`ptls_image_offset_slot`) | `jl_tls_offset` | same | same | same | `jl_image_tls_offset` |
-| the JIT getter (`ptls_jit_getter`) | address | address | address | address | `jl_get_pgcstack_resolved` |
+| the JIT getter (`ptls_jit_getter`) | address | address | address | address | `jl_get_pgcstack_resolved` (1.14); the runtime's variables, like imaging mode (1.15) |
 | the image's TLS offset when there is none (`ptls_image_offset_none`) | 0 | 0 | 0 | 0 | -1 |
 | the thread pointer on Darwin (`ptls_darwin_tls`) | where ELF TLS is used | same | same | same | AArch64 only, through the pthread keys |
 | entry safepoint condition (`gc_state_condition`) | `and` | `or` | `old != new` | `old != new` | `old != new` |

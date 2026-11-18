@@ -100,7 +100,7 @@ end
           ("ijl_adopt_thread", "ijl_autoinit_and_adopt_thread")
     @test (d13.ptls_image_offset_slot, dm.ptls_image_offset_slot) ==
           ("jl_tls_offset", "jl_image_tls_offset")
-    @test (d13.ptls_jit_getter, dm.ptls_jit_getter) == (:address, :resolved)
+    @test map(d -> d.ptls_jit_getter, (d13, d14, dm)) == (:address, :resolved, :slots)
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
     @test (d13.ptls_image_offset_none, d14.ptls_image_offset_none) == (0, -1)

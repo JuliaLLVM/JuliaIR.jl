@@ -1,9 +1,10 @@
 # LowerPTLS: lower the calls of `julia.get_pgcstack` and `julia.get_pgcstack_or_new`,
 # which return the current task's GC stack, to the code that finds it in the running
 # process: a read of the thread pointer plus the runtime's TLS offset, or a call of the
-# runtime's getter (JIT mode), or a load of the getter that the system image's loader
-# fills in, with a fast path through the thread pointer where the image has an ELF TLS
-# offset (imaging mode). For `julia.get_pgcstack_or_new` (the entry of a C-callable
+# runtime's getter (JIT mode up to Julia 1.14), or a load of the getter that the system
+# image's loader fills in, with a fast path through the thread pointer where the image has
+# an ELF TLS offset (imaging mode, and from Julia 1.15 on also JIT mode, through the
+# runtime's variables). For `julia.get_pgcstack_or_new` (the entry of a C-callable
 # function), a thread that isn't Julia's is adopted, and the GC state is switched to
 # unsafe on entry and restored at the returns. Port of Julia's `src/llvm-ptls.cpp`; see
 # docs/src/lower_ptls.md for the differences between Julia versions and from the C++.
@@ -46,6 +47,10 @@ mutable struct LowerPTLS
 end
 
 layout(p::LowerPTLS) = p.gc.layout
+
+# whether the GC stack is found through the variables of an image, or from Julia 1.15 on
+# the runtime's (`jl_pgcstack_func_slot`, ...)
+uses_slots(p::LowerPTLS) = p.imaging || p.dialect.ptls_jit_getter === :slots
 
 function effective_triple(mod::LLVM.Module)
     str = LLVM.triple(mod)
@@ -128,7 +133,9 @@ function emit_pgcstack_tp!(p::LowerPTLS, offset::Union{Nothing,Value}, insert_be
 end
 
 unsupported_target(p::LowerPTLS) =
-    "can't read the thread pointer for target $(string(p.triple)); use the getter instead (JIT mode with `tls-offset=-1`, or imaging mode with `tls-elf-support=no`)"
+    "can't read the thread pointer for target $(string(p.triple)); use the getter instead " *
+    (p.dialect.ptls_jit_getter === :slots ? "(`tls-elf-support=no`, or `tls-getters` in JIT mode)" :
+     "(JIT mode with `tls-offset=-1`, or imaging mode with `tls-elf-support=no`)")
 
 # The getter calls are pure and don't throw: `memory(none)`, or `readnone` before LLVM 16.
 function set_pgcstack_attrs!(call::Instruction)
@@ -252,9 +259,10 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
     end
 
     T_ptr = LLVM.PointerType(AS_GENERIC)
-    if p.imaging
+    if uses_slots(p)
         position_before!(builder, call; debug=true)
-        if inline_tls(p)
+        # (Julia 1.14's imaging mode ignores `tls_getters`)
+        if inline_tls(p) && !(p.tls_getters && p.dialect.ptls_jit_getter === :slots)
             # offset = <the image's TLS offset>
             # if offset != none:  pgcstack = <thread pointer> + offset    (fast)
             # else:               pgcstack = <the image's getter>()       (slow)
@@ -276,8 +284,8 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             push!(phi.incoming, (call, call.parent))
             return
         end
-        # the getter that the image's loader stores (`jl_get_pgcstack` would take
-        # another indirection)
+        # the getter that the image's loader (or the runtime) stores (`jl_get_pgcstack`
+        # would take another indirection)
         getter_ptr = load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT)
         if LLVM.isdarwin(p.triple)
             key = load_slot!(p, p.gc.T_size, PGCSTACK_KEY_SLOT)
@@ -343,11 +351,17 @@ end
 
 function create_slot!(p::LowerPTLS, name::String)
     gv = get(p.mod.globals, name, nothing)
-    if gv === nothing
+    if p.imaging
+        if gv === nothing
+            gv = GlobalVariable(p.mod, slot_type(p, name), name, p.gc.dl.globals_addrspace)
+        end
+        # (hidden visibility makes it `dso_local`)
+        LLVM.visibility!(gv, LLVM.Visibility.Hidden)
+    elseif gv === nothing
+        # JIT code links to the runtime's variables (Julia 1.15 and later)
         gv = GlobalVariable(p.mod, slot_type(p, name), name, p.gc.dl.globals_addrspace)
+        LLVM.iswindows(p.triple) && LLVM.dllstorage!(gv, LLVM.API.LLVMDLLImportStorageClass)
     end
-    # (hidden visibility makes it `dso_local`)
-    LLVM.visibility!(gv, LLVM.Visibility.Hidden)
     p.slots[name] = gv
     return gv
 end
@@ -362,7 +376,7 @@ function init!(p::LowerPTLS, getter::LLVM.Function)
     end
     p.FT_getter = ft
     p.T_pppjlvalue = LLVM.return_type(ft)
-    if p.imaging
+    if uses_slots(p)
         foreach(name -> create_slot!(p, name), slot_names(p))
     end
     return
@@ -413,12 +427,17 @@ function check_lower_ptls(p::LowerPTLS, getters)
         end
     end
     isempty(calls) && return calls
-    p.imaging && foreach(name -> check_slot(p, name), slot_names(p))
+    uses_slots(p) && foreach(name -> check_slot(p, name), slot_names(p))
     if needs_tp
         # whether a call is lowered to a read of the thread pointer
-        reads_tp = p.imaging ? inline_tls(p) :
-                               !p.tls_getters && layout(p).tls_offset != -1 &&
-                               (!p.dialect.ptls_darwin_tls || inline_tls(p))
+        reads_tp = if p.dialect.ptls_jit_getter === :slots
+            !p.tls_getters && inline_tls(p)
+        elseif p.imaging
+            inline_tls(p)
+        else
+            !p.tls_getters && layout(p).tls_offset != -1 &&
+            (!p.dialect.ptls_darwin_tls || inline_tls(p))
+        end
         if reads_tp && thread_pointer_asm(p) === nothing
             throw(LowerPTLSError(unsupported_target(p)))
         end
@@ -430,7 +449,7 @@ function lower_ptls!(mod::LLVM.Module, am, opts::PassOptions)
     dialect = opts.dialect
     imaging = opts.extra.imaging
     tls_getters = opts.extra.tls_getters
-    tls_getters && dialect.ptls_jit_getter !== :resolved &&
+    tls_getters && dialect.ptls_jit_getter === :address &&
         throw(ArgumentError("the option tls-getters only exists from Julia 1.14 on, not on $(running_julia())"))
     getters = [(name, get(mod.functions, name, nothing), name == PGCSTACK_GETTER_OR_NEW)
                for name in (PGCSTACK_GETTER, PGCSTACK_GETTER_OR_NEW)]
@@ -481,10 +500,11 @@ entry, and back at the returns unless the function returns tracked pointers).
 
 In JIT mode (the default), the code reads the GC stack through the thread pointer, at the
 running process's `jl_tls_offset`, or calls the runtime's getter (at its address in the
-process up to Julia 1.13, through the symbol `jl_get_pgcstack_resolved` from 1.14 on, where
+process up to Julia 1.13, through the symbol `jl_get_pgcstack_resolved` on 1.14, where
 `tls_getters=true` always calls it). The result only works in the process that compiled
 it. With `imaging=true`, it loads the getter, and the TLS offset where the running Julia
-uses ELF TLS, from variables of the system image that its loader fills in.
+uses ELF TLS, from variables of the system image that its loader fills in. From Julia 1.15
+on, JIT mode does the same with the runtime's variables, which the module declares.
 
 The other keyword arguments give the runtime facts explicitly (see
 [`JuliaIR.runtime_layout`](@ref)): the task and thread-local state offsets,

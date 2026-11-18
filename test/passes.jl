@@ -1044,6 +1044,10 @@ end
         if dialect.ptls_jit_getter === :resolved
             _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8")
             @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
+        elseif dialect.ptls_jit_getter === :slots
+            _, out = lower(ir(get_ir), "tls-getters;tls-elf-support=yes")
+            @test occursin("load ptr, ptr @jl_pgcstack_func_slot", out)
+            @test !occursin("thread_ptr", out)
         else
             @test_throws "only exists from Julia 1.14 on" lower(ir(get_ir), "tls-getters")
         end
@@ -1056,9 +1060,12 @@ end
             declare void @use(ptr)""")
         @test pa == PreservedAnalyses(AllAnalyses)
         # the GC stack through the thread pointer, or the getter: the CFG is unchanged
-        pa, out = lower(ir(get_ir), "tls-offset=-8")
+        # (from Julia 1.15 on, which chooses at run time, only with the getter)
+        pa, out = lower(ir(get_ir), dialect.ptls_jit_getter === :slots ?
+                                    "tls-elf-support=no" : "tls-offset=-8")
         @test pa == PreservedAnalyses(CFGAnalyses)
-        @test occursin("movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
+        @test occursin(dialect.ptls_jit_getter === :slots ? "@jl_pgcstack_func_slot" :
+                       "movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
         pa, out = lower(ir(get_ir), "imaging;tls-elf-support=no")
         @test pa == PreservedAnalyses(CFGAnalyses)
         # the ELF TLS fast path and thread adoption split blocks
@@ -1117,7 +1124,7 @@ end
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
         @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8")
-        _, out = lower(ir(get_ir; triple), "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        _, out = lower(ir(get_ir; triple), "tls-offset=-1;tls-elf-support=no;pgcstack-getter=0x1000;pgcstack-key=0")
         @test !occursin("asm", out)
         _, out = lower(ir(get_ir; triple), "imaging;tls-elf-support=no")
         @test !occursin("asm", out)
@@ -1148,9 +1155,10 @@ end
         @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
         _, out = lower(as1_ir, "imaging;tls-elf-support=no")
         @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
-        _, out = lower(as1_ir, "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        _, out = lower(as1_ir, "tls-offset=-1;tls-elf-support=no;pgcstack-getter=0x1000;pgcstack-key=0")
         @test occursin(dialect.ptls_jit_getter === :resolved ?
                        "call ptr @jl_get_pgcstack_resolved()" :
+                       dialect.ptls_jit_getter === :slots ? r"%pgcstack = call ptr %\d+\(\)" :
                        "call ptr inttoptr (i64 4096 to ptr)()", out)
     end
 
@@ -1161,7 +1169,12 @@ end
         julia_ir = sprint(io -> InteractiveUtils.code_llvm(io, f, (); raw=true, dump_module=true))
         m = match(r"asm \"([^\"]+)\", \"=r\"\(\)", julia_ir)
         _, out = lower(ir(get_ir; triple=""))
-        if rt_offset == -1
+        if dialect.ptls_jit_getter === :slots
+            # through the runtime's variables, like Julia's own code
+            @test occursin("load ptr, ptr @jl_pgcstack_func_slot", out)
+            @test occursin("load i64, ptr @jl_image_tls_offset", out) == (m !== nothing)
+            m === nothing || @test occursin("asm \"$(m[1])\", \"=r\"()", out)
+        elseif rt_offset == -1
             @test m === nothing
             if dialect.ptls_jit_getter === :resolved
                 @test occursin("call ptr @jl_get_pgcstack_resolved()", out)

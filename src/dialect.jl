@@ -259,8 +259,11 @@ struct Dialect
     ptls_image_offset_slot::String
     "How the JIT calls the GC stack getter when it can't read the thread pointer:
     `:address` (the getter's address in the process, with its key on Darwin; Julia 1.13
-    and older), or `:resolved` (the symbol `jl_get_pgcstack_resolved`, and the
-    `tls_getters` option that always calls it; 1.14 and later)."
+    and older), `:resolved` (the symbol `jl_get_pgcstack_resolved`, and the
+    `tls_getters` option that always calls it; 1.14), or `:slots` (JIT code is lowered
+    like image code, through the runtime's variables `jl_pgcstack_func_slot`,
+    `jl_pgcstack_key_slot` and `jl_image_tls_offset`, which it declares; 1.15 and
+    later)."
     ptls_jit_getter::Symbol
     "Whether the GEP that adds the TLS offset to the thread pointer is `inbounds`, and
     RISC-V's thread pointer is supported (Julia 1.12 and later)."
@@ -430,7 +433,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                             "ijl_adopt_thread",
         ptls_image_offset_slot = minor >= v"1.14" ? "jl_image_tls_offset" :
                                  "jl_tls_offset",
-        ptls_jit_getter = minor >= v"1.14" ? :resolved : :address,
+        ptls_jit_getter = minor >= v"1.15" ? :slots : minor == v"1.14" ? :resolved : :address,
         ptls_tp_inbounds = minor >= v"1.12",
         ptls_exit_safepoint = minor >= v"1.12",
         ptls_image_offset_none = minor >= v"1.14" ? -1 : 0,

@@ -349,6 +349,11 @@ kind = "port"
 ports = ["LowerExcHandlers"]
 status = "run"
 
+[fixtures."lower-ptls.ll"]
+kind = "port"
+ports = ["LowerPTLSPass"]
+status = "run"
+
 ## Julia's optimization pipeline
 
 [fixtures."pipeline-prints.ll"]
