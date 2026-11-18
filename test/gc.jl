@@ -400,7 +400,7 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
           ret ptr %small
         }
         !0 = !{}"""
-    clear = r"^store atomic volatile ptr null, ptr %reset_ctx_ptr release"
+    clear = r"^store atomic volatile ptr null, ptr %reset_ctx_ptr monotonic"
     # the line of `name`'s definition, and whether the region is cleared just before it
     function allocation(out, name)
         lines = body(out)
@@ -413,6 +413,24 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
     @test endswith(small, "!julia.reset_region !0") && !cleared
     large, cleared = allocation(out, "large")
     @test !occursin("reset_region", large) && cleared
+    # pure intrinsics don't close a caller's region, the call after them does
+    pure = """
+        $X86_64
+        declare ptr @julia.get_pgcstack()
+        declare double @llvm.fma.f64(double, double, double)
+        declare void @unsafe()
+        define double @f(double %x) "julia.ipo_reset_safe" {
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %y = call double @llvm.fma.f64(double %x, double %x, double %x)
+          call void @unsafe()
+          ret double %y
+        }"""
+    lines = body(lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, pure,
+                       v"1.15", facts))
+    i = findfirst(l -> startswith(l, "%y = call double @llvm.fma.f64("), lines)
+    @test !any(l -> occursin(clear, l), lines[1:i])
+    @test occursin(clear, lines[i+1])
+
     # Julia 1.14 has no cancellation points, so the pass leaves the IR alone
     out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, point,
                 v"1.14", facts)

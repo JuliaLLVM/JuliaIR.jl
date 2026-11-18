@@ -39,9 +39,12 @@ For each function, in this order:
    (callees named `julia.call*`, `jl_*` or `ijl_*`, except `setjmp`, and Memory
    allocations that become calls of the runtime, see step 6). Calls that don't
    need it: lifetime markers, debug intrinsics, `llvm.assume`, `llvm.expect`,
-   `llvm.prefetch`, `setjmp`, `julia.safepoint`, `julia.pointer_from_objref`,
-   `julia.gc_loaded`, allocations and write barriers. Other intrinsic calls are unsafe
-   points, including `llvm.memset` and the `llvm.julia.gc_preserve_*` markers.
+   `llvm.prefetch`, intrinsics that neither access memory nor have side effects
+   (`llvm.maximum`, `llvm.fma`, ...), `setjmp`, `julia.safepoint`,
+   `julia.pointer_from_objref`, `julia.gc_loaded`, allocations and write barriers. Other
+   intrinsic calls are unsafe points, including `llvm.memset` and the
+   `llvm.julia.gc_preserve_*` markers. A region is closed with a relaxed store
+   (`store atomic volatile ptr null, ... monotonic`) and a signal fence.
 5. It closes the region before every return that a publication reaches (before a
    `musttail` call, which must stay next to its return).
 6. It marks every allocation (`julia.gc_alloc_obj`) and write barrier that may run with

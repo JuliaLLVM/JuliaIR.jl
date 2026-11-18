@@ -3,7 +3,7 @@
 ; records attached to the first instruction, when there is no alloca to skip, and after
 ; them (an iterator advanced past the allocas) when there is.
 
-; REQUIRES: julia-1.14
+; REQUIRES: julia-ge-1.15
 ; RUN: opt -passes='function(CancellationLowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=24;setjmp=__sigsetjmp>)' -S %s | FileCheck %s
 
 declare void @unsafe_call()

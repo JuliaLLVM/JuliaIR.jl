@@ -1,4 +1,4 @@
-; REQUIRES: julia-1.14
+; REQUIRES: julia-ge-1.15
 ; RUN: opt -passes='function(jl-cancellation-lowering<task-gcstack=192;task-ptls=208;task-eh=224;task-reset-ctx=264;tls-safepoint=16;reset-ctx-size=224;reset-ctx-align=8;reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=24;setjmp=__sigsetjmp>),verify' -S %s | FileCheck %s
 
 ; The reset buffer lives on the stack, but the task and setjmp use generic pointers.

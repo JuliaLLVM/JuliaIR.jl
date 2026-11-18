@@ -174,11 +174,12 @@ function emit_safepoint!(p::CancellationLowering)
     emit_gc_safepoint!(p.gc, ptls, nothing; final=false)
 end
 
-# `reset_ctx = NULL` (release), before the builder's position
+# `reset_ctx = NULL`, before the builder's position: a relaxed store, since nothing the
+# region did needs to be visible to the runtime when it is closed (JuliaLang/julia#64068)
 function clear_region!(p::CancellationLowering)
     store = store!(p.builder, LLVM.null(LLVM.PointerType()), p.reset_ctx_ptr;
                    align=pointer_align(p.gc), volatile=true,
-                   ordering=LLVM.AtomicOrdering.Release)
+                   ordering=LLVM.AtomicOrdering.Monotonic)
     set_reset_safe_md!(store)
     return store
 end
@@ -309,6 +310,9 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     if startswith(LLVM.name(callee), "llvm.")
         id = intrinsic_id(callee)
         id !== nothing && id.name in RESET_SAFE_INTRINSICS && return true
+        # pure computation (`llvm.maximum`, `llvm.fma`, ...) leaves nothing for a reset to
+        # tear (JuliaLang/julia#64566)
+        id !== nothing && is_pure_call(call) && return true
     end
     name = LLVM.name(callee)
     name == "julia.safepoint" && return true
@@ -321,6 +325,11 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     # the name of setjmp last, so that its fact is read only for calls that are left
     return name == p.gc.layout.setjmp
 end
+
+# `doesNotAccessMemory() && !mayHaveSideEffects() && willReturn()` of a call
+is_pure_call(call::Instruction) =
+    call_memory_effects(call) == MemoryEffects(:none) &&
+    call_has_fn_attr(call, :nounwind) && call_has_fn_attr(call, :willreturn)
 
 # the instructions before which an open region must be closed
 function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_entry)
