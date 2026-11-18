@@ -314,6 +314,12 @@ struct Dialect
     later)."
     gc_alloc_reset_safe::Bool
 
+    # RemoveJuliaAddrspaces
+    "Whether RemoveJuliaAddrspaces (and RemoveAddrspaces) moves the bodies of functions
+    without address-taken blocks into their replacements instead of cloning them, which
+    keeps the order of the uses of their instructions and blocks (Julia 1.15 and later)."
+    remove_addrspaces_moves_bodies::Bool
+
     # policies
     "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
     fp16::Symbol
@@ -448,6 +454,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_alloc_entry_points = minor == v"1.10" ? :pool :
                                 minor == v"1.11" ? :pool_instrumented : :small,
         gc_alloc_reset_safe = minor >= v"1.15",
+        remove_addrspaces_moves_bodies = minor >= v"1.15",
         fp16,
         bf16,
         gc_barrier)

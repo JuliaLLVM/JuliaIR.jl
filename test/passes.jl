@@ -1445,6 +1445,55 @@ end
     str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as))
     @test occursin("define ptr addrspace(5) @f(ptr addrspace(10) %p, ptr addrspace(5) %q, ptr addrspace(3) %r)", str)
 
+    # From Julia 1.15 on, the blocks and instructions of a function keep the order of their
+    # uses (the bodies are moved), which here differs from that of the users
+    preds_ir = """
+        define ptr addrspace(10) @f(i1 %c, ptr addrspace(10) %x) {
+        top:
+          br i1 %c, label %a, label %b
+        join:
+          %p = phi ptr addrspace(10) [ %x, %a ], [ %x, %b ]
+          ret ptr addrspace(10) %p
+        b:
+          br label %join
+        a:
+          br label %join
+        }"""
+    for move_bodies in (false, true)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, preds_ir) begin
+            f = mod.functions["f"]
+            # make the branch of %b the first use of %join
+            br = LLVM.terminator(collect(f.blocks)[3])
+            LLVM.operands(br)[1] = collect(f.blocks)[2]
+            @test occursin("; preds = %b, %a", string(f))
+            JuliaIR.remove_addrspaces!(mod, nothing, JuliaIR.remove_julia_addrspace;
+                                       move_bodies)
+            str = string(mod.functions["f"])
+            @test occursin(move_bodies ? "; preds = %b, %a" : "; preds = %a, %b", str)
+            @test occursin("phi ptr [ %x, %a ], [ %x, %b ]", str)
+        end
+    end
+    # functions whose blocks have their address taken are still cloned
+    taken_ir = replace(preds_ir,
+        "  br i1 %c, label %a, label %b" =>
+        "  %dst = select i1 %c, ptr blockaddress(@f, %join), ptr blockaddress(@f, %b)\n  indirectbr ptr %dst, [label %join, label %b, label %a]",
+        "[ %x, %a ], [ %x, %b ]" => "[ %x, %a ], [ %x, %b ], [ %x, %top ]")
+    taken = map((false, true)) do move_bodies
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, taken_ir) begin
+            f = mod.functions["f"]
+            br = LLVM.terminator(collect(f.blocks)[3])
+            LLVM.operands(br)[1] = collect(f.blocks)[2]
+            @test verify(mod) === nothing
+            JuliaIR.remove_addrspaces!(mod, nothing, JuliaIR.remove_julia_addrspace;
+                                       move_bodies)
+            @test verify(mod) === nothing
+            string(mod.functions["f"])
+        end
+    end
+    @test occursin("indirectbr", taken[1]) && taken[1] == taken[2]
+    @test JuliaIR.Dialect(v"1.15").remove_addrspaces_moves_bodies
+    @test !JuliaIR.Dialect(v"1.14").remove_addrspaces_moves_bodies
+
     # errors of the mapping are rethrown
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         err = try
