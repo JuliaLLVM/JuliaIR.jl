@@ -70,7 +70,8 @@ struct Dialect
     "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
     has_combine_muladd::Bool
     "Whether the code generator emits `julia.cancellation_point` calls, lowered by
-    CancellationLowering (Julia 1.14 and later)."
+    CancellationLowering (Julia 1.15 and later; 1.14 reverted cancellation before its
+    release)."
     has_cancellation_lowering::Bool
 
     # CPUFeatures
@@ -120,7 +121,7 @@ struct Dialect
     `julia.gc_alloc_zeroinit` operand bundles."
     alloc_bundles::Bool
     "Whether the code generator allocates every new `GenericMemory` with
-    `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later),
+    `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.14 and later),
     which AllocOpt can remove or move to the stack and LateLowerGCFrame expands, rather than
     with `julia.gc_alloc_obj` or a call of `jl_alloc_genericmemory_unchecked`."
     has_gc_alloc_memory::Bool
@@ -219,7 +220,7 @@ struct Dialect
     (Julia 1.12 and later)."
     gc_declare_small_alloc::Bool
     "Whether write barriers on an object allocated since the last safepoint on every path
-    to them are removed, since a fresh object can't be old (Julia 1.15 and later)."
+    to them are removed, since a fresh object can't be old (Julia 1.14 and later)."
     gc_fresh_barrier_elision::Bool
     "The condition under which a GC state transition polls a safepoint: `:and` (when
     leaving a GC-safe state for the unsafe one: `(old != 0) & (new == 0)`; Julia 1.10),
@@ -285,7 +286,7 @@ struct Dialect
     `:small` (`ijl_gc_small_alloc`, `ijl_gc_big_alloc`; 1.12 and later)."
     gc_alloc_entry_points::Symbol
     "Whether allocations and root queuing in a cancellation reset region
-    (`!julia.reset_region`) use the runtime's `*_reset_safe` functions (Julia 1.14 and
+    (`!julia.reset_region`) use the runtime's `*_reset_safe` functions (Julia 1.15 and
     later)."
     gc_alloc_reset_safe::Bool
 
@@ -359,7 +360,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                        minor == v"1.11" ? :task :
                        minor == v"1.12" ? :task_buffer : :none,
         has_combine_muladd = minor <= v"1.11",
-        has_cancellation_lowering = minor >= v"1.14",
+        has_cancellation_lowering = minor >= v"1.15",
         cpu_features_rule = minor >= v"1.14" ? :subtarget : :tokens,
         has_cpu_supports = minor >= v"1.14",
         mv_spec_flags = minor >= v"1.14" ? :packed : :target,
@@ -371,7 +372,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                                minor == v"1.11" ? :store : :memset,
         alloc_layout = minor <= v"1.11" ? :legacy : :chunked,
         alloc_bundles = minor >= v"1.14",
-        has_gc_alloc_memory = minor >= v"1.15",
+        has_gc_alloc_memory = minor >= v"1.14",
         has_gc_transition_bundle = minor >= v"1.12",
         has_zeroinit_indirect_bundle = minor >= v"1.14",
         tbaa_downgrade,
@@ -397,7 +398,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_safepoint_load = minor >= v"1.14" ? :monotonic_named :
                             minor == v"1.13" ? :monotonic : :plain,
         gc_declare_small_alloc = minor >= v"1.12",
-        gc_fresh_barrier_elision = minor >= v"1.15",
+        gc_fresh_barrier_elision = minor >= v"1.14",
         gc_state_condition,
         ptls_stack_argument = minor >= v"1.13" ? :gcstack : :swiftself,
         ptls_argument_takes_name = minor >= v"1.11",
@@ -417,7 +418,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_final_debugloc_next = minor == v"1.10",
         gc_alloc_entry_points = minor == v"1.10" ? :pool :
                                 minor == v"1.11" ? :pool_instrumented : :small,
-        gc_alloc_reset_safe = minor >= v"1.14",
+        gc_alloc_reset_safe = minor >= v"1.15",
         fp16,
         bf16,
         gc_barrier)

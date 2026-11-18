@@ -40,7 +40,7 @@ end
     @test !d10.has_call3 && d11.has_call3
     @test !d12.has_atomicmodify && d13.has_atomicmodify && dm.has_atomicmodify
     @test d10.has_combine_muladd && d11.has_combine_muladd && !d12.has_combine_muladd
-    @test !d13.has_cancellation_lowering && dm.has_cancellation_lowering
+    @test !d14.has_cancellation_lowering && dm.has_cancellation_lowering
     @test d13.mv_spec_flags === :target && dm.mv_spec_flags === :packed
     @test !d10.mv_bf16 && d11.mv_bf16
     @test d10.mv_tables === :offsets && d11.mv_tables === :pointers
@@ -57,7 +57,7 @@ end
           (:legacy, :legacy, :chunked, :chunked)
     @test !d10.alloc_callsite_attrs && d11.alloc_callsite_attrs
     @test !d13.alloc_bundles && dm.alloc_bundles
-    @test !d14.has_gc_alloc_memory && dm.has_gc_alloc_memory
+    @test !d13.has_gc_alloc_memory && d14.has_gc_alloc_memory
     @test !d11.has_gc_transition_bundle && d12.has_gc_transition_bundle
     @test !d13.has_zeroinit_indirect_bundle && dm.has_zeroinit_indirect_bundle
 
@@ -101,7 +101,7 @@ end
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
-    @test !d14.gc_fresh_barrier_elision && dm.gc_fresh_barrier_elision
+    @test !d13.gc_fresh_barrier_elision && d14.gc_fresh_barrier_elision
 
     # type lowering
     @test (d11.cpointer_type, d12.cpointer_type) == (:integer, :pointer)
@@ -115,7 +115,7 @@ end
     @test !d12.gc_final_skip_unused && d13.gc_final_skip_unused
     @test map(d -> d.gc_alloc_entry_points, (d10, d11, d12, d13, dm)) ==
           (:pool, :pool_instrumented, :small, :small, :small)
-    @test !d13.gc_alloc_reset_safe && dm.gc_alloc_reset_safe
+    @test !d14.gc_alloc_reset_safe && dm.gc_alloc_reset_safe
 end
 
 @testset "policies" begin

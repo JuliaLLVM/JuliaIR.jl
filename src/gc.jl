@@ -49,7 +49,7 @@ genericmemory_inline_data_offset(ptrsize::Integer) =
 genericmemory_data_inline(nbytes::Integer, ptrsize::Integer) =
     nbytes <= gc_max_szclass(ptrsize) - genericmemory_inline_data_offset(ptrsize)
 
-# If `call` is a `julia.gc_alloc_memory` (the function `alloc_memory`, Julia 1.15 and
+# If `call` is a `julia.gc_alloc_memory` (the function `alloc_memory`, Julia 1.14 and
 # later) of a constant size whose data will be inline, the size of the whole object
 # (`JuliaPassContext::getInlineMemorySize`); otherwise `nothing`.
 function inline_memory_size(alloc_memory::Union{Nothing,LLVM.Function},
@@ -287,7 +287,7 @@ function add_gc_alloc_attributes!(g::GCCodegen, f::LLVM.Function)
 end
 
 # the attributes of the runtime's allocation functions for cancellation reset regions
-# (`addResetSafeGCAllocAttributes`, Julia 1.14): without the memory effects, as they
+# (`addResetSafeGCAllocAttributes`, Julia 1.15): without the memory effects, as they
 # also update the task's reset context
 function add_reset_safe_gc_alloc_attributes!(f::LLVM.Function)
     push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc

@@ -190,9 +190,12 @@ function hoist_as_object_barrier!(p::JuliaLICM, call::Instruction)
     replacement = call!(builder, LLVM.function_type(f), f, args)
     # iterated rather than indexed: indexing returns a one-operand node like `!{i64 1}` as
     # its operand (`MetadataAsValue` canonicalizes it), which can't be attached
-    region = MDKind("julia.reset_region")
-    for (kind, md) in call.metadata
-        kind == region && (replacement.metadata[kind] = md)
+    # (Julia 1.15's cancellation reset regions)
+    if p.dialect.has_cancellation_lowering
+        region = MDKind("julia.reset_region")
+        for (kind, md) in call.metadata
+            kind == region && (replacement.metadata[kind] = md)
+        end
     end
     create_access!(p, replacement, call; place=:before_terminator)
     erase_inst!(p, call)

@@ -3,11 +3,13 @@
 ; loop invariant; a field barrier whose slots vary in the loop is demoted to an object
 ; barrier of the same parent and children. The GC's barrier configuration (`gc-barrier`)
 ; can forbid both: snapshot barriers aren't hoisted, field-precise ones aren't demoted.
-; REQUIRES: julia-1.14
+; From Julia 1.15 on, a demoted barrier keeps the field barrier's cancellation reset
+; region.
+; REQUIRES: julia-ge-1.14
 
 ; RUN: split-file %s %t
-; RUN: opt -passes=JuliaLICM -S %t/barriers.ll | FileCheck %s --check-prefixes=CHECK,STOCK
-; RUN: opt -passes='function(loop-mssa(JuliaLICM)),verify' -verify-memoryssa -S %t/barriers.ll | FileCheck %s --check-prefixes=CHECK,STOCK
+; RUN: opt -passes=JuliaLICM -S %t/barriers.ll | FileCheck %s --check-prefixes=CHECK,STOCK,%if julia-ge-1.15 %{STOCK-REGION%} %else %{STOCK-NOREGION%}
+; RUN: opt -passes='function(loop-mssa(JuliaLICM)),verify' -verify-memoryssa -S %t/barriers.ll | FileCheck %s --check-prefixes=CHECK,STOCK,%if julia-ge-1.15 %{STOCK-REGION%} %else %{STOCK-NOREGION%}
 ; RUN: opt -passes='loop(jl-licm<gc-barrier=snapshot>)' -S %t/barriers.ll | FileCheck %s --check-prefix=SNAPSHOT
 ; RUN: opt -passes='loop(jl-licm<gc-barrier=snapshot-field-precise>)' -S %t/barriers.ll | FileCheck %s --check-prefix=SNAPSHOT
 ; RUN: opt -passes='loop(jl-licm<gc-barrier=field-precise>)' -S %t/barriers.ll | FileCheck %s --check-prefixes=CHECK,PRECISE
@@ -79,7 +81,8 @@ exit:
 ; CHECK: preheader:
 ; CHECK-NEXT: %slot1 = getelementptr i8, ptr addrspace(10) %parent, i64 8
 ; CHECK-NEXT: %slot1.derived = addrspacecast ptr addrspace(10) %slot1 to ptr addrspace(11)
-; STOCK-NEXT: call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %parent, ptr addrspace(10) %a, ptr addrspace(10) %b), !julia.reset_region ![[REGION:[0-9]+]]
+; STOCK-REGION-NEXT: call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %parent, ptr addrspace(10) %a, ptr addrspace(10) %b), !julia.reset_region ![[REGION:[0-9]+]]
+; STOCK-NOREGION-NEXT: call void (ptr addrspace(10), ...) @julia.object_write_barrier(ptr addrspace(10) %parent, ptr addrspace(10) %a, ptr addrspace(10) %b){{$}}
 ; CHECK-NEXT: br label %loop
 ; CHECK: loop:
 ; STOCK-NOT: write_barrier
@@ -122,7 +125,7 @@ exit:
   ret void
 }
 
-; STOCK: ![[REGION]] = !{i64 1}
+; STOCK-REGION: ![[REGION]] = !{i64 1}
 !0 = !{i64 1}
 
 ;--- declare.ll

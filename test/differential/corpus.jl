@@ -92,7 +92,7 @@ else
     gc_safe_call() = @ccall usleep(0::Cuint)::Cint
 end
 
-## cancellation points (Julia 1.14 and later)
+## cancellation points (Julia 1.15 and later)
 
 @static if isdefined(Base, Symbol("@cancel_check"))
     function cancel_loop(n)

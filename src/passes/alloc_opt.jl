@@ -1,4 +1,4 @@
-# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`, and from Julia 1.15 on
+# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`, and from Julia 1.14 on
 # `julia.gc_alloc_memory` of a size that fits a GC pool) whose object does not escape, or
 # move them to the stack, whole or split into their fields. Port of Julia's
 # `src/llvm-alloc-opt.cpp` (1.15), with the representation choices of older Julia
@@ -1123,7 +1123,7 @@ const ALLOC_OPT = define_pass("jl-alloc-opt", :function, alloc_opt!; required=fa
     JuliaIR.AllocOptPass()
 
 Remove Julia GC allocations whose object does not escape, or move them to the stack,
-whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.15 on, these
+whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.14 on, these
 include the allocations of Memory (`julia.gc_alloc_memory`) whose size is a constant that
 fits a GC pool; on the stack, their header is initialized like the allocation would, and
 loads of their data pointer are forwarded when nothing else may write it.

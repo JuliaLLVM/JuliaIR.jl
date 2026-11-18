@@ -1,6 +1,6 @@
 # CancellationLowering
 
-From version 1.14 on, Julia can cancel a running task at a *cancellation point*:
+From version 1.15 on, Julia can cancel a running task at a *cancellation point*:
 `Base.@cancel_check`, which the code generator emits as a call
 `julia.cancellation_point()`. Julia's
 `CancellationLowering` pass turns these calls into *reset regions*. At a point, the
@@ -12,7 +12,7 @@ is open must therefore be safe to abandon and redo, and the pass closes the regi
 
 `jl-cancellation-lowering` (`JuliaIR.CancellationLoweringPass`) ports the pass, and
 `jlopt` runs it for Julia's name (`CancellationLowering`). It is a required function pass,
-like Julia's. No Julia release has the pass: for the IR of Julia 1.10 to 1.13, which has
+like Julia's. No Julia release has the pass: for the IR of Julia 1.10 to 1.14, which has
 no cancellation points, it does nothing.
 
 ## What the pass does
@@ -36,8 +36,8 @@ For each function, in this order:
 4. It closes the region before every *unsafe point* that a publication can reach:
    stores, atomic read-modify-writes, and volatile loads that the code generator didn't
    mark `!julia.reset_safe`, and calls that are either not marked or are runtime calls
-   (callees named `julia.call*`, `jl_*` or `ijl_*`, except `setjmp`, and from Julia 1.15
-   on Memory allocations that become calls of the runtime, see step 6). Calls that don't
+   (callees named `julia.call*`, `jl_*` or `ijl_*`, except `setjmp`, and Memory
+   allocations that become calls of the runtime, see step 6). Calls that don't
    need it: lifetime markers, debug intrinsics, `llvm.assume`, `llvm.expect`,
    `llvm.prefetch`, `setjmp`, `julia.safepoint`, `julia.pointer_from_objref`,
    `julia.gc_loaded`, allocations and write barriers. Other intrinsic calls are unsafe
@@ -46,8 +46,8 @@ For each function, in this order:
    `musttail` call, which must stay next to its return).
 6. It marks every allocation (`julia.gc_alloc_obj`) and write barrier that may run with
    the region open with `!julia.reset_region`. FinalLowerGC lowers these to the runtime's
-   `*_reset_safe` entry points, which close and reopen the region themselves. From Julia
-   1.15 on, that includes the allocations of Memory (`julia.gc_alloc_memory`) whose size
+   `*_reset_safe` entry points, which close and reopen the region themselves. That
+   includes the allocations of Memory (`julia.gc_alloc_memory`) whose size
    is a constant that fits a GC pool, which LateLowerGCFrame lowers like other objects;
    the others become calls of `jl_alloc_genericmemory_unchecked`, which has no reset-safe
    variant, so the region is closed before them.

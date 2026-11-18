@@ -64,7 +64,9 @@ julia = "1.13.2"
 llvm = 20
 
 [pins."1.14"]
-tag = "release-1.14"
+tag = "v1.14.0-beta1"
+commit = "a29842ef00fe990511eaf7c64ab6d4f4ba81323d"
+julia = "1.14.0-beta1"
 llvm = 23
 
 [pins."1.15"]

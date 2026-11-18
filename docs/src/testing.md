@@ -333,7 +333,7 @@ The inputs are `.ll` files or directories of them:
   generates (`code_llvm(...; optimize=false, raw=true, dump_module=true)`) for a list of
   functions with GC stacks, allocations and write barriers, `@simd` loops,
   `GC.@preserve`, atomics, exceptions, `Float16` arithmetic, closures and (from Julia
-  1.14) cancellation points, with and without debug information;
+  1.15) cancellation points, with and without debug information;
 - `test/differential/gpucompiler/corpus.jl` writes GPUCompiler's modules for PTX, GCN,
   SPIR-V, Metal and native code without the Julia runtime, before optimization
   (`GPUCompiler.compile(:llvm, job)` with `optimize=false, cleanup=false`): the IR on

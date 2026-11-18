@@ -258,12 +258,10 @@ end
     # the real manifest is well-formed, and covers every pinned minor version
     manifest = UpstreamHarness.load_manifest()
     @test issetequal(keys(manifest["pins"]), ["1.10", "1.11", "1.12", "1.13", "1.14", "1.15"])
-    # released versions are pinned, unreleased ones follow the nightly build of their
-    # branch
+    # released versions (prereleases among them) are pinned, master follows the nightly
+    # build
     @test all(pin -> length(pin["commit"]) == 40,
-              (pin for (minor, pin) in manifest["pins"] if !(minor in ("1.14", "1.15"))))
-    @test !haskey(manifest["pins"]["1.14"], "commit")
-    @test manifest["pins"]["1.14"]["tag"] == "release-1.14"
+              (pin for (minor, pin) in manifest["pins"] if minor != "1.15"))
     @test !haskey(manifest["pins"]["1.15"], "commit")
     @test manifest["pins"]["1.15"]["tag"] == "master"
     # CI (test/ci/versions.jl) runs the pinned releases with their commits, and the

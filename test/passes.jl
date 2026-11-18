@@ -259,7 +259,7 @@ end
         @test string(mod) == before
     end
 
-    # Memory allocations (Julia 1.15 and later) must be lowered first, like other allocations
+    # Memory allocations (Julia 1.14 and later) must be lowered first, like other allocations
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             declare ptr addrspace(10) @julia.gc_alloc_memory(ptr, i64, ptr addrspace(10), i64, i1)
             define ptr addrspace(10) @f(ptr %task) {
@@ -267,9 +267,9 @@ end
               ret ptr addrspace(10) %m
             }""") begin
         f = mod.functions["f"]
-        constructs = JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.15"))
+        constructs = JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.14"))
         @test startswith(only(constructs).message, "julia.gc_alloc_memory: allocations must be lowered first")
-        @test isempty(JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.14")))
+        @test isempty(JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.13")))
     end
 
     # constructs that an earlier pass in the same pipeline introduces in a later function
@@ -437,7 +437,7 @@ end
         end
     end
 
-    # `julia.gc_alloc_memory` (Julia 1.15 and later) of a constant size whose data is inline
+    # `julia.gc_alloc_memory` (Julia 1.14 and later) of a constant size whose data is inline
     @testset "Memory" begin
         # the size of the object, with the header laid out for the target's pointers
         @dispose ctx=Context(; opaque_pointers=true) begin

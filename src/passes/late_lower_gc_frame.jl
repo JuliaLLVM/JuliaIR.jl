@@ -2196,8 +2196,11 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         copy_function_attributes!(new_call, alloc_bytes)
         deref = return_dereferenceable_bytes(call)
         deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
-        reset_region = get(call.metadata, "julia.reset_region", nothing)
-        reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
+        # the allocation runs in the call's cancellation reset region, if any (Julia 1.15)
+        if p.dialect.has_cancellation_lowering
+            reset_region = get(call.metadata, "julia.reset_region", nothing)
+            reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
+        end
         take_name!(new_call, call)
     end
 
@@ -2245,7 +2248,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     update_ptr_numbering!(S, call, new_call)
 end
 
-# `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later) =>
+# `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.14 and later) =>
 # a single object with inline data if `nbytes` is a constant that fits a GC pool, or a call
 # of `jl_alloc_genericmemory_unchecked` otherwise, which sets the data pointer. Right after
 # the allocation, so that the GC never sees the object partially initialized, the header is
@@ -2584,7 +2587,7 @@ end
 
 # A fresh object can't become old before a safepoint (cf. `jl_gc_wb_fresh`): remove the
 # write barriers whose parent allocation has run since the last safepoint on every path to
-# them (Julia 1.15 and later, `ElideFreshWriteBarriers`).
+# them (Julia 1.14 and later, `ElideFreshWriteBarriers`).
 #
 # Allocations are safepoints themselves, so at most one allocation is known fresh at any
 # point. A forward must-analysis tracks it per block: safepoints clear it, an allocation

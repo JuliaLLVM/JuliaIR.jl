@@ -64,10 +64,10 @@ previous version's. The recipe is chosen by the running Julia's version:
 | 1.11 | `Recipe{11}` | the options of 1.11; GlobalsAA and GlobalDCE; FinalLowerGC is a function pass; RemoveJuliaAddrspaces after LowerPTLS; `sroa<modify-cfg>` at level 1 |
 | 1.12 | `Recipe{12}` | InferFunctionAttrs; no level-1 scalar optimizations; DSE before GVN after the GC lowering; no CombineMulAdd |
 | 1.13 | `Recipe{13}` | SROA modifying the CFG, EarlyCSE and GlobalOpt in the early simplifications; eagerly invalidating function pass manager; a single loop pass manager with MemorySSA; `vector-combine<early>`; ExpandAtomicModify |
-| 1.14, 1.15 | `Recipe{14}` | no CGSCC pass manager; IRCE with cleanup; CancellationLowering; EarlyCSE instead of GVN after the GC lowering; float2int and lower-constant-intrinsics in the vectorization; no sanitizers (stock builds) |
+| 1.14 | `Recipe{14}` | no CGSCC pass manager; IRCE with cleanup; EarlyCSE instead of GVN after the GC lowering; alignment inference after the intrinsic lowering; float2int and lower-constant-intrinsics in the vectorization; no sanitizers (stock builds) |
+| 1.15 | `Recipe{15}` | CancellationLowering before LateLowerGCFrame (Julia 1.14 reverted it before its release) |
 
-Julia 1.15 (master) has the same pipeline as 1.14, and uses 1.14's dialect. A Julia newer
-than the newest recipe uses it until its pipeline changes.
+A Julia newer than the newest recipe uses it until its pipeline changes.
 
 How a pass is written in pipeline text depends on the LLVM that is loaded; spelling
 helpers take care of that (for example, LLVM 15 has no CFG option for SROA, and

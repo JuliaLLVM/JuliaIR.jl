@@ -189,7 +189,7 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     @test occursin("ret void", llgcf(plain, foreign, ""))
     @test_throws JuliaIR.RuntimeError llgcf(transition(X86_64), foreign, "")
 
-    # `julia.gc_alloc_memory` (Julia 1.15 and later): a pooled object with inline data if
+    # `julia.gc_alloc_memory` (Julia 1.14 and later): a pooled object with inline data if
     # its size is a constant that fits, the runtime's allocation otherwise; the header is
     # initialized for the pointer size of the target
     memory(prefix, nbytes, len, zeroinit; T="i64") = """
@@ -205,24 +205,24 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
         }"""
     facts64 = "task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128"
     facts32 = "task-gcstack=76;task-ptls=84;tls-safepoint=8;tls-gc-state=13"
-    out = llgcf(memory(X86_64, 32, 4, true), v"1.15", facts64)
+    out = llgcf(memory(X86_64, 32, 4, true), v"1.14", facts64)
     @test has(out, r"^%mem = call noalias nonnull dereferenceable\(48\) ptr addrspace\(10\) @julia.gc_alloc_bytes\(ptr %ptls_load, i64 48, ")
     @test has(out, r"^%(\d+) = getelementptr inbounds i8, ptr %\d+, i64 16$")
     @test has(out, r"^%\d+ = getelementptr inbounds i8, ptr addrspace\(11\) %\d+, i64 8$")
     @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 32, i1 false\)$")
     @test has(out, r"^store i64 4, ptr addrspace\(11\) %\d+, align 8$")
     # the largest data that fits a pool of a 32-bit target
-    out = llgcf(memory(I686, 2012, "%n", false; T="i32"), v"1.15", facts32)
+    out = llgcf(memory(I686, 2012, "%n", false; T="i32"), v"1.14", facts32)
     @test has(out, r"@julia.gc_alloc_bytes\(ptr %ptls_load, i32 2028, ")
     @test has(out, r"^%\d+ = getelementptr inbounds i8, ptr addrspace\(11\) %\d+, i64 4$")
     @test !occursin("memset", out)
     @test has(out, r"^store i32 %n, ptr addrspace\(11\) %\d+, align 4$")
-    out = llgcf(memory(I686, 2013, "%n", true; T="i32"), v"1.15", facts32)
+    out = llgcf(memory(I686, 2013, "%n", true; T="i32"), v"1.14", facts32)
     @test has(out, r"^%mem = call noalias nonnull align 16 dereferenceable\(8\) ptr addrspace\(10\) @jl_alloc_genericmemory_unchecked\(ptr %ptls_load, i32 2013, ptr addrspacecast \(ptr addrspace\(10\) @tag to ptr\)\)")
     @test occursin(r"declare noalias nonnull ptr addrspace\(10\) @jl_alloc_genericmemory_unchecked\(ptr, i32, ptr\) #\d+", out)
     @test has(out, r"^%(\d+) = load ptr, ptr addrspace\(11\) %\d+, align 4$")
     @test has(out, r"^call void @llvm.memset.p0.i32\(ptr align 4 %\d+, i8 0, i32 2013, i1 false\)$")
-    out = llgcf(memory(X86_64, "%n", "%n", true), v"1.15", facts64)
+    out = llgcf(memory(X86_64, "%n", "%n", true), v"1.14", facts64)
     @test has(out, r"@jl_alloc_genericmemory_unchecked\(ptr %ptls_load, i64 %n, ")
     @test has(out, r"^call void @llvm.memset.p0.i64\(ptr align 8 %\d+, i8 0, i64 %n, i1 false\)$")
     # no data to zero
@@ -232,7 +232,7 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     @test has(out, r"^%mem = call ptr addrspace\(10\) @julia.gc_alloc_memory\(")
 
     # Write barriers on an object allocated since the last safepoint on every path to them
-    # are removed (Julia 1.15 and later): a fresh object can't be old.
+    # are removed (Julia 1.14 and later): a fresh object can't be old.
     barrier(body) = """
         $X86_64
         @tag = external addrspace(10) global {}, align 16
@@ -250,10 +250,10 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
         }"""
     has_barrier(out) = has(out, r"^call void \(ptr addrspace\(10\), \.\.\.\) @julia.object_write_barrier\(")
     fresh = barrier("  br label %next\nnext:")
-    @test !has_barrier(llgcf(fresh, v"1.15", facts64))
-    @test has_barrier(llgcf(fresh, v"1.14", facts64))
+    @test !has_barrier(llgcf(fresh, v"1.14", facts64))
+    @test has_barrier(llgcf(fresh, v"1.13", facts64))
     # not after a safepoint
-    @test has_barrier(llgcf(barrier("  call void @safepoint()"), v"1.15", facts64))
+    @test has_barrier(llgcf(barrier("  call void @safepoint()"), v"1.14", facts64))
     # nor after a join where one of the paths passes one
     joined = barrier("""
           br i1 %c, label %sp, label %next
@@ -261,11 +261,11 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
           call void @safepoint()
           br label %next
         next:""")
-    @test has_barrier(llgcf(joined, v"1.15", facts64))
+    @test has_barrier(llgcf(joined, v"1.14", facts64))
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 
-# Julia 1.14's lowerings keep a call's cancellation reset region on the calls that replace
+# Julia 1.15's lowerings keep a call's cancellation reset region on the calls that replace
 # it, whatever the region's metadata node holds (also with LLVM 16's memory attribute)
 LLVM.version() >= v"16" && @testset "reset regions" begin
     # the node of the reset region of the call of `callee` in `out`
@@ -287,7 +287,7 @@ LLVM.version() >= v"16" && @testset "reset regions" begin
             }
             !0 = $node"""
         out = lower(JuliaIR.final_lower_gc!, JuliaIR.FINAL_LOWER_GC_FUNCTION, barrier,
-                    v"1.14", "")
+                    v"1.15", "")
         @test reset_region(out, "ijl_gc_queue_root_reset_safe") == node
 
         alloc = """
@@ -303,7 +303,7 @@ LLVM.version() >= v"16" && @testset "reset regions" begin
             }
             !0 = $node"""
         out = lower(JuliaIR.late_lower_gc_frame!, JuliaIR.LATE_LOWER_GC_FRAME, alloc,
-                    v"1.14", "task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128")
+                    v"1.15", "task-gcstack=192;task-ptls=208;tls-safepoint=16;tls-gc-state=128")
         @test reset_region(out, "julia.gc_alloc_bytes") == node
     end
 end
@@ -323,7 +323,7 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
             "tls-safepoint=16;setjmp=__sigsetjmp;reset-ctx-size=256;reset-ctx-align=16;" *
             "reset-ctx-gcstack=8;reset-ctx-eh=16;reset-ctx-mctx=32"
     out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, point,
-                v"1.14", facts)
+                v"1.15", facts)
     # its own GEPs and load of the thread-local state, and a safepoint without TBAA
     @test has(out, r"^%ptls_field_ptr = getelementptr i8, ptr %current_task, i64 208$")
     @test has(out, r"^%ptls = load ptr, ptr %ptls_field_ptr, align 8$")
@@ -331,9 +331,8 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
     @test has(out, r"^%safepoint = load atomic ptr, ptr %safepoint_addr monotonic, align 8$")
     @test has(out, r"^call void @julia.safepoint\(ptr %safepoint\)$")
 
-    # A Memory allocation (Julia 1.15 and later) only runs with the region open if it
-    # becomes a pooled allocation, not if it becomes a call of the runtime, even when
-    # tagged reset-safe. Before, it is an unknown call.
+    # A Memory allocation only runs with the region open if it becomes a pooled
+    # allocation, not if it becomes a call of the runtime, even when tagged reset-safe.
     memory = """
         $X86_64
         declare i32 @julia.cancellation_point()
@@ -360,10 +359,10 @@ LLVM.version() >= v"16" || @test_skip "reset regions need LLVM 16"
     @test endswith(small, "!julia.reset_region !0") && !cleared
     large, cleared = allocation(out, "large")
     @test !occursin("reset_region", large) && cleared
-    out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, memory,
+    # Julia 1.14 has no cancellation points, so the pass leaves the IR alone
+    out = lower(JuliaIR.cancellation_lowering!, JuliaIR.CANCELLATION_LOWERING, point,
                 v"1.14", facts)
-    small, cleared = allocation(out, "small")
-    @test !occursin("reset_region", small) && cleared
+    @test has(out, r"^%r = call i32 @julia.cancellation_point\(\)$")
 end
 
 end

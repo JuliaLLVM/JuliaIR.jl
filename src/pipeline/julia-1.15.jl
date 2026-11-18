@@ -1,5 +1,5 @@
-# Julia 1.15's pipeline (`src/pipeline.cpp` on master at 1.15.0-DEV.90, fc70f5aed4), which
-# is 1.14's except for the alignment inference after the intrinsic lowering (#64020).
+# Julia 1.15's pipeline (`src/pipeline.cpp` on master at 1.15.0-DEV.818, cca11c33b7), which
+# is 1.14's except for CancellationLowering, which 1.14 reverted before its release.
 
 aggressive_simplifycfg(::Recipe{15}) = aggressive_simplifycfg(Recipe{14}())
 
