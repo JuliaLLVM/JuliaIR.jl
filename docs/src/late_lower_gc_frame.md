@@ -52,6 +52,8 @@ versions are fields of `JuliaIR.Dialect`:
 | no frame without a safepoint after the first definition | no | no | no | yes | yes |
 | roots returned in memory | `sret` arguments and the alloca passed after them | same | same | same | `julia.return_roots` argument attributes |
 | frame slots reset to null when their value dies | no | no | yes | yes | yes |
+| adjacent slots that die together reset at once (a `memset` for four or more) | no | no | no | no | yes |
+| frame slot addresses of rooted allocas computed in each block that uses them, of tracked stores before the store | no | no | no | no | yes |
 | null stores to rooted allocas in the prologue removed | no | no | yes | yes | yes |
 | allocas of single tracked pointers placed first | yes | yes | no | no | no |
 | GC stack in a `gcstack` argument | no | no | no | yes | yes |

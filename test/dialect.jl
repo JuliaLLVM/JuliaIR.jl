@@ -77,6 +77,8 @@ end
     @test !d12.gc_frame_elision && d13.gc_frame_elision
     @test (d13.gc_return_roots, dm.gc_return_roots) == (:sret, :attribute)
     @test !d11.gc_slot_resets && d12.gc_slot_resets && d12.gc_prologue_store_elision
+    @test !d13.gc_slot_reset_runs && d14.gc_slot_reset_runs
+    @test !d13.gc_local_slot_addresses && d14.gc_local_slot_addresses
     @test d11.gc_root_allocas_first && !d12.gc_root_allocas_first
     @test !d12.gc_stack_argument && d13.gc_stack_argument
     @test !d10.gc_names && d11.gc_names && !d10.gc_tag_load_volatile && d11.gc_tag_load_volatile

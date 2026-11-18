@@ -180,6 +180,13 @@ struct Dialect
     "Whether GC frame slots whose value dies are reset to null before the next
     safepoint (Julia 1.12 and later)."
     gc_slot_resets::Bool
+    "Whether adjacent slots that die at the same safepoint are reset together, with a
+    `memset` for four or more (Julia 1.14 and later)."
+    gc_slot_reset_runs::Bool
+    "Whether the addresses of the frame slots of rooted allocas are computed again in each
+    block that uses them, and those of tracked stores right before the store, rather than
+    once in the entry block (Julia 1.14 and later)."
+    gc_local_slot_addresses::Bool
     "Whether null stores to rooted allocas in the entry block are removed, since frame
     slots start out null (Julia 1.12 and later)."
     gc_prologue_store_elision::Bool
@@ -387,6 +394,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_frame_elision = minor >= v"1.13",
         gc_return_roots = minor >= v"1.14" ? :attribute : :sret,
         gc_slot_resets = minor >= v"1.12",
+        gc_slot_reset_runs = minor >= v"1.14",
+        gc_local_slot_addresses = minor >= v"1.14",
         gc_prologue_store_elision = minor >= v"1.12",
         gc_root_allocas_first = minor <= v"1.11",
         gc_stack_argument = minor >= v"1.13",

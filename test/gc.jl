@@ -235,6 +235,56 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     out = llgcf(memory(X86_64, 32, 4, true), v"1.13", facts64)
     @test has(out, r"^%mem = call ptr addrspace\(10\) @julia.gc_alloc_memory\(")
 
+    # From Julia 1.14 on, the slot address of a rooted alloca is computed in the blocks that
+    # use it; the entry block's stays for the debug information that refers to it
+    local_slot = """
+        $X86_64
+        declare ptr @julia.get_pgcstack()
+        declare void @safepoint()
+        declare void @llvm.dbg.declare(metadata, metadata, metadata)
+        define void @f(i1 %c, ptr addrspace(10) %v) !dbg !4 {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %local = alloca ptr addrspace(10), align 8
+          call void @llvm.dbg.declare(metadata ptr %local, metadata !7, metadata !DIExpression()), !dbg !8
+          br i1 %c, label %use, label %exit
+        use:
+          store ptr addrspace(10) %v, ptr %local, align 8
+          call void @safepoint()
+          %l = load ptr addrspace(10), ptr %local, align 8
+          call void @safepoint()
+          br label %exit
+        exit:
+          ret void
+        }
+        !llvm.dbg.cu = !{!0}
+        !llvm.module.flags = !{!2}
+        !0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, emissionKind: FullDebug)
+        !1 = !DIFile(filename: "f.jl", directory: "/")
+        !2 = !{i32 2, !"Debug Info Version", i32 3}
+        !4 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 1, type: !5, spFlags: DISPFlagDefinition, unit: !0)
+        !5 = !DISubroutineType(types: !6)
+        !6 = !{}
+        !7 = !DILocalVariable(name: "x", scope: !4, file: !1, line: 1, type: !9)
+        !8 = !DILocation(line: 1, scope: !4)
+        !9 = !DIBasicType(name: "Int64", size: 64, encoding: DW_ATE_signed)"""
+    in_use_block(out) = (ls = body(out); ls[findfirst(l -> startswith(l, "use:"), ls):end])
+    slot = r"^%local\d* = call ptr @julia.get_gc_frame_slot\(ptr %gcframe, i32 0\)$"
+    out = llgcf(local_slot, v"1.14", facts64)
+    @test any(l -> occursin(slot, l), in_use_block(out))
+    @test occursin(r"(#dbg_declare\(|@llvm\.dbg\.declare\(metadata )ptr %local\d*,", out)
+    out = llgcf(local_slot, v"1.13", facts64)
+    @test !any(l -> occursin(slot, l), in_use_block(out))
+    @test occursin(r"(#dbg_declare\(|@llvm\.dbg\.declare\(metadata )ptr %local\d*,", out)
+    # also through a `DIArgList`
+    arglist = replace(local_slot,
+        "call void @llvm.dbg.declare(metadata ptr %local, metadata !7, metadata !DIExpression())" =>
+        "call void @llvm.dbg.value(metadata !DIArgList(ptr %local), metadata !7, metadata !DIExpression(DW_OP_LLVM_arg, 0))",
+        "declare void @llvm.dbg.declare(" => "declare void @llvm.dbg.value(")
+    out = llgcf(arglist, v"1.14", facts64)
+    @test any(l -> occursin(slot, l), in_use_block(out))
+    @test occursin(r"DIArgList\(ptr %local\d*\)", out)
+
     # Write barriers on an object allocated since the last safepoint on every path to them
     # are removed (Julia 1.14 and later): a fresh object can't be old.
     barrier(body) = """
