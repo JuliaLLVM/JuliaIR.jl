@@ -130,7 +130,7 @@ jobs:
         env:
           LLVM_JL: ${{ steps.llvm-jl.outputs.version }}
         run: echo "key=standalone-llvm$LLVM_VERSION-r4-llvmjl$LLVM_JL-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: cache
         with:
           path: standalone
