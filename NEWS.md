@@ -1,5 +1,10 @@
 # JuliaIR.jl release notes
 
+## v0.1.2
+
+- Fix RemoveJuliaAddrspaces on Julia 1.15 for code with inline assembly, which made LLVM
+  builds with assertions abort.
+
 ## v0.1.1
 
 - Follow Julia 1.13.4, which backported the zeroing of new objects in LateLowerGCFrame

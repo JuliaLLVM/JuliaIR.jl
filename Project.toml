@@ -1,6 +1,6 @@
 name = "JuliaIR"
 uuid = "3913dba9-7ba9-44aa-bf76-1cfa3b3073b1"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Tim Besard <tim.besard@gmail.com>"]
 
 [workspace]
