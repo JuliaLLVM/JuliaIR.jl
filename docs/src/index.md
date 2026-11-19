@@ -126,7 +126,7 @@ integration is proposed in
 | `jl-licm` | `JuliaLICM` (a loop pass, see [JuliaLICM](julia_licm.md)) | no |
 | `jl-lower-ptls` | `LowerPTLSPass` (a module pass, see [LowerPTLS](lower_ptls.md)) | yes |
 | `jl-expand-atomic-modify` | `ExpandAtomicModify` (Julia 1.13 and later) | no |
-| `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.14 and later) | yes |
+| `jl-cancellation-lowering` | `CancellationLowering` (Julia 1.15 and later) | yes |
 | `jl-remove-addrspaces` | `RemoveJuliaAddrspaces` | yes |
 | `jl-remove-all-addrspaces` | `RemoveAddrspaces` | yes |
 | `jl-cpu-features` | `CPUFeatures` | yes |
@@ -140,8 +140,8 @@ exception handlers directly), so `jl-lower-exc-handlers` leaves the IR of Julia 
 later alone, and CombineMulAdd only in Julia 1.10 and 1.11. ExpandAtomicModify only
 exists from Julia 1.13 on, whose code generator emits the `julia.atomicmodify` calls it
 lowers; for the IR of earlier versions, `jl-expand-atomic-modify` does nothing. Likewise,
-CancellationLowering only exists from Julia 1.14 on, whose code generator emits the
-`julia.cancellation_point` calls it lowers.
+CancellationLowering only exists from Julia 1.15 on (1.14 reverted it before its
+release), whose code generator emits the `julia.cancellation_point` calls it lowers.
 
 ## Facts about the Julia runtime
 
@@ -165,9 +165,10 @@ Differences with Julia's C++ passes:
 - Fixes from later Julia versions are applied to the IR of every version: for AllocOpt,
   the handling of write barriers that have the allocation as one of several children
   (Julia 1.14), `julia.gc_loaded` (Julia 1.12), and null-initialized reference slots
-  (Julia 1.13), and Julia 1.13's escape analysis: fields that don't overlap are not
-  merged (JuliaLang/julia#62166), allocations with references can be split or moved to
-  the stack (#61131), a field accessed by a `cmpxchg` or `atomicrmw` counts as read
+  (Julia 1.13), no lifetime markers for allocations in unreachable blocks (Julia 1.14,
+  JuliaLang/julia#63998), and Julia 1.13's escape analysis: fields that don't overlap
+  are not merged (#62166), allocations with references can be split or moved to the
+  stack (#61131), a field accessed by a `cmpxchg` or `atomicrmw` counts as read
   (#62752; without it, the C++ pass can crash), and storing the allocation's address
   with one is an escape (#61131). Like 1.13's, the port also makes the `cmpxchg` and
   `atomicrmw` it moves to the slots of a split allocation non-atomic. So for 1.10 to
@@ -185,7 +186,7 @@ Differences with Julia's C++ passes:
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
   address space 10), where the C++ pass uses the host's pointer size. So does the
-  layout of a Memory's header (Julia 1.15 and later), and with it the largest Memory
+  layout of a Memory's header (Julia 1.14 and later), and with it the largest Memory
   that fits a GC pool, in AllocOpt, LateLowerGCFrame and CancellationLowering. For IR that Julia
   generates for its own host the result is the same; for IR of a target with another
   pointer size (e.g. a 32-bit target processed by a 64-bit Julia) the port is correct

@@ -7,12 +7,15 @@
 
 ## constants of Julia's runtime (the same on every target)
 
-# GC bits in an object's header word (`julia_internal.h`); GC_IN_IMAGE_REMSET since 1.13
+# GC bits in an object's header word (`julia_internal.h`); GC_IN_IMAGE_REMSET since 1.13,
+# replaced by GC_PERM and GC_PERM_NOT_REMSET in 1.15
 const GC_MARKED = 1
 const GC_OLD_MARKED = 3
 const GC_IN_IMAGE = 4
 const GC_IN_IMAGE_REMSET = 8
 const GC_IN_IMAGE_NOT_REMSET = GC_IN_IMAGE
+const GC_PERM_NOT_REMSET = 4
+const GC_PERM = 8
 
 # the alignment of small GC allocations and of types (`JL_SMALL_BYTE_ALIGNMENT`): type
 # tags are the header word before an object, whose low 4 bits are GC bits
@@ -49,7 +52,7 @@ genericmemory_inline_data_offset(ptrsize::Integer) =
 genericmemory_data_inline(nbytes::Integer, ptrsize::Integer) =
     nbytes <= gc_max_szclass(ptrsize) - genericmemory_inline_data_offset(ptrsize)
 
-# If `call` is a `julia.gc_alloc_memory` (the function `alloc_memory`, Julia 1.15 and
+# If `call` is a `julia.gc_alloc_memory` (the function `alloc_memory`, Julia 1.14 and
 # later) of a constant size whose data will be inline, the size of the whole object
 # (`JuliaPassContext::getInlineMemorySize`); otherwise `nothing`.
 function inline_memory_size(alloc_memory::Union{Nothing,LLVM.Function},
@@ -287,7 +290,7 @@ function add_gc_alloc_attributes!(g::GCCodegen, f::LLVM.Function)
 end
 
 # the attributes of the runtime's allocation functions for cancellation reset regions
-# (`addResetSafeGCAllocAttributes`, Julia 1.14): without the memory effects, as they
+# (`addResetSafeGCAllocAttributes`, Julia 1.15): without the memory effects, as they
 # also update the task's reset context
 function add_reset_safe_gc_alloc_attributes!(f::LLVM.Function)
     push!(f.function_attributes, EnumAttribute("allockind", 1))  # AllocFnKind::Alloc
@@ -528,15 +531,18 @@ function check_object_write_barrier(f::LLVM.Function)
 end
 
 # A write barrier of `parent` for `children`, before the barrier call `ci`, in the style of
-# `lowering` (`Dialect.gc_barrier_lowering`; `:image` for FinalLowerGC from Julia 1.14 on):
+# `lowering` (`Dialect.gc_barrier_lowering`, or for FinalLowerGC `Dialect.gc_final_barrier`):
 # when the parent is old and marked, and one of the children isn't marked (or, with
 # `:image`, the parent is in the system image but not yet in its remembered set), queue
-# the parent. Returns the `julia.queue_gc_root` call.
+# the parent. With `:levels`, the lowest level of the children (young 0, old 1, permanent
+# 9: the AND of their tags) must be at most the parent's threshold (4 if it is permanent
+# but not in the image's remembered set, 0 otherwise), which is `jl_gc_wb_must_remember`.
+# Returns the `julia.queue_gc_root` call.
 function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent::Value),
                              children::Vector{<:Value}, lowering::Symbol, debug_info::Int)
     builder = g.builder
     T_size = g.T_size
-    named = lowering in (:named, :image)
+    named = lowering in (:named, :image, :levels)
     set_name!(v, name) = (lowering === :debug_named && debug_info >= 2 &&
                           !(v isa LLVM.Constant)) && (v.name = name)
     position_before!(builder, ci; debug=true)
@@ -553,6 +559,20 @@ function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent
     may_trig_block = may_trig_term.parent
     named && (may_trig_block.name = "may_trigger_wb")
     set_name!(may_trig_block, "may_trigger_wb")
+    if lowering === :levels
+        par_threshold = and!(builder, par_tag, ConstantInt(T_size, GC_PERM_NOT_REMSET),
+                             "parent_threshold")
+        child_tags = nothing
+        for child in children
+            tag = emit_load_tag!(g, child)
+            child_tags = child_tags === nothing ? tag : and!(builder, child_tags, tag, "child_tags")
+        end
+        child_level = and!(builder, child_tags, ConstantInt(T_size, GC_PERM | GC_MARKED),
+                           "child_level")
+        should_trigger = icmp!(builder, LLVM.IntPredicate.ULE, child_level, par_threshold,
+                               "should_trigger_wb")
+        return emit_queue_root!(g, parent, should_trigger, may_trig_term, named, set_name!)
+    end
     par_is_image = nothing
     if lowering === :image
         # at the generational boundaries above the youngest, only whether the parent
@@ -577,6 +597,14 @@ function emit_write_barrier!(g::GCCodegen, ci::Instruction, @nospecialize(parent
     end
     should_trigger = par_is_image === nothing ? any_child_not_marked :
         or!(builder, par_is_image, any_child_not_marked, "should_trigger_wb")
+    return emit_queue_root!(g, parent, should_trigger, may_trig_term, named, set_name!)
+end
+
+# the slow path of a write barrier: queue the parent if `should_trigger`
+function emit_queue_root!(g::GCCodegen, @nospecialize(parent::Value),
+                          @nospecialize(should_trigger::Value), may_trig_term::Instruction,
+                          named::Bool, set_name!)
+    builder = g.builder
     trig_term = split_block_and_insert_if_then!(should_trigger, may_trig_term;
                                                 weights=(1, 9))
     trig_block = trig_term.parent

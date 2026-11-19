@@ -50,18 +50,18 @@ the running Julia's pass.
 The pass follows the C++ pass of the running Julia's version. The differences between
 versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
-|-----------|------|------|------|------|--------|
-| Julia's pass | module pass | function pass | function pass | function pass | function pass |
-| runtime functions declared | in every module | in modules with a function with a GC stack | same | in modules that use a GC intrinsic | same, also the `_reset_safe` variants |
-| frame code placed | after the intrinsics, with the next instruction's debug location | at the intrinsics, with their debug locations | same | same | same |
-| names (`frame.nroots`, `frame.prev`, `task.gcstack`) | no | yes | yes | yes | yes |
-| pool allocator | `ijl_gc_pool_alloc(ptls, offset, osize)` | `ijl_gc_pool_alloc_instrumented(ptls, offset, osize, tag)` | `ijl_gc_small_alloc(ptls, offset, osize, tag)` | same | same |
-| big-object allocator | `ijl_gc_big_alloc(ptls, size)` | `ijl_gc_big_alloc_instrumented(ptls, size, tag)` | `ijl_gc_big_alloc(ptls, size, tag)` | same | same |
-| typed allocator | `ijl_gc_alloc_typed(ptls, size, null)` | `ijl_gc_alloc_typed(ptls, size, tag)` | same | same | same |
-| alignment of allocations | none | the call's, at least a pointer's | same | same | same |
-| allocations and root queuing in a cancellation reset region (`!julia.reset_region`) | | | | | the `_reset_safe` variants of the runtime functions |
-| write barriers | | | | | lowered here (LateLowerGCFrame leaves them), without null children |
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 | 1.15 and later |
+|-----------|------|------|------|------|------|----------------|
+| Julia's pass | module pass | function pass | function pass | function pass | function pass | function pass |
+| runtime functions declared | in every module | in modules with a function with a GC stack | same | in modules that use a GC intrinsic | same | same, also the `_reset_safe` variants |
+| frame code placed | after the intrinsics, with the next instruction's debug location | at the intrinsics, with their debug locations | same | same | same | same |
+| names (`frame.nroots`, `frame.prev`, `task.gcstack`) | no | yes | yes | yes | yes | yes |
+| pool allocator | `ijl_gc_pool_alloc(ptls, offset, osize)` | `ijl_gc_pool_alloc_instrumented(ptls, offset, osize, tag)` | `ijl_gc_small_alloc(ptls, offset, osize, tag)` | same | same | same |
+| big-object allocator | `ijl_gc_big_alloc(ptls, size)` | `ijl_gc_big_alloc_instrumented(ptls, size, tag)` | `ijl_gc_big_alloc(ptls, size, tag)` | same | same | same |
+| typed allocator | `ijl_gc_alloc_typed(ptls, size, null)` | `ijl_gc_alloc_typed(ptls, size, tag)` | same | same | same | same |
+| alignment of allocations | none | the call's, at least a pointer's | same | same | same | same |
+| allocations and root queuing in a cancellation reset region (`!julia.reset_region`) | | | | | | the `_reset_safe` variants of the runtime functions |
+| write barriers | | | | | lowered here (LateLowerGCFrame leaves them), without null children | same, comparing the lowest level of the children (the AND of their tags) with the parent's threshold, which also skips permanent children (JuliaLang/julia#64913) |
 
 The size of a big object's allocation includes the type tag; the typed allocator is given
 the size of the object without it. The result of an allocation of a constant size is

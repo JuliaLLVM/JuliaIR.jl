@@ -63,11 +63,11 @@ previous version's. The recipe is chosen by the running Julia's version:
 | 1.10 | `Recipe{10}` | FinalLowerGC is a module pass; no GlobalsAA or GlobalDCE in the early optimizations; no RemoveJuliaAddrspaces; `sroa<preserve-cfg>` at level 1 |
 | 1.11 | `Recipe{11}` | the options of 1.11; GlobalsAA and GlobalDCE; FinalLowerGC is a function pass; RemoveJuliaAddrspaces after LowerPTLS; `sroa<modify-cfg>` at level 1 |
 | 1.12 | `Recipe{12}` | InferFunctionAttrs; no level-1 scalar optimizations; DSE before GVN after the GC lowering; no CombineMulAdd |
-| 1.13 | `Recipe{13}` | SROA modifying the CFG, EarlyCSE and GlobalOpt in the early simplifications; eagerly invalidating function pass manager; a single loop pass manager with MemorySSA; `vector-combine<early>`; ExpandAtomicModify |
-| 1.14, 1.15 | `Recipe{14}` | no CGSCC pass manager; IRCE with cleanup; CancellationLowering; EarlyCSE instead of GVN after the GC lowering; float2int and lower-constant-intrinsics in the vectorization; no sanitizers (stock builds) |
+| 1.13 | `Recipe{13}` | SROA modifying the CFG, EarlyCSE and GlobalOpt in the early simplifications; eagerly invalidating function pass manager; a single loop pass manager with MemorySSA; `vector-combine<early>`; ExpandAtomicModify; from 1.13.4 on, IRCE with cleanup after the loop passes' cleanup, and SimplifyCFG before SLP vectorization |
+| 1.14 | `Recipe{14}` | no CGSCC pass manager; a full unroll of small loops before IRCE; EarlyCSE instead of GVN after the GC lowering; alignment inference after the intrinsic lowering; float2int and lower-constant-intrinsics in the vectorization; no sanitizers (stock builds) |
+| 1.15 | `Recipe{15}` | CancellationLowering before LateLowerGCFrame (Julia 1.14 reverted it before its release); EarlyCSE with a fresh MemorySSA before IndVarSimplify |
 
-Julia 1.15 (master) has the same pipeline as 1.14, and uses 1.14's dialect. A Julia newer
-than the newest recipe uses it until its pipeline changes.
+A Julia newer than the newest recipe uses it until its pipeline changes.
 
 How a pass is written in pipeline text depends on the LLVM that is loaded; spelling
 helpers take care of that (for example, LLVM 15 has no CFG option for SROA, and
@@ -93,8 +93,8 @@ The rebuilt pipeline prints like Julia's (as `print_pipeline` shows them), excep
 - Julia adds pass managers that are empty (a CGSCC pass manager below level 2 up to
   1.13), which pipeline text can't express; the rebuilt pipeline leaves them out. Julia
   1.13 also builds a function pass manager that it never adds.
-- Julia 1.14's IRCE with cleanup is a pass of its own, `jl-irce-with-cleanup`, where
-  Julia's has no name.
+- The IRCE with cleanup of Julia 1.13.4 and later is a pass of its own,
+  `jl-irce-with-cleanup`, where Julia's has no name.
 - Julia's loop pass managers don't use BlockFrequencyInfo. Written as pipeline text
   (`loop-mssa(...)`), a loop pass manager that runs SimpleLoopUnswitch does on the LLVM
   versions whose pipeline parser enables it for that pass; this only makes a difference

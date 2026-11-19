@@ -29,7 +29,8 @@ For a loop with a preheader, in reverse postorder of its blocks:
   to 1.13 this is `julia.write_barrier`. From Julia 1.14 on, a `julia.object_write_barrier`
   is hoisted the same way. A `julia.field_write_barrier.p*` is hoisted as is when its
   slots are invariant too. Otherwise it is replaced in the preheader by an object
-  barrier with the same parent and children, keeping its `!julia.reset_region`. That
+  barrier with the same parent and children, keeping its `!julia.reset_region` (Julia
+  1.15). That
   object barrier is declared with codegen's attributes when the module doesn't declare
   one yet.
 - **`julia.gc_alloc_obj`** is hoisted when its operands can be made loop invariant and

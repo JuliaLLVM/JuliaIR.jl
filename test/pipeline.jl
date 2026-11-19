@@ -15,10 +15,10 @@ function printed(text)
 end
 
 # What can't be told apart in a printed pipeline: the C++ adds pass managers that are
-# empty, which pipeline text can't express, 1.14's IRCE with cleanup is a pass of the
-# C++ pipeline without a name of its own (printed by its type name, which GCC and Clang
-# spell differently), and the early-only `vector-combine` (tested below) is printed as
-# the other.
+# empty, which pipeline text can't express, the IRCE with cleanup of 1.13.4 and later is a
+# pass of the C++ pipeline without a name of its own (printed by its type name, which GCC
+# and Clang spell differently), and the early-only `vector-combine` (tested below) is
+# printed as the other.
 function normalize_cpp(s)
     s = replace(s, r"(\{anonymous\}|\(anonymous namespace\))::IRCEWithCleanupPass" =>
                    "jl-irce-with-cleanup")

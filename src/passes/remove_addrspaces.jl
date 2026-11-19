@@ -145,11 +145,60 @@ function forget_analyses!(am, f::LLVM.Function)
     return
 end
 
+# Julia 1.15 moves the bodies of functions without address-taken blocks instead of cloning
+# them (JuliaLang/julia#65016): their instructions and blocks keep their uses in the order
+# they had, which the order of the clone's uses (that of the instructions that use them)
+# generally isn't. Setting an operand makes its use the first of the value's, so setting
+# the clone's in the reverse order of the original's uses restores that order.
+function restore_use_order!(f::LLVM.Function, vmap::ValueMap)
+    function restore!(old)
+        uses = collect(LLVM.uses(old))
+        length(uses) > 1 || return
+        new = vmap[old]
+        for use in Iterators.reverse(uses)
+            LLVM.operands(vmap[LLVM.user(use)])[use.operand_index] = new
+        end
+    end
+    for bb in f.blocks
+        restore!(bb)
+        foreach(restore!, bb.instructions)
+    end
+end
+
+# the functions with a `blockaddress` of one of their blocks (`BasicBlock::hasAddressTaken`),
+# whose bodies Julia clones: those that the module's code and initializers refer to (from
+# LLVM 23 on, the constant doesn't use the function or the block)
+function address_taken_functions(mod::LLVM.Module)
+    taken = Set{LLVM.Function}()
+    seen = Set{Value}()
+    function visit(v)
+        v isa LLVM.Constant && !(v isa LLVM.GlobalValue) && !(v in seen) || return
+        push!(seen, v)
+        if v isa LLVM.BlockAddress
+            fn = LLVM.version() >= v"19" ?
+                 Value(LLVM.API.LLVMGetBlockAddressFunction(v)) : LLVM.operands(v)[1]
+            push!(taken, fn)
+        else
+            foreach(visit, LLVM.operands(v))
+        end
+    end
+    for gv in mod.globals
+        init = LLVM.initializer(gv)
+        init === nothing || visit(init)
+    end
+    for f in mod.functions, bb in f.blocks, inst in bb.instructions
+        foreach(visit, LLVM.operands(inst))
+    end
+    return taken
+end
+
 # Rebuild `mod` with the address space `as` of every pointer type replaced by `asmap(as)`
 # (C++ `removeAddrspaces`). `am` is the module analysis manager of the pipeline, or
 # `nothing`; the analyses of the functions that are deleted are removed from it.
-function remove_addrspaces!(mod::LLVM.Module, am, asmap)
+# With `move_bodies` (Julia 1.15 and later), the functions keep the order of uses.
+function remove_addrspaces!(mod::LLVM.Module, am, asmap; move_bodies::Bool=false)
     r = AddrspaceRemapper(asmap)
+    address_taken = move_bodies ? address_taken_functions(mod) : Set{LLVM.Function}()
     @dispose vmap=ValueMap() begin
         m = AddrspaceMaterializer(r, vmap)
 
@@ -229,6 +278,7 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap)
             end
             clone_into!(new, f; value_map=vmap, type_mapper=r, materializer=m,
                         changes=LLVM.CloneFunctionChangeType.GlobalChanges)
+            move_bodies && !(f in address_taken) && restore_use_order!(f, vmap)
             remap_type_attributes!(new, r)
             copy_comdat!(new, f)
             remove_noop_addrspace_casts!(new)
@@ -285,12 +335,14 @@ remove_julia_addrspace(as::Int) = is_special_addrspace(as) ? AS_GENERIC : as
 
 const REMOVE_JULIA_ADDRSPACES =
     define_pass("jl-remove-addrspaces", :module,
-                (mod, am, opts) -> remove_addrspaces!(mod, am, remove_julia_addrspace);
+                (mod, am, opts) -> remove_addrspaces!(mod, am, remove_julia_addrspace;
+                    move_bodies=opts.dialect.remove_addrspaces_moves_bodies);
                 required=true, cpp_name="RemoveJuliaAddrspaces")
 
 const REMOVE_ADDRSPACES =
     define_pass("jl-remove-all-addrspaces", :module,
-                (mod, am, opts) -> remove_addrspaces!(mod, am, remove_all_addrspace);
+                (mod, am, opts) -> remove_addrspaces!(mod, am, remove_all_addrspace;
+                    move_bodies=opts.dialect.remove_addrspaces_moves_bodies);
                 required=true, cpp_name="RemoveAddrspaces")
 
 """

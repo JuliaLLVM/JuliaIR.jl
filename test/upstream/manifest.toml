@@ -40,9 +40,9 @@
 # llvm-compat/llvm<major>/<minor> after the port patch (see derive.jl).
 
 [pins."1.10"]
-tag = "v1.10.12"
-commit = "d93beab124c850d5f600f290069853e81413f7ca"
-julia = "1.10.12"
+tag = "v1.10.13"
+commit = "e184dd512e35c5a6e036c9aab5e4de5a3345f62d"
+julia = "1.10.13"
 llvm = 15
 
 [pins."1.11"]
@@ -58,13 +58,15 @@ julia = "1.12.7"
 llvm = 18
 
 [pins."1.13"]
-tag = "v1.13.2"
-commit = "45b6d15e34bbd2003a31acce0b1847b63dad029c"
-julia = "1.13.2"
+tag = "v1.13.4"
+commit = "c1ac32ab73354bbe9bb767f91e0a2b857141fe70"
+julia = "1.13.4"
 llvm = 20
 
 [pins."1.14"]
-tag = "release-1.14"
+tag = "v1.14.0-beta1"
+commit = "a29842ef00fe990511eaf7c64ab6d4f4ba81323d"
+julia = "1.14.0-beta1"
 llvm = 23
 
 [pins."1.15"]
@@ -345,6 +347,11 @@ status = "run"
 [fixtures."lower-handlers-addrspaces.ll"]
 kind = "port"
 ports = ["LowerExcHandlers"]
+status = "run"
+
+[fixtures."lower-ptls.ll"]
+kind = "port"
+ports = ["LowerPTLSPass"]
 status = "run"
 
 ## Julia's optimization pipeline

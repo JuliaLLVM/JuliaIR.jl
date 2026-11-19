@@ -1,7 +1,7 @@
-; Julia 1.13 and earlier have no cancellation points (and no CancellationLowering): for
+; Julia 1.14 and earlier have no cancellation points (and no CancellationLowering): for
 ; their IR, the port changes nothing, and needs no runtime facts.
 
-; UNSUPPORTED: julia-ge-1.14
+; UNSUPPORTED: julia-ge-1.15
 ; RUN: opt -passes=CancellationLowering -S %s | FileCheck %s
 ; RUN: opt -passes=jl-cancellation-lowering -S %s | FileCheck %s
 

@@ -70,6 +70,8 @@ struct JuliaPipeline
     "The minor version of the Julia whose dialect and recipe this is (the newest known
     one for a newer Julia)."
     minor::VersionNumber
+    "The version of that Julia, for a recipe that differs between patch releases."
+    julia::VersionNumber
     "The optimization level, 0 to 3."
     level::Int
     "Whether Julia's passes are this package's ports, or Julia's C++ passes."
@@ -96,7 +98,7 @@ function JuliaPipeline(; level::Integer=2, ports::Bool=true, options...)
     end
     opts.lower_intrinsics && !opts.remove_ni &&
         throw(ArgumentError("option remove_ni can't be turned off while lowering intrinsics"))
-    return JuliaPipeline(minor, clamp(level, 0, 3), ports, opts)
+    return JuliaPipeline(minor, VERSION, clamp(level, 0, 3), ports, opts)
 end
 
 """
@@ -190,6 +192,9 @@ const REQUIRE_GLOBALS_AA = "require<globals-aa>"
 # `InferAlignmentPass()`
 const INFER_ALIGNMENT = "infer-alignment"
 
+# `InvalidateAnalysisPass<MemorySSAAnalysis>()`
+const INVALIDATE_MEMORYSSA = "invalidate<memoryssa>"
+
 
 ## markers
 #
@@ -227,9 +232,9 @@ end
 
 ## IRCE with cleanup
 #
-# Julia 1.14 runs IRCE through a pass of its pipeline (`IRCEWithCleanupPass`, not
-# registered under a name) that cleans up after it with SimplifyCFG and InstCombine, but
-# only if it changed the function.
+# Julia 1.13.4 and 1.14 run IRCE through a pass of their pipeline (`IRCEWithCleanupPass`,
+# not registered under a name) that cleans up after it with SimplifyCFG and InstCombine,
+# but only if it changed the function.
 
 function irce_with_cleanup!(f::LLVM.Function, am, opts::PassOptions)
     preserved = run!(IRCEPass(), f, am)

@@ -4,9 +4,9 @@ using JuliaIR: Dialect
 
 @testset "resolution" begin
     # every known minor version, as released and as prerelease
-    for (v, minor) in [(v"1.10.12", v"1.10"), (v"1.10.0", v"1.10"),
+    for (v, minor) in [(v"1.10.13", v"1.10"), (v"1.10.0", v"1.10"),
                        (v"1.11.9", v"1.11"), (v"1.11.0-DEV.200", v"1.11"),
-                       (v"1.12.7", v"1.12"), (v"1.13.2", v"1.13"),
+                       (v"1.12.7", v"1.12"), (v"1.13.4", v"1.13"),
                        (v"1.13.0-DEV.1", v"1.13"), (v"1.13.0-rc1", v"1.13"),
                        (v"1.14.0-DEV.3782", v"1.14"), (v"1.15.0-DEV.77", v"1.15")]
         d = Dialect(v)
@@ -40,7 +40,7 @@ end
     @test !d10.has_call3 && d11.has_call3
     @test !d12.has_atomicmodify && d13.has_atomicmodify && dm.has_atomicmodify
     @test d10.has_combine_muladd && d11.has_combine_muladd && !d12.has_combine_muladd
-    @test !d13.has_cancellation_lowering && dm.has_cancellation_lowering
+    @test !d14.has_cancellation_lowering && dm.has_cancellation_lowering
     @test d13.mv_spec_flags === :target && dm.mv_spec_flags === :packed
     @test !d10.mv_bf16 && d11.mv_bf16
     @test d10.mv_tables === :offsets && d11.mv_tables === :pointers
@@ -56,10 +56,10 @@ end
     @test (d10.alloc_layout, d11.alloc_layout, d12.alloc_layout, dm.alloc_layout) ==
           (:legacy, :legacy, :chunked, :chunked)
     @test !d10.alloc_callsite_attrs && d11.alloc_callsite_attrs
-    @test !d13.alloc_bundles && dm.alloc_bundles
-    @test !d14.has_gc_alloc_memory && dm.has_gc_alloc_memory
+    @test !d12.alloc_bundles && d13.alloc_bundles
+    @test !d13.has_gc_alloc_memory && d14.has_gc_alloc_memory
     @test !d11.has_gc_transition_bundle && d12.has_gc_transition_bundle
-    @test !d13.has_zeroinit_indirect_bundle && dm.has_zeroinit_indirect_bundle
+    @test !d12.has_zeroinit_indirect_bundle && d13.has_zeroinit_indirect_bundle
 
     @test d10.tbaa_downgrade == ["jtbaa_const"]
     @test d11.tbaa_downgrade == d13.tbaa_downgrade == ["jtbaa_const", "jtbaa_memoryptr", "jtbaa_memorylen"]
@@ -77,6 +77,8 @@ end
     @test !d12.gc_frame_elision && d13.gc_frame_elision
     @test (d13.gc_return_roots, dm.gc_return_roots) == (:sret, :attribute)
     @test !d11.gc_slot_resets && d12.gc_slot_resets && d12.gc_prologue_store_elision
+    @test !d13.gc_slot_reset_runs && d14.gc_slot_reset_runs
+    @test !d13.gc_local_slot_addresses && d14.gc_local_slot_addresses
     @test d11.gc_root_allocas_first && !d12.gc_root_allocas_first
     @test !d12.gc_stack_argument && d13.gc_stack_argument
     @test !d10.gc_names && d11.gc_names && !d10.gc_tag_load_volatile && d11.gc_tag_load_volatile
@@ -85,6 +87,7 @@ end
     @test (d11.gc_ptls_gep, d12.gc_ptls_gep) == (:pointer, :byte)
     @test map(d -> d.gc_barrier_lowering, (d10, d11, d12, d13, dm)) ==
           (:unnamed, :debug_named, :named, :image, :deferred)
+    @test (d14.gc_final_barrier, dm.gc_final_barrier) == (:image, :levels)
     @test map(d -> d.gc_transition_lowering, (d11, d12, d13, dm)) ==
           (:none, :pgcstack, :bundle, :bundle)
     @test map(d -> d.gc_safepoint_load, (d12, d13, dm)) == (:plain, :monotonic, :monotonic_named)
@@ -97,11 +100,13 @@ end
           ("ijl_adopt_thread", "ijl_autoinit_and_adopt_thread")
     @test (d13.ptls_image_offset_slot, dm.ptls_image_offset_slot) ==
           ("jl_tls_offset", "jl_image_tls_offset")
-    @test (d13.ptls_jit_getter, dm.ptls_jit_getter) == (:address, :resolved)
+    @test map(d -> d.ptls_jit_getter, (d13, d14, dm)) == (:address, :resolved, :slots)
     @test !d11.ptls_tp_inbounds && d12.ptls_tp_inbounds
     @test !d11.ptls_exit_safepoint && d12.ptls_exit_safepoint
+    @test (d13.ptls_image_offset_none, d14.ptls_image_offset_none) == (0, -1)
+    @test !d13.ptls_darwin_tls && d14.ptls_darwin_tls
     @test !d11.gc_declare_small_alloc && d12.gc_declare_small_alloc
-    @test !d14.gc_fresh_barrier_elision && dm.gc_fresh_barrier_elision
+    @test !d13.gc_fresh_barrier_elision && d14.gc_fresh_barrier_elision
 
     # type lowering
     @test (d11.cpointer_type, d12.cpointer_type) == (:integer, :pointer)
@@ -115,7 +120,7 @@ end
     @test !d12.gc_final_skip_unused && d13.gc_final_skip_unused
     @test map(d -> d.gc_alloc_entry_points, (d10, d11, d12, d13, dm)) ==
           (:pool, :pool_instrumented, :small, :small, :small)
-    @test !d13.gc_alloc_reset_safe && dm.gc_alloc_reset_safe
+    @test !d14.gc_alloc_reset_safe && dm.gc_alloc_reset_safe
 end
 
 @testset "policies" begin

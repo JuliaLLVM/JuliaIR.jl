@@ -216,7 +216,7 @@ has_reset_region(inst::Instruction) = haskey(inst.metadata, "julia.reset_region"
 
 # `julia.queue_gc_root(v)`: the runtime's function, called in place
 function lower_queue_gc_root!(p::FinalLowerGC, target::Instruction)
-    # from Julia 1.14 on, the call may run with a cancellation reset region published
+    # from Julia 1.15 on, the call may run with a cancellation reset region published
     callee = p.dialect.gc_alloc_reset_safe && has_reset_region(target) ?
         p.runtime[:gc_queue_root_reset_safe] : p.runtime[:gc_queue_root]
     target.called_type == callee.function_type ||
@@ -249,7 +249,7 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
     args = collect(target.arguments)
     ptls, size = args[1], args[2]
     tag = dialect.gc_alloc_bytes_tag ? Value[args[3]] : Value[]
-    # from Julia 1.14 on, the allocation may run with a cancellation reset region published
+    # from Julia 1.15 on, the allocation may run with a cancellation reset region published
     reset_safe = dialect.gc_alloc_reset_safe && has_reset_region(target)
     runtime(which) = p.runtime[reset_safe ? Symbol(which, :_reset_safe) : which]
     deref = UInt64(0)
@@ -298,16 +298,20 @@ function barrier_children(call::Instruction)
 end
 
 # a write barrier (Julia 1.14 and later), the stock GC's: like Julia 1.13's in
-# LateLowerGCFrame, without the children that are null (a field that is cleared)
+# LateLowerGCFrame (on 1.15 with the levels of permanent objects), without the children
+# that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
     children = barrier_children(target)
     isempty(children) && return
     p.cfg_modified = true
-    queue_root = emit_write_barrier!(p.gc, target, parent, children, :image, 1)
+    queue_root = emit_write_barrier!(p.gc, target, parent, children,
+                                     p.dialect.gc_final_barrier, 1)
     # the slow path runs in the barrier's cancellation reset region, if any
-    reset_region = get(target.metadata, "julia.reset_region", nothing)
-    reset_region === nothing || (queue_root.metadata["julia.reset_region"] = reset_region)
+    if p.dialect.gc_alloc_reset_safe
+        reset_region = get(target.metadata, "julia.reset_region", nothing)
+        reset_region === nothing || (queue_root.metadata["julia.reset_region"] = reset_region)
+    end
 end
 
 

@@ -1,5 +1,5 @@
 # CancellationLowering: lower the `julia.cancellation_point()` calls that the code
-# generator of Julia 1.14 and later emits for `Base.@cancel_check` into reset regions.
+# generator of Julia 1.15 and later emits for `Base.@cancel_check` into reset regions.
 # Port of Julia's `src/llvm-cancellation-lowering.cpp` (1.15).
 #
 # At a cancellation point, the function publishes a stack buffer, a `jl_reset_ctx_t`, in
@@ -12,17 +12,16 @@
 # the function returns. Allocations and write barriers may run with the region open:
 # they are marked `!julia.reset_region`, and FinalLowerGC lowers them to runtime entry
 # points that close and reopen the region themselves. That excludes the allocations of
-# Memory (Julia 1.15 and later) whose size is not known to fit a GC pool, which become
-# calls of the runtime. Functions marked
-# `"julia.ipo_reset_safe"` may run inside their caller's region, so their calls close it
-# too, even when they have no cancellation points of their own.
+# Memory whose size is not known to fit a GC pool, which become calls of the runtime.
+# Functions marked `"julia.ipo_reset_safe"` may run inside their caller's region, so their
+# calls close it too, even when they have no cancellation points of their own.
 #
 # The layout of the task and of `jl_reset_ctx_t`, and the name of `setjmp`, are facts of
 # the runtime (`src/runtime.jl`), read only for functions that need them; whether
 # `setjmp` takes a second argument follows the module's triple, as in the C++ pass. For
-# the IR of Julia versions before 1.14 (`Dialect.has_cancellation_lowering`), the
-# pass does nothing. Like the C++ pass, it is required (it also runs on `optnone`
-# functions).
+# the IR of Julia versions before 1.15 (`Dialect.has_cancellation_lowering`; 1.14
+# reverted cancellation before its release), the pass does nothing. Like the C++ pass, it
+# is required (it also runs on `optnone` functions).
 
 """
     JuliaIR.CancellationLoweringError
@@ -98,7 +97,7 @@ function is_implicit_runtime_call(p::CancellationLowering, call::Instruction)
 end
 
 # Allocations that FinalLowerGC lowers to a reset-safe entry point. A Memory allocation
-# (Julia 1.15 and later) only qualifies if its size is known to fit inline; otherwise it
+# only qualifies if its size is known to fit inline; otherwise it
 # becomes a call of `jl_alloc_genericmemory_unchecked`, which is not reset-safe.
 is_reset_safe_alloc(p::CancellationLowering, call::Instruction) =
     is_fn(p.fns.alloc_obj, call.called_operand) ||
@@ -175,11 +174,12 @@ function emit_safepoint!(p::CancellationLowering)
     emit_gc_safepoint!(p.gc, ptls, nothing; final=false)
 end
 
-# `reset_ctx = NULL` (release), before the builder's position
+# `reset_ctx = NULL`, before the builder's position: a relaxed store, since nothing the
+# region did needs to be visible to the runtime when it is closed (JuliaLang/julia#64068)
 function clear_region!(p::CancellationLowering)
     store = store!(p.builder, LLVM.null(LLVM.PointerType()), p.reset_ctx_ptr;
                    align=pointer_align(p.gc), volatile=true,
-                   ordering=LLVM.AtomicOrdering.Release)
+                   ordering=LLVM.AtomicOrdering.Monotonic)
     set_reset_safe_md!(store)
     return store
 end
@@ -310,6 +310,9 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     if startswith(LLVM.name(callee), "llvm.")
         id = intrinsic_id(callee)
         id !== nothing && id.name in RESET_SAFE_INTRINSICS && return true
+        # pure computation (`llvm.maximum`, `llvm.fma`, ...) leaves nothing for a reset to
+        # tear (JuliaLang/julia#64566)
+        id !== nothing && is_pure_call(call) && return true
     end
     name = LLVM.name(callee)
     name == "julia.safepoint" && return true
@@ -322,6 +325,11 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     # the name of setjmp last, so that its fact is read only for calls that are left
     return name == p.gc.layout.setjmp
 end
+
+# `doesNotAccessMemory() && !mayHaveSideEffects() && willReturn()` of a call
+is_pure_call(call::Instruction) =
+    call_memory_effects(call) == MemoryEffects(:none) &&
+    call_has_fn_attr(call, :nounwind) && call_has_fn_attr(call, :willreturn)
 
 # the instructions before which an open region must be closed
 function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_entry)
@@ -509,14 +517,14 @@ const CANCELLATION_LOWERING =
                                      setjmp=nothing)
 
 Lower the cancellation points (`julia.cancellation_point()` calls, from
-`Base.@cancel_check`) that Julia 1.14 and later emit into reset regions
+`Base.@cancel_check`) that Julia 1.15 and later emit into reset regions
 (`jl-cancellation-lowering` in a pipeline, `CancellationLowering` in Julia's pipeline):
 at a point, the function publishes a stack buffer in its task, filled by `setjmp`, to
 which the runtime can jump back to deliver a cancellation; the pass closes the region
 again before every operation such a jump could tear, and before returning. See the
 documentation for the details.
 
-Julia releases up to 1.13 don't have cancellation points, so for their IR the pass does
+Julia releases up to 1.14 don't have cancellation points, so for their IR the pass does
 nothing. Like Julia's pass, it also runs on `optnone` functions.
 
 The lowering needs the layout of the runtime's task and reset context and the name of

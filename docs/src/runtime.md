@@ -35,7 +35,7 @@ without exception handlers) is processed without:
    Alignments (`handler_align`, `reset_ctx_align`) must be positive powers of two.
 2. Otherwise, the fact is read from the running Julia, whose IR the passes process.
 3. When the running Julia doesn't have the fact (e.g. the reset context of cancellation
-   points before Julia 1.14) or it can't be read, the pass throws a
+   points before Julia 1.15) or it can't be read, the pass throws a
    [`JuliaIR.RuntimeError`](@ref) that names the fact and the option that gives it. So
    does `JuliaIR.runtime_layout` for a fact of another Julia version's dialect that isn't
    given explicitly.
@@ -55,7 +55,7 @@ read the first time a pass needs it, once per process:
 | `pgcstack_getter`, `pgcstack_key` | the runtime's `jl_pgcstack_getkey` |
 | `task_ptls`, `tls_safepoint` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it |
 | `handler_size`, `handler_align`, `setjmp` | the code Julia generates for a `try`: the stack buffer that `setjmp` is called on (lowered by Julia's LowerExcHandlers up to Julia 1.12, emitted by its code generator later) |
-| `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.14 and later) |
+| `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.15 and later) |
 | `smalltag_shift` | the header of a boxed `Int64`, whose small type tag is a field of `Int64.flags` |
 | `max_small_tag` | the code Julia generates for `typeof` of an object of unknown type: the bound below which a tag indexes `jl_small_typeof` |
 | `task_world_age` | the field of the current task that `Core._call_in_world` sets to the world it calls in |

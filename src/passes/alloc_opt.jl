@@ -1,4 +1,4 @@
-# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`, and from Julia 1.15 on
+# AllocOpt: remove Julia GC allocations (`julia.gc_alloc_obj`, and from Julia 1.14 on
 # `julia.gc_alloc_memory` of a size that fits a GC pool) whose object does not escape, or
 # move them to the stack, whole or split into their fields. Port of Julia's
 # `src/llvm-alloc-opt.cpp` (1.15), with the representation choices of older Julia
@@ -314,10 +314,13 @@ end
 # insert lifetime markers for `ptr`, based on the uses of the allocation `orig`
 function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instruction)
     info = opt.info
-    lifetime_call!(opt, opt.lifetime_start, ptr, size, orig)
     def_bb = orig.parent
+    # an allocation in unreachable code needs no markers (JuliaLang/julia#63998)
+    def_bb in reachable_blocks(opt) || return
+    lifetime_call!(opt, opt.lifetime_start, ptr, size, orig)
     bbs = Set{BasicBlock}([def_bb])
     bbs_order = BasicBlock[def_bb]
+    nuses = Dict{BasicBlock,Int}()
     function add!(bb)
         bb in bbs && return false
         push!(bbs, bb)
@@ -328,6 +331,7 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
     # up to the definition
     for use in info.use_order
         bb = use.parent
+        nuses[bb] = get(nuses, bb, 0) + 1
         add!(bb) || continue
         stack = collect(bb.predecessors)
         while !isempty(stack)
@@ -365,14 +369,26 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
         elseif bb in extra_use
             push!(first_dead, bb.terminator)
         else
-            # the instruction after the last use
-            next = nothing
-            for inst in Iterators.reverse(collect(bb.instructions))
-                if inst in info.uses
-                    next === nothing || push!(first_dead, next)
+            # the instruction after the last use, scanning from both ends of the block: the
+            # forward scan knows the last use by the number of uses (JuliaLang/julia#63998)
+            remaining = get(nuses, bb, 0)
+            fwd = bb == def_bb ? orig.next : first(bb.instructions)
+            bwd = nothing
+            last_use = nothing
+            while remaining > 0
+                if fwd in info.uses && (remaining -= 1) == 0
+                    last_use = fwd
                     break
                 end
-                next = inst
+                fwd = fwd.next
+                bwd = bwd === nothing ? bb.terminator : bwd.prev
+                if bwd in info.uses
+                    last_use = bwd
+                    break
+                end
+            end
+            if last_use !== nothing && (next = last_use.next) !== nothing
+                push!(first_dead, next)
             end
         end
     end
@@ -1123,7 +1139,7 @@ const ALLOC_OPT = define_pass("jl-alloc-opt", :function, alloc_opt!; required=fa
     JuliaIR.AllocOptPass()
 
 Remove Julia GC allocations whose object does not escape, or move them to the stack,
-whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.15 on, these
+whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.14 on, these
 include the allocations of Memory (`julia.gc_alloc_memory`) whose size is a constant that
 fits a GC pool; on the stack, their header is initialized like the allocation would, and
 loads of their data pointer are forwarded when nothing else may write it.

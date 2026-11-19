@@ -31,8 +31,12 @@ end
     task = current_task()
     ptls = ccall(:jl_get_ptls_states, Ptr{Cvoid}, ())
 
-    # the task: gcstack follows the Julia-visible fields after a 4-byte one; ptls by value
-    @test rt.task_gcstack == cld(sizeof(Task) + 4, W) * W
+    # the task: gcstack follows the Julia-visible fields after a 4-byte one (from Julia
+    # 1.14 on, `sizeof(Task)` also counts some of the hidden fields); ptls by value
+    n = fieldcount(Task)
+    T = fieldtype(Task, n)
+    visible = fieldoffset(Task, n) + (isbitstype(T) ? sizeof(T) : W)
+    @test rt.task_gcstack == cld(visible + 4, W) * W
     GC.@preserve task begin
         @test unsafe_load(Ptr{Ptr{Cvoid}}(pointer_from_objref(task) + rt.task_ptls)) == ptls
     end
@@ -51,7 +55,8 @@ end
     @test rt.tls_offset == unsafe_load(cglobal(:jl_tls_offset, Int))
     if Sys.islinux() && Sys.ARCH === :x86_64
         @test rt.tls_offset == -8
-    elseif Sys.isapple() || Sys.iswindows()
+    elseif Sys.iswindows() || (Sys.isapple() && VERSION < v"1.14-")
+        # (from Julia 1.14 on, macOS has an offset into its array of pthread keys)
         @test rt.tls_offset == -1
     end
     @test rt.pgcstack_getter isa UInt && rt.pgcstack_getter != 0
@@ -129,11 +134,10 @@ end
                         tls_gc_state=25, handler_size=264, smalltag_shift=10,
                         max_small_tag=64, task_world_age=160, cfunction_cache=:cfuncdata,
                         cfuncdata_size=64),
-            v"1.14" => (; task_gcstack=192, task_ptls=208, task_eh=224, tls_safepoint=16,
-                        tls_gc_state=128, handler_size=280, task_reset_ctx=264,
-                        reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,
-                        smalltag_shift=10, max_small_tag=64, task_world_age=200,
-                        cfunction_cache=:cfuncdata, cfuncdata_size=64),
+            v"1.14" => (; task_gcstack=160, task_ptls=176, task_eh=192, tls_safepoint=16,
+                        tls_gc_state=128, handler_size=256, smalltag_shift=10,
+                        max_small_tag=64, task_world_age=168, cfunction_cache=:cfuncdata,
+                        cfuncdata_size=64),
             v"1.15" => (; task_gcstack=192, task_ptls=208, task_eh=224, tls_safepoint=16,
                         tls_gc_state=128, handler_size=280, task_reset_ctx=264,
                         reset_ctx_size=224, reset_ctx_align=8, reset_ctx_mctx=24,

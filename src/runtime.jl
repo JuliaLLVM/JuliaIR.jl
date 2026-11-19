@@ -117,11 +117,11 @@ end
 The facts about the runtime of Julia `dialect` that passes processing `mod` need, as a
 [`JuliaIR.RuntimeFacts`](@ref) whose properties are the facts:
 
-- the layout of a task (`task_gcstack`, `task_ptls`, `task_eh` and, from Julia 1.14
+- the layout of a task (`task_gcstack`, `task_ptls`, `task_eh` and, from Julia 1.15
   on, `task_reset_ctx`) and of the thread-local state (`tls_safepoint`, `tls_gc_state`), as
   byte offsets;
 - exception handlers: `handler_size` and `handler_align` (of `jl_handler_t`) and the name
-  of the runtime's `setjmp`; from Julia 1.14 on, the reset context (`reset_ctx_size`,
+  of the runtime's `setjmp`; from Julia 1.15 on, the reset context (`reset_ctx_size`,
   `reset_ctx_align` and the offsets `reset_ctx_gcstack`, `reset_ctx_eh`, `reset_ctx_mctx`);
 - thread-local storage: `tls_elf_support`, the offset `tls_offset` of the GC stack from
   the thread pointer, and the getter function of the GC stack and its key
@@ -472,7 +472,7 @@ end
 alloca_size(buff::LLVM.AllocaInst, dl::DataLayout) =
     Int(abi_size(dl, buff.allocated_type)) * convert(Int, buff.operands[1])
 
-# The cancellation points of Julia 1.14 and later: `setjmp` on the `mctx` of a reset
+# The cancellation points of Julia 1.15 and later: `setjmp` on the `mctx` of a reset
 # context on the stack, whose `gcstack` and `eh` are copied from the task, and which the
 # task's `reset_ctx` points to (all addressed from the task's `pgcstack`).
 function run_probe(::Val{:cancel})

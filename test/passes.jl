@@ -259,7 +259,7 @@ end
         @test string(mod) == before
     end
 
-    # Memory allocations (Julia 1.15 and later) must be lowered first, like other allocations
+    # Memory allocations (Julia 1.14 and later) must be lowered first, like other allocations
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             declare ptr addrspace(10) @julia.gc_alloc_memory(ptr, i64, ptr addrspace(10), i64, i1)
             define ptr addrspace(10) @f(ptr %task) {
@@ -267,9 +267,9 @@ end
               ret ptr addrspace(10) %m
             }""") begin
         f = mod.functions["f"]
-        constructs = JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.15"))
+        constructs = JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.14"))
         @test startswith(only(constructs).message, "julia.gc_alloc_memory: allocations must be lowered first")
-        @test isempty(JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.14")))
+        @test isempty(JuliaIR.unsupported_constructs(f, JuliaIR.Dialect(v"1.13")))
     end
 
     # constructs that an earlier pass in the same pipeline introduces in a later function
@@ -437,7 +437,7 @@ end
         end
     end
 
-    # `julia.gc_alloc_memory` (Julia 1.15 and later) of a constant size whose data is inline
+    # `julia.gc_alloc_memory` (Julia 1.14 and later) of a constant size whose data is inline
     @testset "Memory" begin
         # the size of the object, with the header laid out for the target's pointers
         @dispose ctx=Context(; opaque_pointers=true) begin
@@ -1042,8 +1042,12 @@ end
         @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
                                     pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
         if dialect.ptls_jit_getter === :resolved
-            _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8")
+            _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8;tls-elf-support=yes")
             @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
+        elseif dialect.ptls_jit_getter === :slots
+            _, out = lower(ir(get_ir), "tls-getters;tls-elf-support=yes")
+            @test occursin("load ptr, ptr @jl_pgcstack_func_slot", out)
+            @test !occursin("thread_ptr", out)
         else
             @test_throws "only exists from Julia 1.14 on" lower(ir(get_ir), "tls-getters")
         end
@@ -1056,15 +1060,18 @@ end
             declare void @use(ptr)""")
         @test pa == PreservedAnalyses(AllAnalyses)
         # the GC stack through the thread pointer, or the getter: the CFG is unchanged
-        pa, out = lower(ir(get_ir), "tls-offset=-8")
+        # (from Julia 1.15 on, which chooses at run time, only with the getter)
+        pa, out = lower(ir(get_ir), dialect.ptls_jit_getter === :slots ?
+                                    "tls-elf-support=no" : "tls-offset=-8;tls-elf-support=yes")
         @test pa == PreservedAnalyses(CFGAnalyses)
-        @test occursin("movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
+        @test occursin(dialect.ptls_jit_getter === :slots ? "@jl_pgcstack_func_slot" :
+                       "movq %fs:0", out) && !occursin("@julia.get_pgcstack", out)
         pa, out = lower(ir(get_ir), "imaging;tls-elf-support=no")
         @test pa == PreservedAnalyses(CFGAnalyses)
         # the ELF TLS fast path and thread adoption split blocks
         pa, out = lower(ir(get_ir), "imaging;tls-elf-support=yes")
         @test pa == PreservedAnalyses()
-        pa, out = lower(ir(or_new_ir), "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+        pa, out = lower(ir(or_new_ir), "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
         @test pa == PreservedAnalyses()
         @test occursin("call ptr @$(dialect.ptls_adopt_thread)()", out)
     end
@@ -1097,7 +1104,7 @@ end
             done:
               ret void
             }""")
-        @test occursin("doesn't dominate a return", rejection(bad, "tls-offset=-8"))
+        @test occursin("doesn't dominate a return", rejection(bad, "tls-offset=-8;tls-elf-support=yes"))
         # names of the image's variables that are taken by other kinds of globals
         for decl in ["@x = global ptr null\n@jl_pgcstack_func_slot = alias ptr, ptr @x",
                      "@jl_pgcstack_func_slot = external thread_local global ptr",
@@ -1107,7 +1114,7 @@ end
         end
         # the function that adopts a thread must be declared like the getter
         adopt = dialect.ptls_adopt_thread
-        facts = "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
+        facts = "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25"
         for decl in ["@x = global ptr null\n@$adopt = alias ptr, ptr @x",
                      "declare ptr @$adopt(i32)",
                      "declare ptr @$adopt() addrspace(1)"]
@@ -1116,8 +1123,8 @@ end
         end
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
-        @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8")
-        _, out = lower(ir(get_ir; triple), "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8;tls-elf-support=yes")
+        _, out = lower(ir(get_ir; triple), "tls-offset=-1;tls-elf-support=no;pgcstack-getter=0x1000;pgcstack-key=0")
         @test !occursin("asm", out)
         _, out = lower(ir(get_ir; triple), "imaging;tls-elf-support=no")
         @test !occursin("asm", out)
@@ -1133,7 +1140,7 @@ end
               %pgcstack = call addrspace(1) ptr @julia.get_pgcstack_or_new()
               call void @use(ptr %pgcstack)
               ret void
-            }""", "tls-offset=-8;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
+            }""", "tls-offset=-8;tls-elf-support=yes;task-gcstack=152;task-ptls=168;tls-safepoint=16;tls-gc-state=25")
         @test occursin("call addrspace(1) ptr @$(dialect.ptls_adopt_thread)()", out)
         @test occursin("declare ptr @$(dialect.ptls_adopt_thread)() addrspace(1)", out)
         # the getter's replacements are in the default address space
@@ -1148,9 +1155,10 @@ end
         @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
         _, out = lower(as1_ir, "imaging;tls-elf-support=no")
         @test occursin(r"%pgcstack = call ptr %\d+\(\)", out)
-        _, out = lower(as1_ir, "tls-offset=-1;pgcstack-getter=0x1000;pgcstack-key=0")
+        _, out = lower(as1_ir, "tls-offset=-1;tls-elf-support=no;pgcstack-getter=0x1000;pgcstack-key=0")
         @test occursin(dialect.ptls_jit_getter === :resolved ?
                        "call ptr @jl_get_pgcstack_resolved()" :
+                       dialect.ptls_jit_getter === :slots ? r"%pgcstack = call ptr %\d+\(\)" :
                        "call ptr inttoptr (i64 4096 to ptr)()", out)
     end
 
@@ -1161,7 +1169,12 @@ end
         julia_ir = sprint(io -> InteractiveUtils.code_llvm(io, f, (); raw=true, dump_module=true))
         m = match(r"asm \"([^\"]+)\", \"=r\"\(\)", julia_ir)
         _, out = lower(ir(get_ir; triple=""))
-        if rt_offset == -1
+        if dialect.ptls_jit_getter === :slots
+            # through the runtime's variables, like Julia's own code
+            @test occursin("load ptr, ptr @jl_pgcstack_func_slot", out)
+            @test occursin("load i64, ptr @jl_image_tls_offset", out) == (m !== nothing)
+            m === nothing || @test occursin("asm \"$(m[1])\", \"=r\"()", out)
+        elseif rt_offset == -1
             @test m === nothing
             if dialect.ptls_jit_getter === :resolved
                 @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
@@ -1431,6 +1444,55 @@ end
     # the mapping is applied once, also when it maps to an address space it changes
     str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as))
     @test occursin("define ptr addrspace(5) @f(ptr addrspace(10) %p, ptr addrspace(5) %q, ptr addrspace(3) %r)", str)
+
+    # From Julia 1.15 on, the blocks and instructions of a function keep the order of their
+    # uses (the bodies are moved), which here differs from that of the users
+    preds_ir = """
+        define ptr addrspace(10) @f(i1 %c, ptr addrspace(10) %x) {
+        top:
+          br i1 %c, label %a, label %b
+        join:
+          %p = phi ptr addrspace(10) [ %x, %a ], [ %x, %b ]
+          ret ptr addrspace(10) %p
+        b:
+          br label %join
+        a:
+          br label %join
+        }"""
+    for move_bodies in (false, true)
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, preds_ir) begin
+            f = mod.functions["f"]
+            # make the branch of %b the first use of %join
+            br = LLVM.terminator(collect(f.blocks)[3])
+            LLVM.operands(br)[1] = collect(f.blocks)[2]
+            @test occursin("; preds = %b, %a", string(f))
+            JuliaIR.remove_addrspaces!(mod, nothing, JuliaIR.remove_julia_addrspace;
+                                       move_bodies)
+            str = string(mod.functions["f"])
+            @test occursin(move_bodies ? "; preds = %b, %a" : "; preds = %a, %b", str)
+            @test occursin("phi ptr [ %x, %a ], [ %x, %b ]", str)
+        end
+    end
+    # functions whose blocks have their address taken are still cloned
+    taken_ir = replace(preds_ir,
+        "  br i1 %c, label %a, label %b" =>
+        "  %dst = select i1 %c, ptr blockaddress(@f, %join), ptr blockaddress(@f, %b)\n  indirectbr ptr %dst, [label %join, label %b, label %a]",
+        "[ %x, %a ], [ %x, %b ]" => "[ %x, %a ], [ %x, %b ], [ %x, %top ]")
+    taken = map((false, true)) do move_bodies
+        @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, taken_ir) begin
+            f = mod.functions["f"]
+            br = LLVM.terminator(collect(f.blocks)[3])
+            LLVM.operands(br)[1] = collect(f.blocks)[2]
+            @test verify(mod) === nothing
+            JuliaIR.remove_addrspaces!(mod, nothing, JuliaIR.remove_julia_addrspace;
+                                       move_bodies)
+            @test verify(mod) === nothing
+            string(mod.functions["f"])
+        end
+    end
+    @test occursin("indirectbr", taken[1]) && taken[1] == taken[2]
+    @test JuliaIR.Dialect(v"1.15").remove_addrspaces_moves_bodies
+    @test !JuliaIR.Dialect(v"1.14").remove_addrspaces_moves_bodies
 
     # errors of the mapping are rethrown
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin

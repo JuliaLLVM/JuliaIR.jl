@@ -1876,13 +1876,21 @@ function place_gc_frame_store!(p::LateLowerGCFrame, S::State, r::Int, min_color_
     store!(p.builder, val, slot_address)
 end
 
-function place_gc_frame_reset!(p::LateLowerGCFrame, S::State, r::Int, min_color_root::Int,
-                               colors::Vector{Int}, gcframe::Instruction,
-                               insert_before::Instruction)
-    slot = colors[r+1] + min_color_root
-    position_before!(p.builder, insert_before; debug=false)
-    slot_address = gc_frame_slot!(p, gcframe, slot, slot_name(p, "gc_slot_addr_", slot))
-    store!(p.builder, LLVM.null(p.gc.T_prjlvalue), slot_address)
+# reset `count` adjacent slots to null, starting at `slot`
+function place_gc_frame_reset!(p::LateLowerGCFrame, slot::Int, count::Int,
+                               gcframe::Instruction, insert_before::Instruction)
+    # with the safepoint's debug location from Julia 1.14 on (an `IRBuilder` at it)
+    position_before!(p.builder, insert_before; debug=p.dialect.gc_slot_reset_runs)
+    slot_address(slot) = gc_frame_slot!(p, gcframe, slot, slot_name(p, "gc_slot_addr_", slot))
+    if count >= 4
+        ptrsize = pointer_size(p.gc)
+        memset!(p.builder, slot_address(slot), ConstantInt(LLVM.Int8Type(), 0),
+                ConstantInt(LLVM.Int64Type(), count * ptrsize), ptrsize)
+        return
+    end
+    for i in 0:count-1
+        store!(p.builder, LLVM.null(p.gc.T_prjlvalue), slot_address(slot + i))
+    end
 end
 
 function place_gc_frame_stores!(p::LateLowerGCFrame, S::State, min_color_root::Int,
@@ -1896,11 +1904,25 @@ function place_gc_frame_stores!(p::LateLowerGCFrame, S::State, min_color_root::I
         for safepoint in BBS.first_safepoint:-1:BBS.last_safepoint
             now_live = S.live_sets[safepoint+1]
             insert_before = S.safepoint_numbering[safepoint+1]
-            if p.dialect.gc_slot_resets
+            if p.dialect.gc_slot_reset_runs
+                # reset slots of values that died, as runs of adjacent slots
+                dead = sort!([colors[idx+1] for idx in last_live
+                              if colors[idx+1] >= pre_assigned && !(idx in now_live)])
+                i = 1
+                while i <= length(dead)
+                    j = i + 1
+                    while j <= length(dead) && dead[j] == dead[j-1] + 1
+                        j += 1
+                    end
+                    place_gc_frame_reset!(p, dead[i] + min_color_root, j - i, gcframe,
+                                          insert_before)
+                    i = j
+                end
+            elseif p.dialect.gc_slot_resets
                 # reset slots of values that died
                 for idx in last_live
                     if colors[idx+1] >= pre_assigned && !(idx in now_live)
-                        place_gc_frame_reset!(p, S, idx, min_color_root, colors, gcframe,
+                        place_gc_frame_reset!(p, colors[idx+1] + min_color_root, 1, gcframe,
                                               insert_before)
                     end
                 end
@@ -1957,6 +1979,38 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
 end
 
 
+# the values that the debug information of `f` refers to (`isUsedByMetadata`, for the
+# values that LateLowerGCFrame creates): through debug records (LLVM 19 and later), or the
+# metadata arguments of debug intrinsics; `nothing` if a debug intrinsic refers to values
+# through a `DIArgList`, which can't be inspected, so that any value may be used
+function debug_record_values(f::LLVM.Function)
+    values = Set{Value}()
+    records = LLVM.version() >= v"19"
+    for bb in f.blocks, inst in bb.instructions
+        if records
+            for record in inst.debug_records
+                record.kind == LLVM.API.LLVMDbgRecordLabel && continue
+                for v in record.location_operands
+                    v === nothing || push!(values, v)
+                end
+            end
+        end
+        inst isa LLVM.CallInst || continue
+        callee = called_function(inst)
+        callee isa LLVM.Function && startswith(LLVM.name(callee), "llvm.dbg.") || continue
+        for arg in inst.arguments
+            arg isa LLVM.MetadataAsValue || continue
+            kind = LLVM.API.LLVMGetMetadataKind(LLVM.API.LLVMValueAsMetadata(arg))
+            if kind == LLVM.API.LLVMLocalAsMetadataMetadataKind
+                push!(values, Value(Metadata(arg)))
+            elseif kind == LLVM.API.LLVMDIArgListMetadataKind
+                return nothing
+            end
+        end
+    end
+    return values
+end
+
 function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                                        pre_assigned::Int, S::State)
     f = S.f
@@ -1996,6 +2050,9 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     alloca_slot = GC_FRAME_HEADER_SLOTS
     frame_align = JL_SMALL_BYTE_ALIGNMENT
     ptrsize = pointer_size(p.gc)
+    local_slots = p.dialect.gc_local_slot_addresses
+    # the values that debug records refer to, which keep a slot address in the entry block
+    debug_values = local_slots ? debug_record_values(f) : Set{Value}()
     function replace_alloca(ai::Instruction)
         # preserve both the alloca's alignment and its offset within the frame
         align = Int(LLVM.alignment(ai))
@@ -2004,9 +2061,11 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
         slots > 1 && (alloca_slot = cld(alloca_slot, slots) * slots)
         position!(builder, LLVM.after(gcframe))
         builder.debug_location = nothing
-        slot_address = gc_frame_slot!(p, gcframe, alloca_slot - GC_FRAME_HEADER_SLOTS,
-                                      slot_name(p, "gc_slot_addr", alloca_slot - GC_FRAME_HEADER_SLOTS))
-        take_name!(slot_address, ai)
+        slot = alloca_slot - GC_FRAME_HEADER_SLOTS
+        slot_address = gc_frame_slot!(p, gcframe, slot,
+                                      local_slots ? "" : slot_name(p, "gc_slot_addr", slot))
+        name = LLVM.name(ai)
+        local_slots || take_name!(slot_address, ai)
         # lifetime intrinsics no longer apply
         to_delete = Instruction[]
         recursively_visit_intrinsics(ai) do ii
@@ -2014,8 +2073,33 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
              intrinsic_is(ii, p.intrinsics.lifetime_end)) && push!(to_delete, ii)
         end
         foreach(erase!, to_delete)
+        debug_use = debug_values === nothing || ai in debug_values
         replace_uses!(ai, slot_address)
         erase!(ai)
+        local_slots || return
+        # compute the address again in each block that uses it, like a frame index: slot
+        # addresses that all live in the entry block make LLVM's MachineSinking quadratic
+        # (JuliaLang/julia#64681)
+        slot_bb = slot_address.parent
+        clones = Dict{BasicBlock,Instruction}()
+        for use in collect(LLVM.uses(slot_address))
+            user = LLVM.user(use)::Instruction
+            bb = user isa LLVM.PHIInst ? collect(user.incoming)[use.operand_index][2] :
+                 user.parent
+            bb == slot_bb && continue
+            clone = get!(clones, bb) do
+                clone = copy(slot_address)
+                move!(clone, LLVM.after_phis(bb))
+                LLVM.name!(clone, name)
+                clone
+            end
+            user.operands[use.operand_index] = clone
+        end
+        if isempty(LLVM.uses(slot_address)) && !debug_use
+            erase!(slot_address)
+        else
+            LLVM.name!(slot_address, name)
+        end
     end
     for ai in S.root_allocas
         n = alloca_array_size(ai)
@@ -2037,7 +2121,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     for (si, count) in S.tracked_stores
         base = si.operands[1]
         for i in 0:count-1
-            position!(builder, LLVM.after(gcframe))
+            position!(builder, local_slots ? LLVM.before(si) : LLVM.after(gcframe))
             builder.debug_location = nothing
             slot_address = gc_frame_slot!(p, gcframe, alloca_slot - GC_FRAME_HEADER_SLOTS,
                                           slot_name(p, "gc_slot_addr", alloca_slot - GC_FRAME_HEADER_SLOTS))
@@ -2196,8 +2280,11 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         copy_function_attributes!(new_call, alloc_bytes)
         deref = return_dereferenceable_bytes(call)
         deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
-        reset_region = get(call.metadata, "julia.reset_region", nothing)
-        reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
+        # the allocation runs in the call's cancellation reset region, if any (Julia 1.15)
+        if p.dialect.has_cancellation_lowering
+            reset_region = get(call.metadata, "julia.reset_region", nothing)
+            reset_region === nothing || (new_call.metadata["julia.reset_region"] = reset_region)
+        end
         take_name!(new_call, call)
     end
 
@@ -2217,7 +2304,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     T_size = p.gc.T_size
     new_call = emit_gc_alloc_bytes!(p, call, call.arguments[2], call.arguments[3])
 
-    # null the reference fields, or zero a region (Julia 1.14 and later), so that the GC
+    # null the reference fields, or zero a region (Julia 1.13.4 and later), so that the GC
     # sees valid pointers before the object is initialized
     bundles = Dict(LLVM.tag(b) => b for b in call.operand_bundles)
     ptr_offsets = get(bundles, "julia.gc_alloc_ptr_offsets", nothing)
@@ -2245,7 +2332,7 @@ function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     update_ptr_numbering!(S, call, new_call)
 end
 
-# `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later) =>
+# `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.14 and later) =>
 # a single object with inline data if `nbytes` is a constant that fits a GC pool, or a call
 # of `jl_alloc_genericmemory_unchecked` otherwise, which sets the data pointer. Right after
 # the allocation, so that the GC never sees the object partially initialized, the header is
@@ -2255,7 +2342,6 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
     position_before!(builder, call; debug=true)
     g = p.gc
     task, nbytes, tag, len, zeroinit = call.arguments
-    zeroinit = convert(UInt64, zeroinit::ConstantInt) == 1
     ptrsize = pointer_size(g)
     T_int8 = LLVM.Int8Type()
     T_int64 = LLVM.Int64Type()
@@ -2287,8 +2373,13 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
         ptr_field = inbounds_gep!(builder, T_int8, derived, [ptr_offset])
         data = load!(builder, T_ptr, ptr_field; align=pointer_align(g))
     end
-    if zeroinit && !(nbytes isa ConstantInt && iszero(convert(UInt64, nbytes)))
-        memset!(builder, data, ConstantInt(T_int8, 0), nbytes, pointer_align(g))
+    # LLVM may merge the allocations of Memory types that differ in whether their data is
+    # zeroed, which makes the flag a variable (JuliaLang/julia#64250)
+    if !(zeroinit isa ConstantInt && iszero(convert(UInt64, zeroinit))) &&
+       !(nbytes isa ConstantInt && iszero(convert(UInt64, nbytes)))
+        zerobytes = zeroinit isa ConstantInt ? nbytes :
+                    select!(builder, zeroinit, nbytes, ConstantInt(g.T_size, 0))
+        memset!(builder, data, ConstantInt(T_int8, 0), zerobytes, pointer_align(g))
     end
     len_field = inbounds_gep!(builder, T_int8, derived,
                               [ConstantInt(T_int64, genericmemory_length_offset(ptrsize))])
@@ -2452,7 +2543,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     return length(frame_values)
 end
 
-# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia 1.14 and later, on
+# `julia.gc_alloc_zeroinit_indirect(offset, size)` (Julia 1.13.4 and later, on
 # `jl_alloc_genericmemory_unchecked`): zero `size` bytes at the data pointer stored at
 # `offset` in the new object, after the call
 function zeroinit_indirect!(p::LateLowerGCFrame, call::Instruction, bundle::OperandBundle)
@@ -2584,7 +2675,7 @@ end
 
 # A fresh object can't become old before a safepoint (cf. `jl_gc_wb_fresh`): remove the
 # write barriers whose parent allocation has run since the last safepoint on every path to
-# them (Julia 1.15 and later, `ElideFreshWriteBarriers`).
+# them (Julia 1.14 and later, `ElideFreshWriteBarriers`).
 #
 # Allocations are safepoints themselves, so at most one allocation is known fresh at any
 # point. A forward must-analysis tracks it per block: safepoints clear it, an allocation

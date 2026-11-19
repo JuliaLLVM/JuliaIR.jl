@@ -1,5 +1,4 @@
-# Julia 1.14's pipeline (`src/pipeline.cpp` at 54d14c8eb9, unchanged on the release-1.14
-# branch and on master up to 1.15.0-DEV.89).
+# Julia 1.14's pipeline (`src/pipeline.cpp` at v1.14.0-beta1).
 
 aggressive_simplifycfg(::Recipe{14}) = aggressive_simplifycfg(Recipe{13}())
 
@@ -192,7 +191,6 @@ function intrinsic_lowering!(mpm, p::JuliaPipeline, r::Recipe{14})
         end
         julia_pass!(mpm, p, "jl-remove-ni")
         add!(mpm, FunctionPassManager()) do fpm
-            julia_pass!(fpm, p, "jl-cancellation-lowering")
             julia_pass!(fpm, p, "jl-late-lower-gc-frame")
             julia_pass!(fpm, p, "jl-final-lower-gc")
             julia_pass!(fpm, p, "jl-expand-atomic-modify")
@@ -209,6 +207,7 @@ function intrinsic_lowering!(mpm, p::JuliaPipeline, r::Recipe{14})
             end
             add!(fpm, InstCombinePass())
             add!(fpm, aggressive_simplifycfg(r))
+            add!(fpm, INFER_ALIGNMENT)
         end
     elseif !p.options.remove_ni
         julia_pass!(mpm, p, "jl-remove-ni")

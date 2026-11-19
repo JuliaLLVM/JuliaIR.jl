@@ -70,7 +70,8 @@ struct Dialect
     "Whether Julia's pipeline has CombineMulAdd (Julia 1.10 and 1.11)."
     has_combine_muladd::Bool
     "Whether the code generator emits `julia.cancellation_point` calls, lowered by
-    CancellationLowering (Julia 1.14 and later)."
+    CancellationLowering (Julia 1.15 and later; 1.14 reverted cancellation before its
+    release)."
     has_cancellation_lowering::Bool
 
     # CPUFeatures
@@ -117,10 +118,11 @@ struct Dialect
     (alignment-sized integer chunks, aligned like the allocation but at least to 16)."
     alloc_layout::Symbol
     "Whether allocations carry the `julia.gc_alloc_ptr_offsets` and
-    `julia.gc_alloc_zeroinit` operand bundles."
+    `julia.gc_alloc_zeroinit` operand bundles (Julia 1.13.4 and later; the passes also
+    accept 1.13's allocations without them)."
     alloc_bundles::Bool
     "Whether the code generator allocates every new `GenericMemory` with
-    `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.15 and later),
+    `julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)` (Julia 1.14 and later),
     which AllocOpt can remove or move to the stack and LateLowerGCFrame expands, rather than
     with `julia.gc_alloc_obj` or a call of `jl_alloc_genericmemory_unchecked`."
     has_gc_alloc_memory::Bool
@@ -128,7 +130,8 @@ struct Dialect
     # operand bundles
     "Whether calls carry `gc-transition` operand bundles."
     has_gc_transition_bundle::Bool
-    "Whether calls carry `julia.gc_alloc_zeroinit_indirect` operand bundles."
+    "Whether calls carry `julia.gc_alloc_zeroinit_indirect` operand bundles (Julia 1.13.4
+    and later, like `alloc_bundles`)."
     has_zeroinit_indirect_bundle::Bool
 
     # metadata
@@ -177,6 +180,13 @@ struct Dialect
     "Whether GC frame slots whose value dies are reset to null before the next
     safepoint (Julia 1.12 and later)."
     gc_slot_resets::Bool
+    "Whether adjacent slots that die at the same safepoint are reset together, with a
+    `memset` for four or more (Julia 1.14 and later)."
+    gc_slot_reset_runs::Bool
+    "Whether the addresses of the frame slots of rooted allocas are computed again in each
+    block that uses them, and those of tracked stores right before the store, rather than
+    once in the entry block (Julia 1.14 and later)."
+    gc_local_slot_addresses::Bool
     "Whether null stores to rooted allocas in the entry block are removed, since frame
     slots start out null (Julia 1.12 and later)."
     gc_prologue_store_elision::Bool
@@ -206,6 +216,11 @@ struct Dialect
     `:deferred` (only elided when unnecessary, and lowered by FinalLowerGC; 1.14 and
     later)."
     gc_barrier_lowering::Symbol
+    "How FinalLowerGC lowers write barriers (Julia 1.14 and later): `:image` (the parent
+    is queued if it is in the system image but not yet in its remembered set, or a child
+    isn't marked; 1.14) or `:levels` (if the lowest level of the children, of young, old
+    and permanent objects, is at most the parent's threshold; 1.15 and later)."
+    gc_final_barrier::Symbol
     "How calls with a `gc-transition` operand bundle are lowered: `:none` (the bundle is
     dropped; Julia 1.11 and older), `:pgcstack` (the GC state is switched through the
     task of the GC stack; 1.12), or `:bundle` (through the bundle's thread-local state;
@@ -219,7 +234,7 @@ struct Dialect
     (Julia 1.12 and later)."
     gc_declare_small_alloc::Bool
     "Whether write barriers on an object allocated since the last safepoint on every path
-    to them are removed, since a fresh object can't be old (Julia 1.15 and later)."
+    to them are removed, since a fresh object can't be old (Julia 1.14 and later)."
     gc_fresh_barrier_elision::Bool
     "The condition under which a GC state transition polls a safepoint: `:and` (when
     leaving a GC-safe state for the unsafe one: `(old != 0) & (new == 0)`; Julia 1.10),
@@ -244,8 +259,11 @@ struct Dialect
     ptls_image_offset_slot::String
     "How the JIT calls the GC stack getter when it can't read the thread pointer:
     `:address` (the getter's address in the process, with its key on Darwin; Julia 1.13
-    and older), or `:resolved` (the symbol `jl_get_pgcstack_resolved`, and the
-    `tls_getters` option that always calls it; 1.14 and later)."
+    and older), `:resolved` (the symbol `jl_get_pgcstack_resolved`, and the
+    `tls_getters` option that always calls it; 1.14), or `:slots` (JIT code is lowered
+    like image code, through the runtime's variables `jl_pgcstack_func_slot`,
+    `jl_pgcstack_key_slot` and `jl_image_tls_offset`, which it declares; 1.15 and
+    later)."
     ptls_jit_getter::Symbol
     "Whether the GEP that adds the TLS offset to the thread pointer is `inbounds`, and
     RISC-V's thread pointer is supported (Julia 1.12 and later)."
@@ -253,6 +271,13 @@ struct Dialect
     "Whether the GC state restored at the returns of a C-callable function is followed
     by a safepoint (Julia 1.12 and later)."
     ptls_exit_safepoint::Bool
+    "The image's TLS offset when the loader found none: `0` (Julia 1.13 and older) or
+    `-1` (1.14 and later, where 0 is the offset of RISC-V's TLS, variant 1)."
+    ptls_image_offset_none::Int
+    "Whether code for AArch64 macOS reads the GC stack through the thread pointer, from
+    the array of pthread keys at `tpidrro_el0`, and code for other Darwin targets never
+    does (Julia 1.14 and later; before, code reads it where the runtime uses ELF TLS)."
+    ptls_darwin_tls::Bool
 
     # type lowering
     "How `Ptr{T}` is lowered: `:integer` (an integer of the pointer's size; Julia 1.10 and
@@ -285,9 +310,15 @@ struct Dialect
     `:small` (`ijl_gc_small_alloc`, `ijl_gc_big_alloc`; 1.12 and later)."
     gc_alloc_entry_points::Symbol
     "Whether allocations and root queuing in a cancellation reset region
-    (`!julia.reset_region`) use the runtime's `*_reset_safe` functions (Julia 1.14 and
+    (`!julia.reset_region`) use the runtime's `*_reset_safe` functions (Julia 1.15 and
     later)."
     gc_alloc_reset_safe::Bool
+
+    # RemoveJuliaAddrspaces
+    "Whether RemoveJuliaAddrspaces (and RemoveAddrspaces) moves the bodies of functions
+    without address-taken blocks into their replacements instead of cloning them, which
+    keeps the order of the uses of their instructions and blocks (Julia 1.15 and later)."
+    remove_addrspaces_moves_bodies::Bool
 
     # policies
     "DemoteFloat16 policies, see [`JuliaIR.Dialect`](@ref)."
@@ -359,7 +390,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                        minor == v"1.11" ? :task :
                        minor == v"1.12" ? :task_buffer : :none,
         has_combine_muladd = minor <= v"1.11",
-        has_cancellation_lowering = minor >= v"1.14",
+        has_cancellation_lowering = minor >= v"1.15",
         cpu_features_rule = minor >= v"1.14" ? :subtarget : :tokens,
         has_cpu_supports = minor >= v"1.14",
         mv_spec_flags = minor >= v"1.14" ? :packed : :target,
@@ -370,10 +401,10 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         alloc_initialization = minor == v"1.10" ? :none :
                                minor == v"1.11" ? :store : :memset,
         alloc_layout = minor <= v"1.11" ? :legacy : :chunked,
-        alloc_bundles = minor >= v"1.14",
-        has_gc_alloc_memory = minor >= v"1.15",
+        alloc_bundles = minor >= v"1.13",
+        has_gc_alloc_memory = minor >= v"1.14",
         has_gc_transition_bundle = minor >= v"1.12",
-        has_zeroinit_indirect_bundle = minor >= v"1.14",
+        has_zeroinit_indirect_bundle = minor >= v"1.13",
         tbaa_downgrade,
         simdloop_check_combine = minor >= v"1.12",
         verifier_vector_pointers = minor >= v"1.12",
@@ -384,6 +415,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_frame_elision = minor >= v"1.13",
         gc_return_roots = minor >= v"1.14" ? :attribute : :sret,
         gc_slot_resets = minor >= v"1.12",
+        gc_slot_reset_runs = minor >= v"1.14",
+        gc_local_slot_addresses = minor >= v"1.14",
         gc_prologue_store_elision = minor >= v"1.12",
         gc_root_allocas_first = minor <= v"1.11",
         gc_stack_argument = minor >= v"1.13",
@@ -393,11 +426,12 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_extract_simplify = minor >= v"1.12",
         gc_ptls_gep = minor <= v"1.11" ? :pointer : :byte,
         gc_barrier_lowering,
+        gc_final_barrier = minor >= v"1.15" ? :levels : :image,
         gc_transition_lowering,
         gc_safepoint_load = minor >= v"1.14" ? :monotonic_named :
                             minor == v"1.13" ? :monotonic : :plain,
         gc_declare_small_alloc = minor >= v"1.12",
-        gc_fresh_barrier_elision = minor >= v"1.15",
+        gc_fresh_barrier_elision = minor >= v"1.14",
         gc_state_condition,
         ptls_stack_argument = minor >= v"1.13" ? :gcstack : :swiftself,
         ptls_argument_takes_name = minor >= v"1.11",
@@ -405,9 +439,11 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
                             "ijl_adopt_thread",
         ptls_image_offset_slot = minor >= v"1.14" ? "jl_image_tls_offset" :
                                  "jl_tls_offset",
-        ptls_jit_getter = minor >= v"1.14" ? :resolved : :address,
+        ptls_jit_getter = minor >= v"1.15" ? :slots : minor == v"1.14" ? :resolved : :address,
         ptls_tp_inbounds = minor >= v"1.12",
         ptls_exit_safepoint = minor >= v"1.12",
+        ptls_image_offset_none = minor >= v"1.14" ? -1 : 0,
+        ptls_darwin_tls = minor >= v"1.14",
         cpointer_type = minor <= v"1.11" ? :integer : :pointer,
         bottom_aliases = minor <= v"1.11" ? :bottom :
                          minor >= v"1.14" ? :some_type : :typeofbottom_super,
@@ -417,7 +453,8 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_final_debugloc_next = minor == v"1.10",
         gc_alloc_entry_points = minor == v"1.10" ? :pool :
                                 minor == v"1.11" ? :pool_instrumented : :small,
-        gc_alloc_reset_safe = minor >= v"1.14",
+        gc_alloc_reset_safe = minor >= v"1.15",
+        remove_addrspaces_moves_bodies = minor >= v"1.15",
         fp16,
         bf16,
         gc_barrier)

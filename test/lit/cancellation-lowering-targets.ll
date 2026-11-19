@@ -1,7 +1,7 @@
 ; What of CancellationLowering's output depends on the target, the names of what it
 ; creates, and the cancellation points it rejects.
 
-; REQUIRES: julia-1.14
+; REQUIRES: julia-ge-1.15
 ; RUN: split-file %s %t
 
 ; Points are lowered in the use-list order of `julia.cancellation_point`, which is the
@@ -88,7 +88,7 @@ declare ptr @julia.get_pgcstack()
 ; CHECK-LABEL: @f(
 ; CHECK: %cancel_ucontext = alloca [128 x i8], align 8
 ; CHECK: %reset_ctx_prev = load atomic volatile ptr, ptr %reset_ctx_ptr monotonic, align 4
-; CHECK: store atomic volatile ptr null, ptr %reset_ctx_ptr release, align 4
+; CHECK: store atomic volatile ptr null, ptr %reset_ctx_ptr monotonic, align 4
 ; CHECK: %ptls = load ptr, ptr %ptls_field_ptr, align 4
 ; CHECK: %safepoint_addr = getelementptr inbounds i8, ptr %ptls, i32 8
 ; CHECK: %safepoint = load atomic ptr, ptr %safepoint_addr monotonic, align 4
