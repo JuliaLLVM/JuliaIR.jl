@@ -1768,38 +1768,6 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
 end
 
 
-# the values that the debug information of `f` refers to (`isUsedByMetadata`, for the
-# values that LateLowerGCFrame creates): through debug records (LLVM 19 and later), or the
-# metadata arguments of debug intrinsics; `nothing` if a debug intrinsic refers to values
-# through a `DIArgList`, which can't be inspected, so that any value may be used
-function debug_record_values(f::LLVM.Function)
-    values = Set{Value}()
-    records = LLVM.version() >= v"19"
-    for bb in f.blocks, inst in bb.instructions
-        if records
-            for record in inst.debug_records
-                record.kind == LLVM.API.LLVMDbgRecordLabel && continue
-                for v in record.location_operands
-                    v === nothing || push!(values, v)
-                end
-            end
-        end
-        inst isa LLVM.CallInst || continue
-        callee = inst.called_function
-        callee isa LLVM.Function && startswith(LLVM.name(callee), "llvm.dbg.") || continue
-        for arg in inst.arguments
-            arg isa LLVM.MetadataAsValue || continue
-            kind = LLVM.API.LLVMGetMetadataKind(LLVM.API.LLVMValueAsMetadata(arg))
-            if kind == LLVM.API.LLVMLocalAsMetadataMetadataKind
-                push!(values, Value(Metadata(arg)))
-            elseif kind == LLVM.API.LLVMDIArgListMetadataKind
-                return nothing
-            end
-        end
-    end
-    return values
-end
-
 function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                                        pre_assigned::Int, S::State)
     f = S.f
@@ -1840,8 +1808,6 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     frame_align = JL_SMALL_BYTE_ALIGNMENT
     ptrsize = pointer_size(p.gc)
     local_slots = p.dialect.gc_local_slot_addresses
-    # the values that debug records refer to, which keep a slot address in the entry block
-    debug_values = local_slots ? debug_record_values(f) : Set{Value}()
     function replace_alloca(ai::Instruction)
         # preserve both the alloca's alignment and its offset within the frame
         align = Int(LLVM.alignment(ai))
@@ -1862,7 +1828,6 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
              intrinsic_is(ii, p.intrinsics.lifetime_end)) && push!(to_delete, ii)
         end
         foreach(erase!, to_delete)
-        debug_use = debug_values === nothing || ai in debug_values
         replace_uses!(ai, slot_address)
         erase!(ai)
         local_slots || return
@@ -1884,7 +1849,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
             end
             user.operands[use.operand_index] = clone
         end
-        if isempty(LLVM.uses(slot_address)) && !debug_use
+        if isempty(LLVM.uses(slot_address)) && !is_used_by_metadata(slot_address)
             erase!(slot_address)
         else
             LLVM.name!(slot_address, name)

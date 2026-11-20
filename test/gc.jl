@@ -316,6 +316,13 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     out = llgcf(arglist, v"1.14", facts64)
     @test any(l -> occursin(slot, l), in_use_block(out))
     @test occursin(r"DIArgList\(ptr %local\d*\)", out)
+    # but not because a `DIArgList` refers to other values
+    in_entry_block(out) = (ls = body(out); ls[1:findfirst(l -> startswith(l, "use:"), ls)])
+    other = replace(arglist, "!DIArgList(ptr %local)" => "!DIArgList(ptr addrspace(10) %v)")
+    out = llgcf(other, v"1.14", facts64)
+    @test any(l -> occursin(slot, l), in_use_block(out))
+    @test !any(l -> occursin(slot, l), in_entry_block(out))
+    @test occursin(r"DIArgList\(ptr addrspace\(10\) %v\)", out)
 
     # Write barriers on an object allocated since the last safepoint on every path to them
     # are removed (Julia 1.14 and later): a fresh object can't be old.
