@@ -1,5 +1,17 @@
 # JuliaIR.jl release notes
 
+## v0.1.3
+
+- Require LLVM.jl 10.6, and call the LLVM APIs that Julia's C++ passes call instead of
+  emulating them, which brings several edge cases in line with the C++.
+- LateLowerGCFrame: calls that only write `errno` or target memory are safepoints (LLVM 21
+  and later); allocation sizes are zero-extended to the size parameter of
+  `julia.gc_alloc_bytes`; the `dereferenceable` bytes of a lowered allocation also come
+  from the callee (LLVM 17 and later); type tags take their alignment from LLVM.
+- RemoveJuliaAddrspaces moves function bodies instead of cloning them on Julia 1.15, like
+  Julia, also with a custom address space mapping.
+- PropagateJuliaAddrspaces adopts JuliaLang/julia#63992.
+
 ## v0.1.2
 
 - Fix RemoveJuliaAddrspaces on Julia 1.15 for code with inline assembly, which made LLVM
