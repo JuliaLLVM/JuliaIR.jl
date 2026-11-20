@@ -84,8 +84,9 @@ function remark_loop_flags!(ar::LoopAnalysisResults, loop::Loop, id::MDNode, sim
     old = term.debug_location
     term.debug_location = loc
     try
-        remark!(ar, :analysis, SIMDLOOP_REMARKS, "Loop SIMD Flags", term,
-                "Loop marked for SIMD vectorization with flags { \"simd\": $simd, \"ivdep\": $ivdep }")
+        remark!(ar, :analysis, SIMDLOOP_REMARKS, "Loop SIMD Flags", term) do
+            "Loop marked for SIMD vectorization with flags { \"simd\": $simd, \"ivdep\": $ivdep }"
+        end
     finally
         term.debug_location = old
     end
@@ -115,13 +116,15 @@ function check_combine!(ar, loop::Loop, @nospecialize(op::Value))
     op isa Instruction && op.opcode == LLVM.Opcode.FMul || return
     op in loop || return
     if !has_one_use(op)
-        # the C++ pass renders the instruction argument as its opcode name
-        remark!(ar, :missed, SIMDLOOP_REMARKS, "Multiuse FMul", op,
-                "fmul had multiple uses fmul")
+        remark!(ar, :missed, SIMDLOOP_REMARKS, "Multiuse FMul", op) do
+            "fmul had multiple uses ", "fmul" => op
+        end
         return
     end
     op.fast_math.contract && return
-    remark!(ar, :passed, SIMDLOOP_REMARKS, "Marked for FMA", op, "marked for fma fmul")
+    remark!(ar, :passed, SIMDLOOP_REMARKS, "Marked for FMA", op) do
+        "marked for fma ", "fmul" => op
+    end
     op.fast_math.contract = true
     return
 end
@@ -141,30 +144,34 @@ function enable_unsafe_algebra_if_reduction!(ar, loop::Loop, phi::Instruction,
             u = LLVM.user(use)::Instruction
             u in loop || continue
             if next !== nothing
-                remark!(ar, :missed, SIMDLOOP_REMARKS, "NotReductionVar", u,
-                        "not a reduction variable because operation has two internal uses")
+                remark!(ar, :missed, SIMDLOOP_REMARKS, "NotReductionVar", u) do
+                    "not a reduction variable because operation has two internal uses"
+                end
                 return
             end
             next = u
         end
         if next === nothing
-            remark!(ar, :missed, SIMDLOOP_REMARKS, "ChainPrematurelyTerminated", inst,
-                    "chain prematurely terminated at $(opcode_name(inst))")
+            remark!(ar, :missed, SIMDLOOP_REMARKS, "ChainPrematurelyTerminated", inst) do
+                "chain prematurely terminated at ", "Instruction" => inst
+            end
             return
         end
         next == phi && break
         if opcode !== nothing
             if reduce_opcode(next, inst) != opcode
-                remark!(ar, :missed, SIMDLOOP_REMARKS, "ChainBroke", next,
-                        "chain broke at $(opcode_name(next)) because of wrong opcode")
+                remark!(ar, :missed, SIMDLOOP_REMARKS, "ChainBroke", next) do
+                    "chain broke at ", "Instruction" => next, " because of wrong opcode"
+                end
                 return
             end
         else
             opcode = reduce_opcode(next, inst)
             if opcode === nothing
                 remark!(ar, :missed, SIMDLOOP_REMARKS,
-                        "FirstArithmeticOpInChainIsUninteresting", next,
-                        "first arithmetic op in chain is uninteresting")
+                        "FirstArithmeticOpInChainIsUninteresting", next) do
+                    "first arithmetic op in chain is uninteresting"
+                end
                 return
             end
         end
@@ -172,8 +179,9 @@ function enable_unsafe_algebra_if_reduction!(ar, loop::Loop, phi::Instruction,
         inst = next
     end
     for k in chain
-        remark!(ar, :passed, SIMDLOOP_REMARKS, "MarkedUnsafeAlgebra", k,
-                "marked unsafe algebra on $(opcode_name(k))")
+        remark!(ar, :passed, SIMDLOOP_REMARKS, "MarkedUnsafeAlgebra", k) do
+            "marked unsafe algebra on ", "Instruction" => k
+        end
         k.fast_math.reassoc = true
         k.fast_math.contract = true
         if dialect.simdloop_check_combine
