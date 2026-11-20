@@ -6,7 +6,8 @@
 # `src/llvm-propagate-addrspaces.cpp` (1.14) for every dialect: chains are lifted into
 # the common address space of their leaves (JuliaLang/julia#62807; Julia 1.13 and older
 # use the alloca address space, which is wrong for leaves elsewhere, e.g. constant
-# globals on GPUs), and constant data's use lists are not walked.
+# globals on GPUs), constant data's use lists are not walked, and the users of a leaf
+# that can't be lifted are poisoned only once (JuliaLang/julia#63992).
 
 struct PropagateAddrspaces
     mod::LLVM.Module
@@ -35,7 +36,7 @@ function poison_users!(p::PropagateAddrspaces, worklist::Vector{Value})
     while !isempty(worklist)
         v = pop!(worklist)
         # constant data is uniqued per context, and its users span unrelated functions
-        (v isa LLVM.ConstantData || v isa LLVM.ConstantDataSequential) && continue
+        v isa LLVM.ConstantData && continue
         for use in v.uses
             user = use.user
             user in p.visited && continue
@@ -109,6 +110,8 @@ function lift_pointer!(p::PropagateAddrspaces, f::LLVM.Function, @nospecialize(v
             else
                 # a leaf
                 if !is_pointer_like(cur) || is_special_addrspace(pointer_addrspace(cur))
+                    # its users were poisoned already
+                    cur in p.visited && return nothing
                     # don't look at its (recursive) users again
                     empty!(worklist)
                     push!(worklist, cur)
