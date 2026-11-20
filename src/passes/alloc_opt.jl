@@ -664,7 +664,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
             store!(builder, data, ptr_field; align=ptralign)
         end
     end
-    copy_metadata!(buff, orig)
+    LLVM.copy_metadata!(buff, orig)
     take_name!(buff, orig)
 
     # replace the uses of `orig_i` (derived from the allocation) by `new_i` (derived from
@@ -732,7 +732,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
                 inbounds_gep!(builder, user.source_element_type, new_i, indices) :
                 gep!(builder, user.source_element_type, new_i, indices)
             take_name!(new_gep, user)
-            copy_metadata!(new_gep, user)
+            LLVM.copy_metadata!(new_gep, user)
             push_frame!(user, new_gep)
         else
             error("unexpected use of an allocation: $(string(user))")

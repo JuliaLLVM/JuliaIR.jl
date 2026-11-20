@@ -180,7 +180,7 @@ function lifted_clone!(p::PropagateAddrspaces, f::LLVM.Function, inst::Instructi
     else
         select!(builder, inst.operands[1], tmp, tmp)
     end::Instruction
-    copy_metadata!(new, inst)
+    LLVM.copy_metadata!(new, inst)
     return new
 end
 
@@ -231,7 +231,7 @@ function visit_memintrinsic!(p::PropagateAddrspaces, f::LLVM.Function, call::Ins
     for i in 1:length(args), attr in collect(call.argument_attributes[i])
         push!(new_call.argument_attributes[i], attr)
     end
-    copy_metadata!(new_call, call)
+    LLVM.copy_metadata!(new_call, call)
     push!(p.replaced, call)
     return
 end

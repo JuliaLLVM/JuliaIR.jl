@@ -1,14 +1,5 @@
 # IR utilities shared by the passes.
 
-# the metadata and debug location of `src`, like C++'s `copyMetadata`
-function copy_metadata!(dst::Instruction, src::Instruction)
-    for (kind, md) in src.metadata
-        dst.metadata[kind] = md
-    end
-    dst.debug_location = src.debug_location
-    return dst
-end
-
 is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 
 # the scalar type of a vector type, or the type itself

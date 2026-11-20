@@ -2537,7 +2537,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
         end
     end
     take_name!(new_call, call)
-    copy_metadata!(new_call, call)
+    LLVM.copy_metadata!(new_call, call)
     replace_uses!(call, new_call)
     update_ptr_numbering!(S, call, new_call)
     return length(frame_values)
@@ -2606,7 +2606,7 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         new_call = with_operand_bundles(call, kept)
         move!(new_call, LLVM.before(call))
         take_name!(new_call, call)
-        copy_metadata!(new_call, call)
+        LLVM.copy_metadata!(new_call, call)
         replace_uses!(call, new_call)
         update_ptr_numbering!(S, call, new_call)
     end
