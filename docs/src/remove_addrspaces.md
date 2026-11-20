@@ -34,10 +34,8 @@ To keep types and uses consistent, the pass rebuilds the module:
    a cast to the same address space is folded away. From Julia 1.15 on, Julia's pass
    moves the bodies of functions without address-taken blocks instead of cloning them
    (JuliaLang/julia#65016), so that their instructions and blocks keep the order of their
-   uses, which later passes and the printed `; preds =` lists depend on. LLVM.jl can't
-   change the types of instructions in place, so the port still clones the bodies, and
-   then sets the operands of the clone in the order that gives every instruction and
-   block the uses of the original in the same order.
+   uses, which later passes and the printed `; preds =` lists depend on. The port does
+   the same, with LLVM.jl's `clone_attributes_into!` and `remap_instructions!`.
 3. Address space casts between equal address spaces are removed from the function
    bodies, the old global values are deleted, and intrinsics whose overloaded types
    changed are renamed after their new types (`llvm.memcpy.p10.p10.i64` becomes
