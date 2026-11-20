@@ -111,9 +111,6 @@ only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
 only_accesses_arg_pointees(e::MemoryEffects) =
     (e & MemoryEffects(:readwrite; argmem=:none)).access === :none
 
-# shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
-const UNDEF_MASK_ELEM = -1
-
 # the constant-folding builder inserts constants instead of instructions; these create
 # an instruction (like the C++'s `XInst::Create`) by building it from a placeholder
 # operand and swapping the real operand in
@@ -156,106 +153,6 @@ function new_addrspacecast!(builder::IRBuilder, @nospecialize(v::Value), ty::LLV
     inst.operands[1] = v
     erase!(tmp)
     return inst
-end
-
-
-## InstSimplifyFolder, for the extractions of Julia 1.12 and later
-
-# `getSplatValue`
-function splat_value(@nospecialize(v::Value))
-    if v isa LLVM.Constant
-        is_vector_type(v.value_type) || return nothing
-        n = composite_num_elements(v.value_type)
-        n == 0 && return nothing
-        first_elt = aggregate_element(v, 0)
-        first_elt === nothing && return nothing
-        for i in 1:n-1
-            e = aggregate_element(v, i)
-            (e === nothing || e != first_elt) && return nothing
-        end
-        return first_elt
-    end
-    # shuffle (insertelement ?, splat, 0), ?, zeroinitializer
-    if v isa LLVM.ShuffleVectorInst
-        ins = v.operands[1]
-        if ins isa LLVM.InsertElementInst
-            idx = ins.operands[3]
-            if idx isa LLVM.ConstantInt && convert(Int, idx) == 0 &&
-               all(m -> m == 0 || m == UNDEF_MASK_ELEM, v.shuffle_mask)
-                return ins.operands[2]
-            end
-        end
-    end
-    return nothing
-end
-
-# `findScalarElement`
-function find_scalar_element(@nospecialize(v::Value), elt::Int)
-    t = v.value_type
-    elt_type = t.element_type
-    if t isa VectorType && elt >= composite_num_elements(t)
-        return PoisonValue(elt_type)
-    end
-    v isa LLVM.Constant && return aggregate_element(v, elt)
-    if v isa LLVM.InsertElementInst
-        idx = v.operands[3]
-        idx isa LLVM.ConstantInt || return nothing
-        convert(Int, idx) == elt && return v.operands[2]
-        v.operands[1] == v && return nothing
-        return find_scalar_element(v.operands[1], elt)
-    end
-    if v isa LLVM.ShuffleVectorInst && t isa VectorType
-        lhs_width = composite_num_elements(v.operands[1].value_type)
-        in_elt = v.shuffle_mask[elt+1]
-        in_elt < 0 && return PoisonValue(elt_type)
-        in_elt < lhs_width && return find_scalar_element(v.operands[1], in_elt)
-        return find_scalar_element(v.operands[2], in_elt - lhs_width)
-    end
-    if t isa ScalableVectorType
-        splat = splat_value(v)
-        splat !== nothing && elt < composite_num_elements(t) && return splat
-    end
-    return nothing
-end
-
-# `simplifyExtractValueInst`
-function simplify_extract_value(@nospecialize(agg::Value), idxs::Vector{Int})
-    if agg isa LLVM.Constant
-        c = agg
-        for i in idxs
-            c = aggregate_element(c, i)
-            c === nothing && return nothing
-        end
-        return c
-    end
-    ivi = agg
-    while ivi isa LLVM.InsertValueInst
-        ins_idxs = collect(ivi.indices)
-        n = min(length(ins_idxs), length(idxs))
-        if ins_idxs[1:n] == idxs[1:n]
-            length(ins_idxs) == length(idxs) && return ivi.operands[2]
-            break
-        end
-        ivi = ivi.operands[1]
-    end
-    return nothing
-end
-
-# `simplifyExtractElementInst` with a constant index
-function simplify_extract_element(@nospecialize(vec::Value), idx::Int)
-    t = vec.value_type
-    if vec isa LLVM.Constant
-        return aggregate_element(vec, idx)
-    end
-    nelts = composite_num_elements(t)
-    if t isa VectorType && idx >= nelts
-        return PoisonValue(t.element_type)
-    end
-    if idx < nelts
-        splat = splat_value(vec)
-        splat !== nothing && return splat
-    end
-    return find_scalar_element(vec, idx)
 end
 
 
@@ -525,26 +422,29 @@ end
 # `XInst::Create(..., insert_before)`
 function extract_value_at!(p::LateLowerGCFrame, @nospecialize(agg::Value), idxs::Vector{Int},
                            insert_before::Instruction)
-    if p.dialect.gc_extract_simplify
-        folded = simplify_extract_value(agg, idxs)
-        folded === nothing || return folded
-        position_before!(p.builder, insert_before; debug=true)
-    else
-        position_before!(p.builder, insert_before; debug=false)
-    end
-    return new_extract_value!(p.builder, agg, idxs)
+    folding = p.dialect.gc_extract_simplify
+    position_before!(p.builder, insert_before; debug=folding)
+    folding || return new_extract_value!(p.builder, agg, idxs)
+    return simplify_new!(extract_value!(p.builder, agg, idxs))
 end
 
 function extract_element_at!(p::LateLowerGCFrame, @nospecialize(vec::Value), idx::Int,
                              insert_before::Instruction)
-    if p.dialect.gc_extract_simplify
-        folded = simplify_extract_element(vec, idx)
-        folded === nothing || return folded
-        position_before!(p.builder, insert_before; debug=true)
-    else
-        position_before!(p.builder, insert_before; debug=false)
-    end
-    return new_extract_element!(p.builder, vec, ConstantInt(LLVM.Int32Type(), idx))
+    folding = p.dialect.gc_extract_simplify
+    position_before!(p.builder, insert_before; debug=folding)
+    idx = ConstantInt(LLVM.Int32Type(), idx)
+    folding || return new_extract_element!(p.builder, vec, idx)
+    return simplify_new!(extract_element!(p.builder, vec, idx))
+end
+
+# `InstSimplifyFolder`: what an instruction that was just built folds to (the builder's
+# constant folding already folds constant operands), erasing it if it does
+function simplify_new!(@nospecialize(v::Value))
+    v isa Instruction || return v
+    simple = simplify_instruction(v)
+    simple === nothing && return v
+    erase!(v)
+    return simple
 end
 
 function maybe_extract_scalar(p::LateLowerGCFrame, S::State, val_expr::Tuple{Value,Int},
