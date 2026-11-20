@@ -108,7 +108,7 @@ should_run_final_gc(p::FinalLowerGC) =
 ## positions
 
 is_debug_intrinsic_call(inst::Instruction) =
-    inst isa LLVM.CallInst && (callee = called_function(inst)) !== nothing &&
+    inst isa LLVM.CallInst && (callee = inst.called_function) !== nothing &&
     is_debug_intrinsic(callee)
 
 # the debug location that C++'s `IRBuilder` takes from the instruction it is positioned

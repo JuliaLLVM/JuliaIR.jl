@@ -126,7 +126,7 @@ function demote_float16!(f::LLVM.Function, am, opts::PassOptions)
             # IRBuilder folds constant operands; only new instructions get the metadata
             # and flags of the original
             if new isa Instruction
-                copy_metadata!(new, inst)
+                LLVM.copy_metadata!(new, inst)
                 new.fast_math = inst.fast_math
             end
             if new.value_type != inst.value_type

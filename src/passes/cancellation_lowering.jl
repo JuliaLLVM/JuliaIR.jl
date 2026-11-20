@@ -87,7 +87,7 @@ set_reset_safe_md!(inst::Instruction) = (inst.metadata[RESET_SAFE_MD] = MDNode(M
 # reset-safe, and its frames must never be abandoned by a reset: such calls close the
 # region even when tagged. `Function::isIntrinsic` is by name (`llvm.*`), not by ID.
 function is_implicit_runtime_call(p::CancellationLowering, call::Instruction)
-    callee = called_function(call)
+    callee = call.called_function
     (callee === nothing || startswith(LLVM.name(callee), "llvm.")) && return false
     name = LLVM.name(callee)
     startswith(name, "julia.call") && return true
@@ -304,7 +304,7 @@ is_publish_store(p::CancellationLowering, inst::Instruction) =
 # whether a call may run with a region open without closing it first (only asked for
 # calls that are untagged or runtime machinery)
 function is_exempt_call(p::CancellationLowering, call::Instruction)
-    callee = called_function(call)
+    callee = call.called_function
     callee === nothing && return false
     fns = p.fns
     if startswith(LLVM.name(callee), "llvm.")
@@ -360,7 +360,7 @@ function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_
                 instrumented && LLVM.volatile(inst) && !has_reset_safe_md(inst) &&
                     push!(unsafe, inst)
             elseif inst isa LLVM.CallInst
-                callee = called_function(inst)
+                callee = inst.called_function
                 id = callee === nothing ? nothing : intrinsic_id(callee)
                 id !== nothing && (LLVM.name(callee) in DBG_INFO_INTRINSICS ||
                                    id == Intrinsic("llvm.lifetime.start") ||
@@ -482,7 +482,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
                         region_open = !(LLVM.operands(inst)[1] isa LLVM.PointerNull)
                     end
                 elseif inst isa LLVM.CallInst
-                    callee = called_function(inst)
+                    callee = inst.called_function
                     callee === nothing && continue
                     if region_open &&
                        (is_reset_safe_alloc(p, inst) || is_write_barrier(fns, callee))

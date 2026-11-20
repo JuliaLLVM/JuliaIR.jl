@@ -219,8 +219,10 @@ JULIAIR_TEST_LIBRARY=/path/to/libLLVM-standalone-23.so julia --project -e 'using
 ```
 
 This runs the in-process tests after switching libraries, catching cached intrinsic IDs
-and other state tied to the original LLVM. The preference-selected suite also tests
-subprocesses, lit, and IR crossing between libraries. CI runs both configurations.
+and other state tied to the original LLVM. Those include carrying types and IR from
+Julia's LLVM to the selected library, which the tests do in a context of Julia's library
+(`Context(; library=:julia)`). The preference-selected suite also tests subprocesses and
+lit. CI runs both configurations.
 
 ### LLVM compatibility patches
 

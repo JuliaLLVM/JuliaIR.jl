@@ -80,13 +80,6 @@ function erase_inst!(opt::AllocOpt, inst::Instruction)
     erase!(inst)
 end
 
-function replace_uses_of!(user::Instruction, from::Value, to::Value)
-    ops = user.operands
-    for i in eachindex(ops)
-        ops[i] == from && (ops[i] = to)
-    end
-end
-
 ## data layout queries
 
 function is_legal_integer(layout::String, bits::Integer)
@@ -664,7 +657,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
             store!(builder, data, ptr_field; align=ptralign)
         end
     end
-    copy_metadata!(buff, orig)
+    LLVM.copy_metadata!(buff, orig)
     take_name!(buff, orig)
 
     # replace the uses of `orig_i` (derived from the allocation) by `new_i` (derived from
@@ -732,7 +725,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
                 inbounds_gep!(builder, user.source_element_type, new_i, indices) :
                 gep!(builder, user.source_element_type, new_i, indices)
             take_name!(new_gep, user)
-            copy_metadata!(new_gep, user)
+            LLVM.copy_metadata!(new_gep, user)
             push_frame!(user, new_gep)
         else
             error("unexpected use of an allocation: $(string(user))")
@@ -1036,7 +1029,8 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                         push!(bundles, bundle)
                     end
                 end
-                new_call = clone_call!(opt.builder, user, bundles)
+                new_call = with_operand_bundles(user, bundles)
+                move!(new_call, LLVM.before(user))
                 take_name!(new_call, user)
                 replace_uses!(user, new_call)
                 erase_inst!(opt, user)

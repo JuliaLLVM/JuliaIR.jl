@@ -79,7 +79,7 @@ end
 
 using .LoweringCorpus: TYPES
 
-# Julia's C++ lowering in the current context
+# Julia's C++ lowering in the current context, which must be one of Julia's LLVM
 function cpp_lowering(@nospecialize(T); no_boxing::Bool=false)
     boxed = Ref{Bool}(false)
     ref = no_boxing ?
@@ -112,8 +112,8 @@ end
 @testset "type lowering" begin
 
 # Julia's lowering creates types in a context of Julia's LLVM
-julia_llvm_in_use() && @testset "against Julia's C++" begin
-    @dispose ctx=Context(; opaque_pointers=true) begin
+@testset "against Julia's C++" begin
+    Context(; library=:julia, opaque_pointers=true) do ctx
         for T in TYPES
             ref, boxed = cpp_lowering(T)
             @test JuliaIR.julia_type(T; allow_boxed=true) == ref
@@ -371,28 +371,32 @@ end
     end
 end
 
-# The lowering of Julia's own LLVM, carried in bitcode into another context, is the same
-# as the port's in that context. (Across LLVM libraries once LLVM.jl supports them.)
-julia_llvm_in_use() && @testset "bitcode carrier" begin
-    types = filter(TYPES) do T
-        @dispose ctx=Context(; opaque_pointers=true) begin
-            !(JuliaIR.julia_type(T; allow_boxed=true) isa LLVM.VoidType)
+# The lowering of Julia's own LLVM, carried in bitcode into a context of the current
+# library, is the same as the port's in that context.
+@testset "bitcode carrier" begin
+    # the types that lower to `void` can't be carried as a parameter
+    voids, bitcode = Context(; library=:julia, opaque_pointers=true) do ctx
+        @dispose mod=LLVM.Module("carrier") begin
+            voids = Bool[]
+            for (i, T) in enumerate(TYPES)
+                ty = first(cpp_lowering(T))
+                push!(voids, ty isa LLVM.VoidType)
+                voids[end] && continue
+                LLVM.Function(mod, "t$i", LLVM.FunctionType(LLVM.VoidType(), [ty]))
+            end
+            voids, convert(Vector{UInt8}, mod)
         end
     end
-    buf = @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("carrier") begin
-        for (i, T) in enumerate(types)
-            ft = LLVM.FunctionType(LLVM.VoidType(), [first(cpp_lowering(T))])
-            LLVM.Function(mod, "t$i", ft)
-        end
-        convert(MemoryBuffer, mod)
-    end
-    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, buf) begin
-        for (i, T) in enumerate(types)
-            ft = mod.functions["t$i"].function_type
-            @test only(ft.parameters) == JuliaIR.julia_type(T; allow_boxed=true)
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bitcode) begin
+        for (i, T) in enumerate(TYPES)
+            ty = JuliaIR.julia_type(T; allow_boxed=true)
+            if voids[i]
+                @test ty isa LLVM.VoidType
+            else
+                @test only(mod.functions["t$i"].function_type.parameters) == ty
+            end
         end
     end
-    dispose(buf)
 end
 
 end

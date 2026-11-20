@@ -275,7 +275,7 @@ function insert_cmpxchg_loop!(rb::ReplacementBuilder, modify::Instruction,
     end
     pair = inserted!(rb, atomic_cmpxchg!(builder, ptr, cmp, new, success_ordering,
                                          LLVM.AtomicOrdering.Monotonic; scope, align))
-    copy_metadata!(pair, modify)
+    LLVM.copy_metadata!(pair, modify)
     success = fold!(inserted!(rb, extract_value!(builder, pair, 1, "success")))
     new_loaded = fold!(inserted!(rb, extract_value!(builder, pair, 0, "newloaded")))
     if need_bitcast
@@ -383,7 +383,7 @@ function expand_atomic_modify!(builder::IRBuilder, modify::Instruction)
         rmw = atomic_rmw!(builder, LLVM.AtomicRMWBinOp.Xchg, ptr, UndefValue(T), rmw_ordering;
                           scope, align)
         inserted!(rb, rmw)
-        copy_metadata!(rmw, modify)
+        LLVM.copy_metadata!(rmw, modify)
         position_rb!(rb, LLVM.before(modify))
         set_use!(loaded_op, rmw)
         attempts = 0

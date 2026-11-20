@@ -1,14 +1,5 @@
 # IR utilities shared by the passes.
 
-# the metadata and debug location of `src`, like C++'s `copyMetadata`
-function copy_metadata!(dst::Instruction, src::Instruction)
-    for (kind, md) in src.metadata
-        dst.metadata[kind] = md
-    end
-    dst.debug_location = src.debug_location
-    return dst
-end
-
 is_special_addrspace(as::Integer) = AS_TRACKED <= as <= AS_LOADED
 
 # the scalar type of a vector type, or the type itself
@@ -31,35 +22,6 @@ function alloca_addrspace(layout::String)
         m === nothing || return parse(Int, m[1])
     end
     return 0
-end
-
-# like C++'s `CallInst::Create(call, bundles, pos)`: the same call with other operand
-# bundles (keeping only debug metadata), inserted at `pos` (by default before the call), named
-# `name`, which C++ passes as the call's own name
-function clone_call!(builder::IRBuilder, call::Instruction,
-                     bundles::Vector{OperandBundle}=OperandBundle[];
-                     pos::LLVM.InsertionPoint{Instruction}=LLVM.before(call),
-                     name::String="")
-    position!(builder, pos)
-    builder.debug_location = nothing
-    new_call = call!(builder, call.called_type, call.called_operand,
-                     collect(call.arguments), bundles, name)
-    new_call.tailcall_kind = call.tailcall_kind
-    new_call.callconv = call.callconv
-    for attr in collect(call.function_attributes)
-        push!(new_call.function_attributes, attr)
-    end
-    for attr in collect(call.return_attributes)
-        push!(new_call.return_attributes, attr)
-    end
-    for i in 1:length(call.arguments), attr in collect(call.argument_attributes[i])
-        push!(new_call.argument_attributes[i], attr)
-    end
-    if supports_fast_math(call)
-        new_call.fast_math = call.fast_math
-    end
-    new_call.debug_location = call.debug_location
-    return new_call
 end
 
 
@@ -113,25 +75,17 @@ function limited_value(c::LLVM.ConstantInt)
     return value < 0 ? limit : UInt64(min(value, limit))
 end
 
-# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
-function called_function(call::Instruction)
-    callee = call.called_operand
-    callee isa LLVM.Function || return nothing
-    callee.function_type == call.called_type || return nothing
-    return callee
-end
-
 # whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
-function is_intrinsic_call(call::Instruction)
-    callee = called_function(call)
+function is_intrinsic_call(call::LLVM.CallBase)
+    callee = call.called_function
     return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
 end
 
 # Intrinsic IDs belong to the LLVM library that a pass runs with, so passes look them up
 # while processing IR instead of keeping them in constants, which would hold the IDs of
 # the library that the package was precompiled with.
-intrinsic_is(call::Instruction, intr::Intrinsic) =
-    let callee = called_function(call)
+intrinsic_is(call::LLVM.CallBase, intr::Intrinsic) =
+    let callee = call.called_function
         callee !== nothing && LLVM.isintrinsic(callee, intr)
     end
 
@@ -177,7 +131,7 @@ function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
 end
 
 # `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
-# function type differs from the function's (unlike `called_function`); `kind` is the
+# function type differs from the function's (unlike `call.called_function`); `kind` is the
 # name of an LLVM attribute (a symbol) or of a string attribute
 function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
     haskey(call.function_attributes, kind) && return true
@@ -205,9 +159,6 @@ end
 
 i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 
-# the integer in a `ConstantAsMetadata` operand
-metadata_int(md::Metadata) = convert(Int, Value(md))
-
 
 ## uses and opcodes
 
@@ -217,6 +168,17 @@ function has_one_use(@nospecialize(v::Value))
     return next !== nothing && iterate(v.uses, next[2]) === nothing
 end
 has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
+
+# replace the operands of `user` that are `from` by `to` (`User::replaceUsesOfWith`). Not
+# `replace!(user.operands, from => to)`, which sets every operand, and setting an operand
+# moves its use to the front of the use list of the value, also when it doesn't change.
+function replace_uses_of!(user::Instruction, @nospecialize(from::Value),
+                          @nospecialize(to::Value))
+    ops = user.operands
+    for i in eachindex(ops)
+        ops[i] == from && (ops[i] = to)
+    end
+end
 
 # The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
 # C++ passes render instructions that way.

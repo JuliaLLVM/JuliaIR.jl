@@ -367,11 +367,6 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                            lookup("julia.cancellation_point") : nothing)
 end
 
-is_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
-    callee isa LLVM.Function && callee in fns.write_barriers
-is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
-    callee isa LLVM.Function && callee in fns.field_write_barriers
-
 # What the pass knows of TBAA metadata, which is uniqued in the context and whose operands
 # passes don't set, so the same for all functions of a module (`module_facts`), as is what
 # follows from the operands of a tag's ancestors: its own tags, once a function has built
@@ -434,7 +429,7 @@ end
 
 is_gc_loaded_call(p::LateLowerGCFrame, @nospecialize(v::Value)) =
     p.dialect.has_gc_loaded && v isa LLVM.CallInst &&
-    let callee = called_function(v)
+    let callee = v.called_function
         callee !== nothing && LLVM.name(callee) == "julia.gc_loaded"
     end
 
@@ -1039,7 +1034,7 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
         return true
     end
     if v isa LLVM.CallInst
-        callee = called_function(v)
+        callee = v.called_function
         if callee !== nothing
             name = LLVM.name(callee)
             name == "julia.typeof" && return true
@@ -1288,7 +1283,7 @@ const SRET_ERROR = "LateLowerGCFrame: expected an alloca as the destination of r
 function sret_type(call::Instruction)
     length(call.arguments) >= 1 || return nothing
     sret = get(call.argument_attributes[1], :sret, nothing)
-    callee = called_function(call)
+    callee = call.called_function
     if sret === nothing && callee !== nothing && !isempty(callee.parameters)
         sret = get(callee.parameter_attributes[1], :sret, nothing)
     end
@@ -1377,7 +1372,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
     if is_intrinsic_call(ci)
         # Most intrinsics are not GC uses or defs, but some have memory operands. Only
         # skip those that are emitted often and cannot be GC uses.
-        callee = called_function(ci)
+        callee = ci.called_function
         if is_debug_intrinsic(callee) ||
            intrinsic_is(ci, p.intrinsics.lifetime_start) ||
            intrinsic_is(ci, p.intrinsics.lifetime_end)
@@ -1405,7 +1400,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
             return  # not real defs
         end
     end
-    callee = called_function(ci)
+    callee = ci.called_function
     if callee !== nothing && is_fn(p.fns.typeof, callee)
         maybe_note_def!(p, S, BBS, ci, [-2])
     elseif callee !== nothing && is_fn(p.fns.gc_loaded, callee)
@@ -1996,7 +1991,7 @@ function debug_record_values(f::LLVM.Function)
             end
         end
         inst isa LLVM.CallInst || continue
-        callee = called_function(inst)
+        callee = inst.called_function
         callee isa LLVM.Function && startswith(LLVM.name(callee), "llvm.dbg.") || continue
         for arg in inst.arguments
             arg isa LLVM.MetadataAsValue || continue
@@ -2409,7 +2404,7 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         return LLVM.alignment(v)
     elseif v isa LLVM.CallBase
         align = get(v.return_attributes, :align, nothing)
-        callee = called_function(v)
+        callee = v.called_function
         if align === nothing && callee !== nothing
             align = get(callee.return_attributes, :align, nothing)
         end
@@ -2517,7 +2512,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
     new_call.tailcall_kind = call.tailcall_kind
     # the function and return attributes of the call, merged with all attributes of the
     # jlcall declaration
-    decl = called_function(call)
+    decl = call.called_function
     for attr in collect(call.function_attributes)
         push!(new_call.function_attributes, attr)
     end
@@ -2537,7 +2532,7 @@ function lower_jlcall!(p::LateLowerGCFrame, call::Instruction, kind::Symbol,
         end
     end
     take_name!(new_call, call)
-    copy_metadata!(new_call, call)
+    LLVM.copy_metadata!(new_call, call)
     replace_uses!(call, new_call)
     update_ptr_numbering!(S, call, new_call)
     return length(frame_values)
@@ -2603,9 +2598,10 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         end
         # Rebuild only calls with Julia's operand bundles, keeping all other bundles.
         kept = OperandBundle[b for b in bundles if !(LLVM.tag(b) in JULIA_BUNDLES)]
-        new_call = clone_call!(p.builder, call, kept; name=LLVM.name(call))
+        new_call = with_operand_bundles(call, kept)
+        move!(new_call, LLVM.before(call))
         take_name!(new_call, call)
-        copy_metadata!(new_call, call)
+        LLVM.copy_metadata!(new_call, call)
         replace_uses!(call, new_call)
         update_ptr_numbering!(S, call, new_call)
     end
@@ -2843,7 +2839,7 @@ function drop_safepoint_memory_effects!(f::LLVM.Function)
         inst isa LLVM.CallInst || continue
         call_has_fn_attr(inst, "julia.safepoint") || continue
         drop_memory_effects!(inst.function_attributes)
-        callee = called_function(inst)
+        callee = inst.called_function
         callee === nothing || drop_memory_effects!(callee.function_attributes)
         for i in 1:length(inst.arguments)
             haskey(inst.argument_attributes[i], "gcstack") || continue
