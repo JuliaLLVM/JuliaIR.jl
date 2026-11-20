@@ -1473,6 +1473,16 @@ end
             @test occursin("phi ptr [ %x, %a ], [ %x, %b ]", str)
         end
     end
+    # also with a mapping of our own
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, preds_ir) begin
+        f = mod.functions["f"]
+        br = LLVM.terminator(collect(f.blocks)[3])
+        LLVM.operands(br)[1] = collect(f.blocks)[2]
+        run!(JuliaIR.RemoveAddrspacesPass(as -> as == 10 ? 0 : as), mod)
+        moves = JuliaIR.Dialect(VERSION).remove_addrspaces_moves_bodies
+        @test occursin(moves ? "; preds = %b, %a" : "; preds = %a, %b",
+                       string(mod.functions["f"]))
+    end
     # functions whose blocks have their address taken are still cloned
     taken_ir = replace(preds_ir,
         "  br i1 %c, label %a, label %b" =>

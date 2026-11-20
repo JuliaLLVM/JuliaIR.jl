@@ -343,6 +343,7 @@ address space becomes 0. Otherwise the pass works like
 """
 RemoveAddrspacesPass(; kwargs...) = custom_pass(REMOVE_ADDRSPACES; kwargs...)
 function RemoveAddrspacesPass(asmap; kwargs...)
-    impl = (mod, am, opts) -> remove_addrspaces!(mod, am, asmap)
+    impl = (mod, am, opts) -> remove_addrspaces!(mod, am, asmap;
+        move_bodies=opts.dialect.remove_addrspaces_moves_bodies)
     return custom_pass(with_impl(REMOVE_ADDRSPACES, impl); kwargs...)
 end
