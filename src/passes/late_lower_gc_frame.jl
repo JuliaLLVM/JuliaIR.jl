@@ -1493,37 +1493,10 @@ end
 
 ## liveness
 
-# the reachable blocks in post order
-function post_order(f::LLVM.Function)
-    order = BasicBlock[]
-    visited = Set{BasicBlock}()
-    entry = first(f.blocks)
-    stack = [(entry, 1)]
-    push!(visited, entry)
-    succs = Dict{BasicBlock,Vector{BasicBlock}}()
-    successors_of(bb) = get!(() -> collect(bb.successors), succs, bb)
-    while !isempty(stack)
-        bb, i = stack[end]
-        ss = successors_of(bb)
-        if i <= length(ss)
-            stack[end] = (bb, i + 1)
-            s = ss[i]
-            if !(s in visited)
-                push!(visited, s)
-                push!(stack, (s, 1))
-            end
-        else
-            pop!(stack)
-            push!(order, bb)
-        end
-    end
-    return order
-end
-
 # LiveIn[BB] = UpExposedUses[BB] ∪ (LiveOut[BB] - Defs[BB])
 # LiveOut[BB] = PhiUses[BB] ∪ ∪_{Succ} LiveIn[Succ]
 function compute_liveness!(p::LateLowerGCFrame, S::State)
-    blocks = post_order(S.f)
+    blocks = reverse(reverse_postorder_blocks(S.f))  # `post_order`
     converged = false
     while !converged
         any_changed = false
