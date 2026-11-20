@@ -105,12 +105,11 @@ function call_memory_effects(call::Instruction)
     return effects
 end
 
-const MEMORY_LOCATIONS = (:argmem, :inaccessiblemem, :other)
-
-only_reads_memory(e::MemoryEffects) =
-    all(loc -> !(e[loc] in (:write, :readwrite)), MEMORY_LOCATIONS)
+# `MemoryEffects::onlyReadsMemory` and `onlyAccessesArgPointees`, over all the locations
+# of the LLVM in use
+only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
 only_accesses_arg_pointees(e::MemoryEffects) =
-    all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
+    (e & MemoryEffects(:readwrite; argmem=:none)).access === :none
 
 # shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
 const UNDEF_MASK_ELEM = -1

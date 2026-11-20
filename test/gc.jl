@@ -316,6 +316,45 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
           br label %next
         next:""")
     @test has_barrier(llgcf(joined, v"1.14", facts64))
+
+    # A call that only reads memory is not a safepoint, on every location LLVM knows of:
+    # writing errno (LLVM 21 and later), which LLVM infers for libm functions, may reach
+    # one.
+    if LLVM.version() >= v"21"
+        libm(effects) = """
+            $X86_64
+            declare ptr @julia.get_pgcstack()
+            declare ptr addrspace(10) @get()
+            declare double @sin(double) memory($effects)
+            define ptr addrspace(10) @f(double %x, ptr %y) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @get()
+              %s = call double @sin(double %x)
+              store double %s, ptr %y
+              ret ptr addrspace(10) %v
+            }"""
+        @test occursin("@julia.new_gc_frame", llgcf(libm("errnomem: write"), v"1.14", facts64))
+        @test !occursin("@julia.new_gc_frame", llgcf(libm("read"), v"1.14", facts64))
+    end
+    # also target memory (LLVM 22 and later), as the call accesses it
+    if LLVM.version() >= v"22"
+        target_mem(effects) = """
+            $X86_64
+            declare ptr @julia.get_pgcstack()
+            declare ptr addrspace(10) @get()
+            declare void @ext(ptr)
+            define ptr addrspace(10) @f(ptr %p) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @get()
+              call void @ext(ptr %p) memory($effects)
+              ret ptr addrspace(10) %v
+            }"""
+        @test occursin("@julia.new_gc_frame",
+                       llgcf(target_mem("argmem: write, target_mem0: read"), v"1.14", facts64))
+        @test !occursin("@julia.new_gc_frame", llgcf(target_mem("argmem: write"), v"1.14", facts64))
+    end
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 
