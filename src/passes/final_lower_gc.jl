@@ -9,6 +9,7 @@ mutable struct FinalLowerGC
     mod::LLVM.Module
     builder::IRBuilder
     gc::GCCodegen
+    fns::JuliaFunctions
     # the GC stack of the function being lowered: a call in the entry block, or an argument
     pgcstack::Union{Nothing,Value}
     # the runtime functions the intrinsics are lowered to, once declared
@@ -18,8 +19,8 @@ end
 
 function FinalLowerGC(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder)
     gc = GCCodegen(dialect, mod, builder, runtime_layout(dialect, mod))
-    return FinalLowerGC(dialect, mod, builder, gc, nothing, Dict{Symbol,LLVM.Function}(),
-                        false)
+    return FinalLowerGC(dialect, mod, builder, gc, JuliaFunctions(mod, dialect), nothing,
+                        Dict{Symbol,LLVM.Function}(), false)
 end
 
 # the runtime functions that FinalLowerGC declares, in the order the C++ declares them
@@ -69,7 +70,7 @@ function check_declarations(p::FinalLowerGC, functions)
     queue_root = get(mod.functions, "julia.queue_gc_root", nothing)
     queue_root === nothing && return
     name, ft = gc_declaration(p.gc, :gc_queue_root)
-    if any(call -> parent_function(call) in functions && !isempty(barrier_children(call)),
+    if any(call -> parent_function(call) in functions && !isempty(barrier_children(p, call)),
            barrier_calls(p))
         queue_root.function_type == ft ||
             throw(DeclarationError(LLVM.name(queue_root), string(ft),
@@ -264,22 +265,18 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-# the children of a write barrier that need one: the arguments after the parent, without
-# the slot operands of field barriers (`JuliaPassContext::writeBarrierChildren`) and the
-# null pointers (a field that is cleared)
-function barrier_children(call::Instruction)
-    args = collect(call.arguments)
-    field = startswith(LLVM.name(call.called_operand), "julia.field_write_barrier")
-    return [args[i] for i in 2:length(args)
-            if (!field || iseven(i - 1)) && !(strip_pointer_casts(args[i]) isa LLVM.PointerNull)]
-end
+# the children of a write barrier that need one: not the null pointers (a field that is
+# cleared)
+barrier_children(p::FinalLowerGC, call::Instruction) =
+    filter(child -> !(strip_pointer_casts(child) isa LLVM.PointerNull),
+           write_barrier_children(p.fns, call))
 
 # a write barrier (Julia 1.14 and later), the stock GC's: like Julia 1.13's in
 # LateLowerGCFrame (on 1.15 with the levels of permanent objects), without the children
 # that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
-    children = barrier_children(target)
+    children = barrier_children(p, target)
     isempty(children) && return
     p.cfg_modified = true
     queue_root = emit_write_barrier!(p.gc, target, parent, children,
