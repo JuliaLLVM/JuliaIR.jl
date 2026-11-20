@@ -40,6 +40,25 @@ end
         load = collect(first(first(mod.functions).blocks).instructions)[3]
         @test load.operands[1] == first(first(first(mod.functions).blocks).instructions)
     end
+    # a memory intrinsic is changed in place, like the C++ pass does: its other operands
+    # keep their place in the use lists of their values
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            declare void @llvm.memcpy.p11.p0.i64(ptr addrspace(11), ptr, i64, i1)
+            define i64 @f(ptr %src, i64 %n) {
+              %stack = alloca i64
+              %casted = addrspacecast ptr %stack to ptr addrspace(11)
+              call void @llvm.memcpy.p11.p0.i64(ptr addrspace(11) %casted, ptr %src, i64 %n, i1 false)
+              %m = add i64 %n, 1
+              ret i64 %m
+            }""") begin
+        run!(JuliaIR.PropagateAddrspacesPass(), mod)
+        f = mod.functions["f"]
+        @test occursin("call void @llvm.memcpy.p0.p0.i64(ptr %stack, ptr %src, i64 %n, i1 false)",
+                       string(mod))
+        n = LLVM.parameters(f)[2]
+        @test [LLVM.user(use).opcode for use in LLVM.uses(n)] ==
+              [LLVM.Opcode.Add, LLVM.Opcode.Call]
+    end
 end
 
 @testset "DemoteFloat16" begin
