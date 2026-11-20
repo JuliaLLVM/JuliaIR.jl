@@ -75,25 +75,17 @@ function limited_value(c::LLVM.ConstantInt)
     return value < 0 ? limit : UInt64(min(value, limit))
 end
 
-# the function a call calls, if its type matches (`CallBase::getCalledFunction`)
-function called_function(call::Instruction)
-    callee = call.called_operand
-    callee isa LLVM.Function || return nothing
-    callee.function_type == call.called_type || return nothing
-    return callee
-end
-
 # whether a call is an `IntrinsicInst` (calls a function named `llvm.*`)
-function is_intrinsic_call(call::Instruction)
-    callee = called_function(call)
+function is_intrinsic_call(call::LLVM.CallBase)
+    callee = call.called_function
     return callee !== nothing && startswith(LLVM.name(callee), "llvm.")
 end
 
 # Intrinsic IDs belong to the LLVM library that a pass runs with, so passes look them up
 # while processing IR instead of keeping them in constants, which would hold the IDs of
 # the library that the package was precompiled with.
-intrinsic_is(call::Instruction, intr::Intrinsic) =
-    let callee = called_function(call)
+intrinsic_is(call::LLVM.CallBase, intr::Intrinsic) =
+    let callee = call.called_function
         callee !== nothing && LLVM.isintrinsic(callee, intr)
     end
 
@@ -139,7 +131,7 @@ function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
 end
 
 # `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
-# function type differs from the function's (unlike `called_function`); `kind` is the
+# function type differs from the function's (unlike `call.called_function`); `kind` is the
 # name of an LLVM attribute (a symbol) or of a string attribute
 function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
     haskey(call.function_attributes, kind) && return true
