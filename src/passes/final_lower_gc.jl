@@ -207,7 +207,7 @@ function lower_queue_gc_root!(p::FinalLowerGC, target::Instruction)
     target.called_type == callee.function_type ||
         throw(DeclarationError(LLVM.name(callee), string(target.called_type),
                                string(callee.function_type)))
-    target.called_operand = callee
+    target.called_function = callee
 end
 
 # `julia.safepoint(page)`: a volatile load of the safepoint page, which the runtime
@@ -250,7 +250,7 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
         # the typed allocation function doesn't count the type tag in the size
         callee = runtime(:gc_alloc_typed)
         tag_arg = isempty(tag) ? LLVM.null(LLVM.PointerType(AS_GENERIC)) : tag[1]
-        call_args = Value[ptls, zext_or_trunc!(builder, size, p.gc.T_size), tag_arg]
+        call_args = Value[ptls, intcast!(builder, size, p.gc.T_size; signed=false), tag_arg]
         deref = UInt64(pointer_size(p.gc))
     end
     new_call = call!(builder, callee.function_type, callee, call_args)

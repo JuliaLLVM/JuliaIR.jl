@@ -1994,7 +1994,8 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
+        size = intcast!(builder, size, alloc_bytes.function_type.parameters[2];
+                        signed=false)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
         take_name!(new_call, call)
@@ -2028,7 +2029,8 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         # its tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
+        size = intcast!(builder, size, alloc_bytes.function_type.parameters[2];
+                        signed=false)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
                          Value[ptls, size, tagint], other_bundles(call))
