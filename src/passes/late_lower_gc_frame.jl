@@ -2603,7 +2603,8 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
         end
         # Rebuild only calls with Julia's operand bundles, keeping all other bundles.
         kept = OperandBundle[b for b in bundles if !(LLVM.tag(b) in JULIA_BUNDLES)]
-        new_call = clone_call!(p.builder, call, kept; name=LLVM.name(call))
+        new_call = with_operand_bundles(call, kept)
+        move!(new_call, LLVM.before(call))
         take_name!(new_call, call)
         copy_metadata!(new_call, call)
         replace_uses!(call, new_call)

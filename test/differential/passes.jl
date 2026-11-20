@@ -140,20 +140,19 @@ function gpu_like!(mod::LLVM.Module)
         end
         # the allocation's bundles (`julia.gc_alloc_ptr_offsets`, ...) go with it
         if LLVM.name(f) == "gpu.gc_alloc_obj"
-            @dispose builder=LLVM.IRBuilder() begin
-                for use in collect(LLVM.uses(f))
-                    call = LLVM.user(use)
-                    call isa LLVM.CallInst || continue
-                    bundles = filter(b -> !startswith(LLVM.tag(b), "julia."),
-                                     collect(LLVM.operand_bundles(call)))
-                    length(bundles) == length(LLVM.operand_bundles(call)) && continue
-                    new = JuliaIR.clone_call!(builder, call, bundles)
-                    JuliaIR.copy_metadata!(new, call)
-                    LLVM.replace_uses!(call, new)
-                    name = LLVM.name(call)
-                    LLVM.erase!(call)
-                    LLVM.name!(new, name)
-                end
+            for use in collect(LLVM.uses(f))
+                call = LLVM.user(use)
+                call isa LLVM.CallInst || continue
+                bundles = filter(b -> !startswith(LLVM.tag(b), "julia."),
+                                 collect(LLVM.operand_bundles(call)))
+                length(bundles) == length(LLVM.operand_bundles(call)) && continue
+                new = LLVM.with_operand_bundles(call, bundles)
+                LLVM.move!(new, LLVM.before(call))
+                LLVM.copy_metadata!(new, call)
+                LLVM.replace_uses!(call, new)
+                name = LLVM.name(call)
+                LLVM.erase!(call)
+                LLVM.name!(new, name)
             end
         end
         for i in 1:length(LLVM.parameters(f))

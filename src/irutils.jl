@@ -33,35 +33,6 @@ function alloca_addrspace(layout::String)
     return 0
 end
 
-# like C++'s `CallInst::Create(call, bundles, pos)`: the same call with other operand
-# bundles (keeping only debug metadata), inserted at `pos` (by default before the call), named
-# `name`, which C++ passes as the call's own name
-function clone_call!(builder::IRBuilder, call::Instruction,
-                     bundles::Vector{OperandBundle}=OperandBundle[];
-                     pos::LLVM.InsertionPoint{Instruction}=LLVM.before(call),
-                     name::String="")
-    position!(builder, pos)
-    builder.debug_location = nothing
-    new_call = call!(builder, call.called_type, call.called_operand,
-                     collect(call.arguments), bundles, name)
-    new_call.tailcall_kind = call.tailcall_kind
-    new_call.callconv = call.callconv
-    for attr in collect(call.function_attributes)
-        push!(new_call.function_attributes, attr)
-    end
-    for attr in collect(call.return_attributes)
-        push!(new_call.return_attributes, attr)
-    end
-    for i in 1:length(call.arguments), attr in collect(call.argument_attributes[i])
-        push!(new_call.argument_attributes[i], attr)
-    end
-    if supports_fast_math(call)
-        new_call.fast_math = call.fast_math
-    end
-    new_call.debug_location = call.debug_location
-    return new_call
-end
-
 
 ## composite types
 

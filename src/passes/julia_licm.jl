@@ -158,8 +158,8 @@ function sink_preserve_end!(p::JuliaLICM, call::Instruction)
         "sinking preserve end ", "PreserveEnd" => call
     end
     for point in points[2:end]
-        # Like C++'s `CallInst::Create(call, {}, point)`: no bundles, only debug metadata.
-        clone = clone_call!(p.builder, call; pos=LLVM.before(point))
+        clone = with_operand_bundles(call, OperandBundle[])
+        move!(clone, LLVM.before(point))
         create_access!(p, clone, call)
         remark!(p.ar, :passed, LICM_REMARKS, "Sunk", call) do
             "cloning and sinking preserve end", "PreserveEnd" => call

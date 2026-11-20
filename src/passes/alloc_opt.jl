@@ -1036,7 +1036,8 @@ function split_on_stack!(opt::AllocOpt, orig::Instruction)
                         push!(bundles, bundle)
                     end
                 end
-                new_call = clone_call!(opt.builder, user, bundles)
+                new_call = with_operand_bundles(user, bundles)
+                move!(new_call, LLVM.before(user))
                 take_name!(new_call, user)
                 replace_uses!(user, new_call)
                 erase_inst!(opt, user)
