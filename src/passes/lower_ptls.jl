@@ -152,15 +152,6 @@ function load_slot!(p::LowerPTLS, T::LLVMType, slot::String)
     return load
 end
 
-# the global value of the module named `name`, of any kind (`Module::getNamedValue`)
-function named_global(mod::LLVM.Module, name::String)
-    for set in (mod.functions, mod.globals, mod.aliases, mod.ifuncs)
-        gv = get(set, name, nothing)
-        gv === nothing || return gv
-    end
-    return nothing
-end
-
 global_addrspace(gv::LLVM.GlobalValue) = LLVM.addrspace(LLVM.value_type(gv))
 
 # the declaration of an external function like the getter, as Julia declares the function
@@ -211,7 +202,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
 
         adopt = copy(call)
         adopt_fn = declare_like!(p, p.dialect.ptls_adopt_thread, getter)
-        adopt.called_operand = adopt_fn
+        adopt.called_function = adopt_fn
         move!(adopt, LLVM.before(slow_term))
         push!(phi.incoming, (adopt, slow_term.parent))
 
@@ -309,7 +300,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         end
         set_pgcstack_attrs!(call)
     else
-        resolved = named_global(p.mod, PGCSTACK_RESOLVED)
+        resolved = named_value(p.mod, PGCSTACK_RESOLVED)
         if resolved === nothing
             # (declared as returning nothing, and called as returning the GC stack)
             resolved = LLVM.Function(p.mod, PGCSTACK_RESOLVED,
@@ -330,7 +321,7 @@ function slot_type(p::LowerPTLS, name::String)
 end
 
 function check_slot(p::LowerPTLS, name::String)
-    gv = named_global(p.mod, name)
+    gv = named_value(p.mod, name)
     gv === nothing && return
     (gv isa GlobalVariable && LLVM.isdeclaration(gv) &&
      LLVM.linkage(gv) == LLVM.Linkage.External && !LLVM.threadlocal(gv) &&
@@ -398,11 +389,15 @@ function check_lower_ptls(p::LowerPTLS, getters)
                 isempty(call.uses) && continue
                 needs_tp = true
                 or_new || continue
-                adopt = named_global(p.mod, p.dialect.ptls_adopt_thread)
+                adopt = named_value(p.mod, p.dialect.ptls_adopt_thread)
                 adopt === nothing ||
                     (adopt isa LLVM.Function && adopt.function_type == call.called_type &&
                      global_addrspace(adopt) == global_addrspace(getter)) ||
                     throw(LowerPTLSError("@$(p.dialect.ptls_adopt_thread) is not declared like @$name: $(string(adopt))"))
+                # the call that adopts a thread calls that function with its own type, which
+                # is the getter's if the function is declared here
+                adopt === nothing && call.called_type != getter.function_type &&
+                    throw(LowerPTLSError("@$name is called with another type than it is declared with: $(string(call))"))
                 restores_gc_state(f) || continue
                 # the GC state is restored at every return, from values defined at the call
                 dt = get!(() -> DomTree(f), domtrees, f)

@@ -103,6 +103,10 @@ The differences between versions are fields of `JuliaIR.Dialect`:
   function where the GC state is restored there (functions that don't return tracked
   pointers; the code to restore the state needs it; Julia's code generator always calls
   it in the entry block).
+- A `julia.get_pgcstack_or_new` call of another type than the getter's is rejected
+  before anything changes when the module doesn't declare the function that adopts
+  threads: the C++ declares that function with the getter's type and switches the call
+  to it, which makes the call invalid IR.
 - In imaging mode, a module that declares the image's variables already uses those
   declarations (the C++ adds new ones with suffixed names, which the loader doesn't
   fill in); a declaration of another type or kind (a function, an alias, a thread-local

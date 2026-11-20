@@ -1127,6 +1127,10 @@ end
             @test occursin("@$adopt is not declared like @julia.get_pgcstack_or_new",
                            rejection(ir("$decl\n$or_new_ir"), facts))
         end
+        # which it is when declared here, so the getter must be called with its own type
+        mistyped = replace(or_new_ir, "@julia.get_pgcstack_or_new()" => "@julia.get_pgcstack_or_new(i32 0)")
+        @test occursin("@julia.get_pgcstack_or_new is called with another type",
+                       rejection(ir(mistyped), facts))
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
         @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8;tls-elf-support=yes")

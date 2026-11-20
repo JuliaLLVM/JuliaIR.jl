@@ -106,27 +106,6 @@ is_runtime_memory_alloc(p::CancellationLowering, call::Instruction) =
     is_fn(p.fns.alloc_memory, call.called_operand) &&
     inline_memory_size(p.fns.alloc_memory, call, p.gc.dl) === nothing
 
-# `BasicBlock::getTerminatingMustTailCall`
-function terminating_musttail_call(bb::BasicBlock)
-    ret = LLVM.terminator(bb)
-    ret isa LLVM.RetInst || return nothing
-    ret == first(bb.instructions) && return nothing
-    prev = LLVM.prev(ret)
-    prev === nothing && return nothing
-    rv = isempty(LLVM.operands(ret)) ? nothing : LLVM.operands(ret)[1]
-    if rv !== nothing
-        rv == prev || return nothing
-        if prev isa LLVM.BitCastInst
-            rv = LLVM.operands(prev)[1]
-            prev = LLVM.prev(prev)
-            (prev === nothing || rv != prev) && return nothing
-        end
-    end
-    prev isa LLVM.CallInst && LLVM.tailcall_kind(prev) == LLVM.TailCallKind.MustTail &&
-        return prev
-    return nothing
-end
-
 # the addresses of the task's `reset_ctx`, `ptls` and `eh` fields, after the GC stack's
 # getter call or, for a GC stack argument, after the entry block's allocas
 # (`computeResetCtxPtr`)
@@ -467,7 +446,7 @@ function cancellation_lowering!(f::LLVM.Function, am, opts::PassOptions)
                 may_open = may_open_at_entry(bb) ||
                            any(inst -> is_publish_store(p, inst), bb.instructions)
                 may_open || continue
-                musttail = terminating_musttail_call(bb)
+                musttail = bb.terminating_musttail_call
                 position_before!(builder, musttail === nothing ? ret : musttail; debug=true)
                 clear_region!(p)
             end
