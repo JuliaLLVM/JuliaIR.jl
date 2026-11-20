@@ -14,16 +14,6 @@ is_pointer_like(@nospecialize(v::Value)) = scalar_type(v.value_type) isa Pointer
 pointer_addrspace(@nospecialize(v::Value)) = pointer_addrspace(v.value_type)
 pointer_addrspace(@nospecialize(ty::LLVMType)) = scalar_type(ty).addrspace
 
-# the address space of allocas, from the data layout string (`A<n>`)
-alloca_addrspace(mod::LLVM.Module) = alloca_addrspace(string(mod.datalayout))
-function alloca_addrspace(layout::String)
-    for spec in split(layout, '-')
-        m = match(r"^A(\d+)$", spec)
-        m === nothing || return parse(Int, m[1])
-    end
-    return 0
-end
-
 
 ## composite types
 
@@ -168,17 +158,6 @@ function has_one_use(@nospecialize(v::Value))
     return next !== nothing && iterate(v.uses, next[2]) === nothing
 end
 has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
-
-# replace the operands of `user` that are `from` by `to` (`User::replaceUsesOfWith`). Not
-# `replace!(user.operands, from => to)`, which sets every operand, and setting an operand
-# moves its use to the front of the use list of the value, also when it doesn't change.
-function replace_uses_of!(user::Instruction, @nospecialize(from::Value),
-                          @nospecialize(to::Value))
-    ops = user.operands
-    for i in eachindex(ops)
-        ops[i] == from && (ops[i] = to)
-    end
-end
 
 # The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
 # C++ passes render instructions that way.

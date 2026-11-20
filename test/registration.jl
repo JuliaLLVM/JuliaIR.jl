@@ -304,7 +304,6 @@ end
             @test facts.lifetime_size == (LLVM.version(lib) < v"22")
             @test facts.lifetime_on_alloca == (LLVM.version(lib) >= v"22")
             @test facts.masked_load_alignment == (LLVM.version(lib) < v"22")
-            @test facts.null_pointer_alignment == (LLVM.version(lib) < v"22")
         end
     end
 end

@@ -31,72 +31,6 @@ end
 
 is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
-# the opcode of an instruction or constant expression (`Operator::getOpcode`), or nothing
-function operator_opcode(@nospecialize(v::Value))
-    return v isa Union{Instruction,LLVM.ConstantExpr} ? v.opcode : nothing
-end
-
-# the argument a call returns (`CallBase::getReturnedArgOperand`), or nothing
-function returned_argument(call::Instruction)
-    callee = call.called_operand
-    for i in 1:length(call.arguments)
-        if haskey(call.argument_attributes[i], :returned) ||
-           callee isa LLVM.Function && i <= length(callee.parameters) &&
-           haskey(callee.parameter_attributes[i], :returned)
-            return call.arguments[i]
-        end
-    end
-    return nothing
-end
-
-# `Value::stripInBoundsOffsets`: through inbounds GEPs, bitcasts, address space casts and
-# calls returning an argument
-function strip_in_bounds_offsets(@nospecialize(v::Value))
-    is_pointer_value(v) || return v
-    visited = Set{Value}((v,))
-    while true
-        op = operator_opcode(v)
-        if op == LLVM.Opcode.GetElementPtr
-            v.inbounds || return v
-            v = v.operands[1]
-        elseif op == LLVM.Opcode.BitCast
-            new = v.operands[1]
-            is_pointer_value(new) || return v
-            v = new
-        elseif op == LLVM.Opcode.AddrSpaceCast
-            v = v.operands[1]
-        elseif v isa LLVM.CallBase
-            ret = returned_argument(v)
-            ret === nothing && return v
-            v = ret
-        else
-            return v
-        end
-        v in visited && return v
-        push!(visited, v)
-    end
-end
-
-# `CallBase::getMemoryEffects`: the call's and the callee's effects, where operand
-# bundles (other than the ones that LLVM knows not to access memory) make the callee's
-# read and write anything
-function call_memory_effects(call::Instruction)
-    effects = MemoryEffects(call.function_attributes)
-    callee = call.called_operand
-    if callee isa LLVM.Function
-        fn_effects = MemoryEffects(callee.memory_effects)
-        bundles = [LLVM.tag(b) for b in call.operand_bundles]
-        if !intrinsic_is(call, Intrinsic("llvm.assume"))
-            any(t -> !(t in ("ptrauth", "kcfi", "convergencectrl")), bundles) &&
-                (fn_effects |= MemoryEffects(:read))
-            any(t -> !(t in ("deopt", "funclet", "ptrauth", "kcfi", "convergencectrl")), bundles) &&
-                (fn_effects |= MemoryEffects(:write))
-        end
-        effects &= fn_effects
-    end
-    return effects
-end
-
 # `MemoryEffects::onlyReadsMemory` and `onlyAccessesArgPointees`, over all the locations
 # of the LLVM in use
 only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
@@ -888,7 +822,7 @@ end
 function is_load_from_const_gv(p::LateLowerGCFrame, li::LLVM.LoadInst, task_local::Ref{Bool},
                                seen=nothing)
     # codegen only emits single-slot globals, but LLVM's global merging may introduce GEPs
-    load_base = strip_in_bounds_offsets(li.operands[1])
+    load_base = strip_inbounds_offsets(li.operands[1])
     gv = load_base isa LLVM.GlobalVariable ? load_base : nothing
     if is_load_from_rooted_region(p, li)
         gv === nothing || return true
@@ -900,7 +834,7 @@ end
 
 function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value),
                                      task_local::Ref{Bool}, seen=nothing)
-    v = strip_in_bounds_offsets(v)
+    v = strip_inbounds_offsets(v)
     v isa LLVM.LoadInst && return is_load_from_const_gv(p, v, task_local, seen)
     v isa LLVM.GlobalVariable && return is_const_gv(v)
     v isa LLVM.ConstantData && return true  # null pointer
@@ -949,7 +883,7 @@ end
 # loads from a jlcall argument array (Julia 1.12 and older)
 function looks_like_frame_ref(@nospecialize(v::Value))
     is_special_ptr(v.value_type) && return false
-    v = strip_in_bounds_offsets(v)
+    v = strip_inbounds_offsets(v)
     is_special_ptr(v.value_type) && return false
     return v isa LLVM.Argument
 end
@@ -1097,7 +1031,7 @@ function find_alloca_bases(@nospecialize(v::Value))
     visited = Set{Value}((v,))
     while !isempty(worklist)
         w = pop!(worklist)
-        stripped = strip_in_bounds_offsets(w)
+        stripped = strip_inbounds_offsets(w)
         if stripped isa LLVM.AllocaInst
             any(a -> a == stripped, allocas) || push!(allocas, stripped)
         elseif w isa LLVM.PHIInst
@@ -1131,7 +1065,7 @@ is_tracked_pointer_type(@nospecialize(t::LLVMType)) =
     t isa PointerType && t.addrspace == AS_TRACKED
 
 function maybe_track_store!(p::LateLowerGCFrame, S::State, si::Instruction)
-    ptr_base = strip_in_bounds_offsets(si.operands[2])
+    ptr_base = strip_inbounds_offsets(si.operands[2])
     tracked = CountTrackedPointers(si.operands[1].value_type)
     tracked.count == 0 && return false  # nothing to track is being stored
     # SROA and InstCombine can merge conditional stores to allocas into a select or phi
@@ -1193,7 +1127,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
             attr === nothing && continue
             return_roots = something(tryparse(Int, attr), 0)
             has_def_before = true
-            gc_allocas = find_alloca_bases(strip_in_bounds_offsets(call.arguments[i]))
+            gc_allocas = find_alloca_bases(strip_inbounds_offsets(call.arguments[i]))
             isempty(gc_allocas) && error(SRET_ERROR * ": $(string(call))")
             for ai in gc_allocas
                 elt = LLVM.allocated_type(ai)
@@ -1210,7 +1144,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
         tracked = CountTrackedPointers(elt, true)
         tracked.count == 0 && return false
         has_def_before = true
-        sret_base = strip_in_bounds_offsets(call.arguments[1])
+        sret_base = strip_inbounds_offsets(call.arguments[1])
         allocas = find_alloca_bases(sret_base)
         # trampolines forward their own sret argument, rooted by their caller
         if isempty(allocas) && !(sret_base isa LLVM.Argument && argument_has_sret(sret_base))
@@ -1222,7 +1156,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
             if tracked.all
                 set_array_alloca!(S, sret, tracked.count * alloca_array_size(sret))
             else
-                arg1 = strip_in_bounds_offsets(call.arguments[2])
+                arg1 = strip_inbounds_offsets(call.arguments[2])
                 gc_allocas = find_alloca_bases(arg1)
                 isempty(gc_allocas) && error(SRET_ERROR * ": $(string(call))")
                 for sret_gc in gc_allocas
@@ -1331,7 +1265,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
         end
         # intrinsics are never safepoints
         is_intrinsic_call(ci) && return
-        effects = call_memory_effects(ci)
+        effects = effective_memory_effects(ci)
         # readonly functions, and those that cannot change GC state (which is
         # inaccessible memory), are not safepoints
         if !marked_safepoint &&
@@ -1825,7 +1759,7 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     else
         return false
     end
-    ptr = strip_in_bounds_offsets(ptr)
+    ptr = strip_inbounds_offsets(ptr)
     ptr isa LLVM.GetElementPtrInst && return nothing
     (ptr isa LLVM.AllocaInst && has_array_alloca(S, ptr)) || return false
     # stop at a pointer operation that can't be analyzed or isn't a null store
@@ -1833,38 +1767,6 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     return true
 end
 
-
-# the values that the debug information of `f` refers to (`isUsedByMetadata`, for the
-# values that LateLowerGCFrame creates): through debug records (LLVM 19 and later), or the
-# metadata arguments of debug intrinsics; `nothing` if a debug intrinsic refers to values
-# through a `DIArgList`, which can't be inspected, so that any value may be used
-function debug_record_values(f::LLVM.Function)
-    values = Set{Value}()
-    records = LLVM.version() >= v"19"
-    for bb in f.blocks, inst in bb.instructions
-        if records
-            for record in inst.debug_records
-                record.kind == LLVM.API.LLVMDbgRecordLabel && continue
-                for v in record.location_operands
-                    v === nothing || push!(values, v)
-                end
-            end
-        end
-        inst isa LLVM.CallInst || continue
-        callee = inst.called_function
-        callee isa LLVM.Function && startswith(LLVM.name(callee), "llvm.dbg.") || continue
-        for arg in inst.arguments
-            arg isa LLVM.MetadataAsValue || continue
-            kind = LLVM.API.LLVMGetMetadataKind(LLVM.API.LLVMValueAsMetadata(arg))
-            if kind == LLVM.API.LLVMLocalAsMetadataMetadataKind
-                push!(values, Value(Metadata(arg)))
-            elseif kind == LLVM.API.LLVMDIArgListMetadataKind
-                return nothing
-            end
-        end
-    end
-    return values
-end
 
 function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
                                        pre_assigned::Int, S::State)
@@ -1906,8 +1808,6 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
     frame_align = JL_SMALL_BYTE_ALIGNMENT
     ptrsize = pointer_size(p.gc)
     local_slots = p.dialect.gc_local_slot_addresses
-    # the values that debug records refer to, which keep a slot address in the entry block
-    debug_values = local_slots ? debug_record_values(f) : Set{Value}()
     function replace_alloca(ai::Instruction)
         # preserve both the alloca's alignment and its offset within the frame
         align = Int(LLVM.alignment(ai))
@@ -1928,7 +1828,6 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
              intrinsic_is(ii, p.intrinsics.lifetime_end)) && push!(to_delete, ii)
         end
         foreach(erase!, to_delete)
-        debug_use = debug_values === nothing || ai in debug_values
         replace_uses!(ai, slot_address)
         erase!(ai)
         local_slots || return
@@ -1950,7 +1849,7 @@ function place_roots_and_update_calls!(p::LateLowerGCFrame, colors::Vector{Int},
             end
             user.operands[use.operand_index] = clone
         end
-        if isempty(LLVM.uses(slot_address)) && !debug_use
+        if isempty(LLVM.uses(slot_address)) && !is_used_by_metadata(slot_address)
             erase!(slot_address)
         else
             LLVM.name!(slot_address, name)
@@ -2095,7 +1994,8 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
+        size = intcast!(builder, size, alloc_bytes.function_type.parameters[2];
+                        signed=false)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
         take_name!(new_call, call)
@@ -2119,8 +2019,9 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     end
     # as a last resort, an alignment assumption
     tag_type = LLVM.value_type(tag)
-    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < JL_SMALL_BYTE_ALIGNMENT
-        emit_alignment_assumption!(p, tag, JL_SMALL_BYTE_ALIGNMENT)
+    if tag_type isa LLVM.PointerType &&
+       LLVM.pointer_alignment(tag, p.gc.dl) < JL_SMALL_BYTE_ALIGNMENT
+        alignment_assumption!(builder, tag, JL_SMALL_BYTE_ALIGNMENT)
     end
 
     if p.dialect.gc_alloc_bytes_tag
@@ -2128,7 +2029,8 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         # its tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
+        size = intcast!(builder, size, alloc_bytes.function_type.parameters[2];
+                        signed=false)
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
                          Value[ptls, size, tagint], other_bundles(call))
@@ -2254,62 +2156,6 @@ function return_dereferenceable_bytes(call::Instruction)
         n = max(n, bytes(callee.return_attributes))
     end
     return n
-end
-
-# `Value::getPointerAlignment`, for the values that type tags are
-function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
-    if v isa LLVM.Function
-        return 1
-    elseif v isa LLVM.GlobalVariable
-        align = LLVM.alignment(v)
-        align > 0 && return align
-        issized(LLVM.global_value_type(v)) || return 1
-        if !LLVM.isdeclaration(v)
-            return preferred_alignment(p.gc.dl, v)
-        end
-        return abi_alignment(p.gc.dl, LLVM.global_value_type(v))
-    elseif v isa LLVM.AllocaInst
-        return LLVM.alignment(v)
-    elseif v isa LLVM.CallBase
-        align = get(v.return_attributes, :align, nothing)
-        callee = v.called_function
-        if align === nothing && callee !== nothing
-            align = get(callee.return_attributes, :align, nothing)
-        end
-        return align === nothing ? 1 : Int(LLVM.value(align))
-    elseif v isa LLVM.LoadInst
-        md = v.metadata
-        haskey(md, LLVM.MD_align) && return get_load_value_align(v)
-    elseif v isa LLVM.Argument
-        f = LLVM.parent(v)
-        align = get(f.parameter_attributes[v.index], :align, nothing)
-        return align === nothing ? 1 : Int(LLVM.value(align))
-    elseif v isa LLVM.Constant
-        # constant addresses: their trailing zeros, up to LLVM's maximum alignment
-        c = strip_pointer_casts(v)
-        # LLVM 22 and later only look at integer constants cast to pointers
-        addr = if c isa LLVM.PointerNull &&
-                  library_facts(context(c)).null_pointer_alignment
-            UInt64(0)
-        elseif c isa LLVM.ConstantExpr && c.opcode == LLVM.Opcode.IntToPtr &&
-               c.operands[1] isa LLVM.ConstantInt
-            convert(UInt64, c.operands[1])
-        else
-            return 1
-        end
-        return 1 << min(trailing_zeros(addr), 32)
-    end
-    return 1
-end
-
-# `IRBuilder::CreateAlignmentAssumption`
-function emit_alignment_assumption!(p::LateLowerGCFrame, @nospecialize(ptr::Value), align::Int)
-    assume = Intrinsic("llvm.assume")
-    f = LLVM.Function(p.mod, assume)
-    T_intptr = LLVM.IntType(8 * storage_size(p.gc.dl, LLVM.value_type(ptr)))
-    bundle = OperandBundle("align", Value[ptr, ConstantInt(T_intptr, align)])
-    call!(p.builder, f.function_type, f, Value[ConstantInt(LLVM.Int1Type(), 1)],
-          [bundle])
 end
 
 # `julia.typeof(obj)` => the type tag without the GC bits

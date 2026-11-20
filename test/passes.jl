@@ -40,6 +40,25 @@ end
         load = collect(first(first(mod.functions).blocks).instructions)[3]
         @test load.operands[1] == first(first(first(mod.functions).blocks).instructions)
     end
+    # a memory intrinsic is changed in place, like the C++ pass does: its other operands
+    # keep their place in the use lists of their values
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            declare void @llvm.memcpy.p11.p0.i64(ptr addrspace(11), ptr, i64, i1)
+            define i64 @f(ptr %src, i64 %n) {
+              %stack = alloca i64
+              %casted = addrspacecast ptr %stack to ptr addrspace(11)
+              call void @llvm.memcpy.p11.p0.i64(ptr addrspace(11) %casted, ptr %src, i64 %n, i1 false)
+              %m = add i64 %n, 1
+              ret i64 %m
+            }""") begin
+        run!(JuliaIR.PropagateAddrspacesPass(), mod)
+        f = mod.functions["f"]
+        @test occursin("call void @llvm.memcpy.p0.p0.i64(ptr %stack, ptr %src, i64 %n, i1 false)",
+                       string(mod))
+        n = LLVM.parameters(f)[2]
+        @test [LLVM.user(use).opcode for use in LLVM.uses(n)] ==
+              [LLVM.Opcode.Add, LLVM.Opcode.Call]
+    end
 end
 
 @testset "DemoteFloat16" begin
@@ -341,16 +360,6 @@ end
 
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
-
-    @testset "data layout" begin
-        @test JuliaIR.alloca_addrspace("e-p:64:64-A5-G1-ni:7") == 5
-        @test JuliaIR.alloca_addrspace("e-i64:64-n8:16:32:64") == 0
-        @test JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 32)
-        @test !JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 96)
-        @test !JuliaIR.is_legal_integer("e-i64:64", 32)
-        @test !JuliaIR.is_legal_integer("e-ni:10:11:12:13", 32)
-        @test JuliaIR.is_legal_integer("e-ni:10:11:12:13-n8:16:32:64", 32)
-    end
 
     @testset "fields" begin
         @dispose ctx=Context(; opaque_pointers=true) begin
@@ -668,6 +677,22 @@ end
     push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
     @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
     @test all(r -> r.pass_name == "lower_simd_loop", remarks)
+
+    # LLVM can't find the start of a loop whose loop ID has null operands: the remark has
+    # no location then
+    remarks = []
+    null_ir = replace(ir, "!5 = distinct !{!5, !\"julia.simdloop\", !6}" =>
+                          "!5 = distinct !{!5, !\"julia.simdloop\", null, !6}")
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, null_ir) begin
+        @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
+            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass())
+            add!(pb, "function(loop-mssa(jl-lower-simdloop))")
+            run!(pb, mod)
+        end
+        @test occursin(r"!llvm.loop (![0-9]+)\n.*\n\1 = distinct !{\1, null, ![0-9]+}\n"s,
+                       string(mod))
+    end
+    @test (first(remarks).name, first(remarks).line) == ("Loop SIMD Flags", 0)
 end
 
 @testset "JuliaLICM" begin
@@ -1121,6 +1146,10 @@ end
             @test occursin("@$adopt is not declared like @julia.get_pgcstack_or_new",
                            rejection(ir("$decl\n$or_new_ir"), facts))
         end
+        # which it is when declared here, so the getter must be called with its own type
+        mistyped = replace(or_new_ir, "@julia.get_pgcstack_or_new()" => "@julia.get_pgcstack_or_new(i32 0)")
+        @test occursin("@julia.get_pgcstack_or_new is called with another type",
+                       rejection(ir(mistyped), facts))
         # targets without a known thread pointer need the getter
         triple = "powerpc64le-unknown-linux-gnu"
         @test_throws JuliaIR.LowerPTLSError lower(ir(get_ir; triple), "tls-offset=-8;tls-elf-support=yes")

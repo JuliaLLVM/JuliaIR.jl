@@ -1039,7 +1039,7 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
         if val isa ConstantExpr
             old = val.operands[idx]
             inst = Instruction(pos, val)
-            replace_uses_of!(inst, old, replace)
+            replace_uses!(inst, old, replace)
             replace = inst
             continue
         end

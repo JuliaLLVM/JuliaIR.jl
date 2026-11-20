@@ -20,9 +20,6 @@ struct PropagateAddrspaces
     # a non-constant value of every address space lifted into, which new instructions
     # use until their operands are lifted (so that IRBuilder does not fold them)
     placeholders::Dict{Int,Instruction}
-    # memory intrinsic calls that were replaced, erased at the end so that `visited` and
-    # `lifting` don't refer to freed values
-    replaced::Vector{Instruction}
 end
 
 function strip_lifting_casts(p::PropagateAddrspaces, @nospecialize(v::Value))
@@ -220,22 +217,9 @@ function visit_memintrinsic!(p::PropagateAddrspaces, f::LLVM.Function, call::Ins
     overloads = transfer ?
         LLVMType[args[1].value_type, args[2].value_type, args[3].value_type] :
         LLVMType[args[1].value_type, args[3].value_type]
-    fn = LLVM.Function(p.mod, intr, overloads)
-    position!(p.builder, LLVM.before(call))
-    new_call = call!(p.builder, fn.function_type, fn, args, collect(call.operand_bundles))
-    new_call.tailcall_kind = call.tailcall_kind
-    new_call.callconv = call.callconv
-    for attr in collect(call.function_attributes)
-        push!(new_call.function_attributes, attr)
-    end
-    for attr in collect(call.return_attributes)
-        push!(new_call.return_attributes, attr)
-    end
-    for i in 1:length(args), attr in collect(call.argument_attributes[i])
-        push!(new_call.argument_attributes[i], attr)
-    end
-    LLVM.copy_metadata!(new_call, call)
-    push!(p.replaced, call)
+    call.called_function = LLVM.Function(p.mod, intr, overloads)
+    call.arguments[1] = args[1]
+    transfer && (call.arguments[2] = args[2])
     return
 end
 
@@ -245,8 +229,8 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
     memtransfers = (Intrinsic("llvm.memcpy"), Intrinsic("llvm.memcpy.inline"),
                     Intrinsic("llvm.memmove"))
     @dispose builder=IRBuilder() begin
-        p = PropagateAddrspaces(mod, builder, alloca_addrspace(mod), Dict{Value,Value}(),
-                                Set{Value}(), Dict{Int,Instruction}(), Instruction[])
+        p = PropagateAddrspaces(mod, builder, mod.datalayout.alloca_addrspace,
+                                Dict{Value,Value}(), Set{Value}(), Dict{Int,Instruction}())
         for bb in f.blocks, inst in bb.instructions
             if inst isa LLVM.LoadInst || inst isa LLVM.StoreInst
                 visit_memop!(p, f, inst, inst isa LLVM.LoadInst ? 1 : 2)
@@ -263,7 +247,6 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
                 end
             end
         end
-        foreach(erase!, p.replaced)
         foreach(erase!, values(p.placeholders))
     end
     # like the C++ pass, always report a change

@@ -317,15 +317,12 @@ the Julia dialect of the IR:
 - `lifetime_on_alloca`: whether the lifetime intrinsics must be given an `alloca` itself,
   not a pointer derived from one such as an `addrspacecast` (LLVM 22 and later);
 - `masked_load_alignment`: whether `llvm.masked.load` and `llvm.masked.gather` take an
-  alignment argument (before LLVM 22);
-- `null_pointer_alignment`: whether LLVM's `Value::getPointerAlignment` takes a null
-  pointer to have the maximum alignment (before LLVM 22; later, only integer constants
-  cast to pointers have a known alignment).
+  alignment argument (before LLVM 22).
 """
 function library_facts(ctx::Context)
     llvm = LLVM.version(ctx)
     return (; llvm, lifetime_size = llvm < v"22", lifetime_on_alloca = llvm >= v"22",
-             masked_load_alignment = llvm < v"22", null_pointer_alignment = llvm < v"22")
+             masked_load_alignment = llvm < v"22")
 end
 
 

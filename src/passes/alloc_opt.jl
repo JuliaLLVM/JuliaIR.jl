@@ -12,7 +12,6 @@ mutable struct AllocOpt
     const dialect::Dialect
     const fns::JuliaFunctions
     const dl::DataLayout
-    const layout::String  # the data layout, as a string
     const builder::IRBuilder
     const lifetime_size::Bool
     const lifetime_start::LLVM.Function
@@ -21,7 +20,6 @@ mutable struct AllocOpt
     const T_pjlvalue::LLVMType
 
     domtree::Union{Nothing,DomTree}
-    reachable::Union{Nothing,Set{BasicBlock}}
 
     # allocations to optimize, with their size; insertion-ordered, without duplicates
     worklist::Vector{Tuple{Instruction,Int}}
@@ -36,26 +34,6 @@ function domtree(opt::AllocOpt)
     opt.domtree === nothing && (opt.domtree = opt.am[DomTree])
     return opt.domtree
 end
-
-function reachable_blocks(opt::AllocOpt)
-    if opt.reachable === nothing
-        seen = Set{BasicBlock}()
-        stack = [first(opt.f.blocks)]
-        while !isempty(stack)
-            bb = pop!(stack)
-            bb in seen && continue
-            push!(seen, bb)
-            append!(stack, bb.successors)
-        end
-        opt.reachable = seen
-    end
-    return opt.reachable
-end
-
-# whether the definition `def` dominates every instruction in `bb` (C++'s
-# `DT.dominates(Instruction*, BasicBlock*)`; true for unreachable blocks)
-inst_dominates_block(opt::AllocOpt, def::Instruction, bb::BasicBlock) =
-    dominates(domtree(opt), def, first(bb.instructions))
 
 # remarks, like the C++ pass emits them (without printing the IR)
 remark(opt::AllocOpt, kind, name, inst, message) =
@@ -74,18 +52,6 @@ function erase_inst!(opt::AllocOpt, inst::Instruction)
         delete!(opt.first_safepoint, bb)
     end
     erase!(inst)
-end
-
-## data layout queries
-
-function is_legal_integer(layout::String, bits::Integer)
-    for spec in split(layout, '-')
-        # the native integer widths (`n8:16:32:64`), not the non-integral address
-        # spaces (`ni:10:11`)
-        occursin(r"^n\d", spec) || continue
-        return any(w -> parse(Int, w) == bits, split(spec[2:end], ':'))
-    end
-    return false
 end
 
 ## allocations
@@ -143,7 +109,7 @@ end
 function stack_type(opt::AllocOpt, sz::Integer, align::Integer)
     ctx = context(opt.f)
     if opt.dialect.alloc_layout === :legacy
-        return is_legal_integer(opt.layout, sz * 8) ? LLVM.IntType(sz * 8) :
+        return LLVM.is_legal_integer(opt.dl, sz * 8) ? LLVM.IntType(sz * 8) :
                LLVM.ArrayType(LLVM.Int8Type(), sz)
     else
         # alignment-sized chunks, so that SROA splits the alloca into aligned pieces; at
@@ -304,7 +270,7 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
     info = opt.info
     def_bb = orig.parent
     # an allocation in unreachable code needs no markers (JuliaLang/julia#63998)
-    def_bb in reachable_blocks(opt) || return
+    isreachable(domtree(opt), def_bb) || return
     lifetime_call!(opt, opt.lifetime_start, ptr, size, orig)
     bbs = Set{BasicBlock}([def_bb])
     bbs_order = BasicBlock[def_bb]
@@ -331,15 +297,15 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
     # blocks with invisible uses between `gc_preserve_begin` and `gc_preserve_end`: those
     # dominated by the begin, until a block dominated by an end
     extra_use = Set{BasicBlock}()
-    reachable = reachable_blocks(opt)
+    dt = domtree(opt)
     for preserve in info.preserves
         pbb = preserve.parent
-        pbb in reachable || continue
+        isreachable(dt, pbb) || continue
         ends = [user.parent for user in preserve.users]
         for bb in opt.f.blocks
-            bb in reachable && dominates(domtree(opt), pbb, bb) || continue
+            isreachable(dt, bb) && dominates(dt, pbb, bb) || continue
             bb in extra_use && continue
-            any(e -> e == bb || (e in reachable && dominates(domtree(opt), e, bb)), ends) &&
+            any(e -> e == bb || (isreachable(dt, e) && dominates(dt, e, bb)), ends) &&
                 continue
             add!(bb)
             push!(extra_use, bb)
@@ -392,7 +358,7 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
             # no use in or after this block: if it isn't dominated by the definition, the
             # allocation is dead when entering it; otherwise there could be uses we don't
             # track before the next safepoint
-            if !inst_dominates_block(opt, orig, bb)
+            if !dominates(domtree(opt), orig, bb)
                 insert_lifetime_end!(opt, ptr, size, first_insertion_inst(bb))
                 continue
             elseif (insert = first_safepoint(opt, bb)) !== nothing
@@ -460,12 +426,12 @@ function remove_write_barrier_use!(opt::AllocOpt, call::Instruction, val::Value)
     else
         # the allocation doesn't escape, but other fields covered by this barrier may still
         # be written: only drop the eliminated child
-        replace_uses_of!(call, val, null(val.value_type))
+        replace_uses!(call, val, null(val.value_type))
     end
 end
 
 function remove_gc_preserve!(opt::AllocOpt, call::Instruction, val::Value)
-    replace_uses_of!(call, val, null(val.value_type))
+    replace_uses!(call, val, null(val.value_type))
     clear_attributes!(call)
     all(arg -> arg isa Constant, call.arguments) || return
     for user in collect(call.users)
@@ -581,7 +547,7 @@ function forward_memory_data!(opt::AllocOpt, orig::Instruction, data::Instructio
                         may_read = true
                     end
                 elseif !(callee == fns.typeof || is_write_barrier(fns, callee) ||
-                         callee == fns.gc_preserve_begin || is_bundle_operand(user, use) ||
+                         callee == fns.gc_preserve_begin || use.bundle_index !== nothing ||
                          (callee isa LLVM.Function && is_lifetime(callee)))
                     return true
                 end
@@ -681,7 +647,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
         orig_i, new_i = cur
         if user isa LoadInst || user isa StoreInst || user isa AtomicCmpXchgInst ||
            user isa AtomicRMWInst
-            replace_uses_of!(user, orig_i, new_i)
+            replace_uses!(user, orig_i, new_i)
         elseif user isa CallInst
             callee = user.called_operand
             if callee == opt.fns.pointer_from_objref
@@ -691,14 +657,14 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
                 replace_uses!(user, cast)
                 erase_inst!(opt, user)
             elseif opt.fns.gc_loaded !== nothing && callee == opt.fns.gc_loaded
-                replace_uses_of!(user, orig_i, null(orig_i.value_type))
+                replace_uses!(user, orig_i, null(orig_i.value_type))
             elseif callee == opt.fns.typeof
                 replace_uses!(user, tag)
                 erase_inst!(opt, user)
             elseif callee == opt.fns.gc_preserve_begin
                 # remove the preserve intrinsics, for better optimization
                 if has_ref
-                    replace_uses_of!(user, orig_i, buff)
+                    replace_uses!(user, orig_i, buff)
                 else
                     remove_gc_preserve!(opt, user, orig_i)
                 end
@@ -708,7 +674,7 @@ function move_to_stack!(opt::AllocOpt, orig::Instruction, sz::Int, has_ref::Bool
                 replace_intrinsic_use!(opt, user, orig_i, new_i)
             else
                 # an operand bundle
-                replace_uses_of!(user, orig_i, has_ref ? buff : null(orig_i.value_type))
+                replace_uses!(user, orig_i, has_ref ? buff : null(orig_i.value_type))
             end
         elseif user isa AddrSpaceCastInst || user isa BitCastInst
             push_frame!(user, new_i)
@@ -774,7 +740,7 @@ function remove_alloc!(opt::AllocOpt, orig::Instruction)
                 erase_inst!(opt, user)
             else
                 # an operand bundle
-                replace_uses_of!(user, orig_i, null(orig_i.value_type))
+                replace_uses!(user, orig_i, null(orig_i.value_type))
             end
         elseif user isa AddrSpaceCastInst || user isa BitCastInst || user isa GetElementPtrInst
             push_frame!(user)
@@ -804,7 +770,7 @@ function optimize_tag!(opt::AllocOpt, orig::Instruction)
         push!(opt.removed, user)
     end
     for i in last_removed+1:length(opt.removed)
-        replace_uses_of!(opt.removed[i], orig, LLVM.UndefValue(orig.value_type))
+        replace_uses!(opt.removed[i], orig, LLVM.UndefValue(orig.value_type))
     end
 end
 
@@ -1066,7 +1032,6 @@ end
 # again on the module in `repeat<n>(...)`): only the pointer type and names they have.
 struct AllocOptModuleFacts
     dl::DataLayout
-    layout::String
     lifetime_size::Bool
     T_alloca::LLVMType
     lifetime_start_name::String
@@ -1076,11 +1041,11 @@ struct AllocOptModuleFacts
 end
 
 function AllocOptModuleFacts(mod::LLVM.Module)
-    layout = string(mod.datalayout)
-    ptr = LLVM.PointerType(alloca_addrspace(layout))
+    dl = mod.datalayout
+    ptr = LLVM.PointerType(dl.alloca_addrspace)
     start_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.start"), LLVMType[ptr])
     end_name = LLVM.overloaded_name(Intrinsic("llvm.lifetime.end"), LLVMType[ptr])
-    return AllocOptModuleFacts(mod.datalayout, layout, library_facts(context(mod)).lifetime_size,
+    return AllocOptModuleFacts(dl, library_facts(context(mod)).lifetime_size,
                           ptr, start_name, end_name,
                           LLVM.PointerType(AS_TRACKED), LLVM.PointerType(AS_GENERIC))
 end
@@ -1105,9 +1070,9 @@ function alloc_opt!(f::LLVM.Function, am::FunctionAnalysisManager, opts::PassOpt
                                          m.lifetime_end_name, LLVMType[m.T_alloca])
 
     @dispose builder=IRBuilder() begin
-        opt = AllocOpt(f, am, dialect, fns, m.dl, m.layout, builder, m.lifetime_size,
+        opt = AllocOpt(f, am, dialect, fns, m.dl, builder, m.lifetime_size,
                        lifetime_start, lifetime_end, m.T_prjlvalue, m.T_pjlvalue,
-                       nothing, nothing, Tuple{Instruction,Int}[], Set{Instruction}(),
+                       nothing, Tuple{Instruction,Int}[], Set{Instruction}(),
                        Instruction[], AllocUseInfo(),
                        Dict{BasicBlock,Union{Nothing,Instruction}}())
         for bb in f.blocks, inst in bb.instructions

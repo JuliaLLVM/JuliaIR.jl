@@ -391,7 +391,8 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             end
             is_write_barrier(fns, callee) && return true
             # uses in a `jl_roots` operand bundle don't escape; everything else does
-            if !is_bundle_operand(inst, use, "jl_roots")
+            bundle = use.bundle_index
+            if bundle === nothing || inst.operand_bundles[bundle].tag != "jl_roots"
                 if inst.parent.terminator isa UnreachableInst
                     # likely an error function
                     info.haserror = true
@@ -467,20 +468,4 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             add_use!(info, user)
         end
     end
-end
-
-# whether `use` is an operand of an operand bundle of `call`, with the given tag if any
-function is_bundle_operand(call::Instruction, use::Use, tag::Union{Nothing,String}=nothing)
-    use.argument_index === nothing || return false
-    LLVM.iscallee(use) && return false
-    tag === nothing && return true
-    i = use.operand_index - length(call.arguments)
-    for bundle in call.operand_bundles
-        n = length(bundle.inputs)
-        if i <= n
-            return bundle.tag == tag
-        end
-        i -= n
-    end
-    return false
 end
