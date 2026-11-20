@@ -326,10 +326,10 @@ function is_exempt_call(p::CancellationLowering, call::Instruction)
     return name == p.gc.layout.setjmp
 end
 
-# `doesNotAccessMemory() && !mayHaveSideEffects() && willReturn()` of a call
-is_pure_call(call::Instruction) =
-    call_memory_effects(call) == MemoryEffects(:none) &&
-    call_has_fn_attr(call, :nounwind) && call_has_fn_attr(call, :willreturn)
+# `doesNotAccessMemory() && !mayHaveSideEffects() && willReturn()` of a call: a call that
+# doesn't read memory and has no side effects (which includes writing memory, throwing and
+# not returning)
+is_pure_call(call::Instruction) = !may_read_from_memory(call) && !may_have_side_effects(call)
 
 # the instructions before which an open region must be closed
 function unsafe_points(p::CancellationLowering, instrumented::Bool, may_open_at_entry)
