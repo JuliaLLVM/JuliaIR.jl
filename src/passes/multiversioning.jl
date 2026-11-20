@@ -835,9 +835,7 @@ function create_trampoline!(ctx::CloneCtx, f::LLVM.Function, slot::GlobalVariabl
     builder.debug_location = nothing
     if autoinit
         init_ft = LLVM.FunctionType(LLVM.PointerType())
-        init = get(ctx.mod.functions, "ijl_autoinit_and_adopt_thread", nothing)
-        init === nothing &&
-            (init = LLVM.Function(ctx.mod, "ijl_autoinit_and_adopt_thread", init_ft))
+        init = get_or_insert_function!(ctx.mod, "ijl_autoinit_and_adopt_thread", init_ft)
         call!(builder, init_ft, init)
     end
     ptr = load_slot!(ctx, f.value_type, slot)
@@ -1061,10 +1059,7 @@ function rewrite_inst_use(ctx::CloneCtx, stack::Vector{UseFrame}, replace::Value
         if val isa ConstantExpr
             old = val.operands[idx]
             inst = Instruction(pos, val)
-            ops = inst.operands
-            for i in 1:length(ops)
-                ops[i] == old && (ops[i] = replace)
-            end
+            replace_uses_of!(inst, old, replace)
             replace = inst
             continue
         end

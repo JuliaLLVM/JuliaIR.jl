@@ -199,8 +199,9 @@ function mutable_tbaa_tag(tag::MDNode)
     new_format = access.operands[1] isa MDNode
     flag = new_format ? 5 : 4
     length(ops) < flag && return tag
-    metadata_int(ops[flag]) == 0 && return tag
-    i64(op) = Metadata(ConstantInt(LLVM.Int64Type(), metadata_int(op)))
+    as_int(op) = convert(Int, Value(op))
+    as_int(ops[flag]) == 0 && return tag
+    i64(op) = i64_metadata(as_int(op))
     return new_format ? MDNode([base, access, i64(ops[3]), i64(ops[4])]) :
                         MDNode([base, access, i64(ops[3])])
 end
@@ -478,12 +479,11 @@ function emit_load_tag!(g::GCCodegen, @nospecialize(v::Value))
                  volatile=g.dialect.gc_tag_load_volatile)
     load.metadata[LLVM.MD_tbaa] = tbaa_tags(g).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
-    load.metadata[LLVM.MD_range] = MDNode([i64_metadata_of(g.T_size, JL_SMALL_BYTE_ALIGNMENT),
-                                           i64_metadata_of(g.T_size, 0)])
+    load.metadata[LLVM.MD_range] =
+        MDNode([Metadata(ConstantInt(g.T_size, JL_SMALL_BYTE_ALIGNMENT)),
+                Metadata(ConstantInt(g.T_size, 0))])
     return load
 end
-
-i64_metadata_of(t::LLVMType, x::Integer) = Metadata(ConstantInt(t, x))
 
 
 ## write barriers

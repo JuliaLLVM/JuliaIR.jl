@@ -367,11 +367,6 @@ function GCFunctions(mod::LLVM.Module, dialect::Dialect)
                            lookup("julia.cancellation_point") : nothing)
 end
 
-is_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
-    callee isa LLVM.Function && callee in fns.write_barriers
-is_field_write_barrier(fns::GCFunctions, @nospecialize(callee)) =
-    callee isa LLVM.Function && callee in fns.field_write_barriers
-
 # What the pass knows of TBAA metadata, which is uniqued in the context and whose operands
 # passes don't set, so the same for all functions of a module (`module_facts`), as is what
 # follows from the operands of a tag's ancestors: its own tags, once a function has built

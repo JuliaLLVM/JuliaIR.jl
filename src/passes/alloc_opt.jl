@@ -80,13 +80,6 @@ function erase_inst!(opt::AllocOpt, inst::Instruction)
     erase!(inst)
 end
 
-function replace_uses_of!(user::Instruction, from::Value, to::Value)
-    ops = user.operands
-    for i in eachindex(ops)
-        ops[i] == from && (ops[i] = to)
-    end
-end
-
 ## data layout queries
 
 function is_legal_integer(layout::String, bits::Integer)

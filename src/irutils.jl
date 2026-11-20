@@ -159,9 +159,6 @@ end
 
 i64_metadata(x::Integer) = Metadata(ConstantInt(LLVM.Int64Type(), x))
 
-# the integer in a `ConstantAsMetadata` operand
-metadata_int(md::Metadata) = convert(Int, Value(md))
-
 
 ## uses and opcodes
 
@@ -171,6 +168,17 @@ function has_one_use(@nospecialize(v::Value))
     return next !== nothing && iterate(v.uses, next[2]) === nothing
 end
 has_no_uses(@nospecialize(v::Value)) = isempty(v.uses)
+
+# replace the operands of `user` that are `from` by `to` (`User::replaceUsesOfWith`). Not
+# `replace!(user.operands, from => to)`, which sets every operand, and setting an operand
+# moves its use to the front of the use list of the value, also when it doesn't change.
+function replace_uses_of!(user::Instruction, @nospecialize(from::Value),
+                          @nospecialize(to::Value))
+    ops = user.operands
+    for i in eachindex(ops)
+        ops[i] == from && (ops[i] = to)
+    end
+end
 
 # The name of the opcode of `inst` (`Instruction::getOpcodeName`), e.g. for remarks, where
 # C++ passes render instructions that way.

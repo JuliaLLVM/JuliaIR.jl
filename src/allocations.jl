@@ -38,10 +38,12 @@ function JuliaFunctions(mod::LLVM.Module, dialect::Dialect)
                           barriers, field_barriers)
 end
 
-is_write_barrier(fns::JuliaFunctions, @nospecialize(callee::Value)) =
-    any(==(callee), fns.write_barriers)
-is_field_write_barrier(fns::JuliaFunctions, @nospecialize(callee::Value)) =
-    any(==(callee), fns.field_write_barriers)
+# whether `callee` is one of the write barriers of `fns` (the functions that a pass looks
+# up: `JuliaFunctions`, or late GC lowering's `GCFunctions`)
+is_write_barrier(fns, @nospecialize(callee)) =
+    callee isa LLVM.Function && callee in fns.write_barriers
+is_field_write_barrier(fns, @nospecialize(callee)) =
+    callee isa LLVM.Function && callee in fns.field_write_barriers
 
 # the first operand of a field write barrier that is a slot; the next slots follow every
 # other operand
