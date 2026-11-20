@@ -2053,8 +2053,9 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     end
     # as a last resort, an alignment assumption
     tag_type = LLVM.value_type(tag)
-    if tag_type isa LLVM.PointerType && pointer_alignment(p, tag) < JL_SMALL_BYTE_ALIGNMENT
-        emit_alignment_assumption!(p, tag, JL_SMALL_BYTE_ALIGNMENT)
+    if tag_type isa LLVM.PointerType &&
+       LLVM.pointer_alignment(tag, p.gc.dl) < JL_SMALL_BYTE_ALIGNMENT
+        alignment_assumption!(builder, tag, JL_SMALL_BYTE_ALIGNMENT)
     end
 
     if p.dialect.gc_alloc_bytes_tag
@@ -2188,62 +2189,6 @@ function return_dereferenceable_bytes(call::Instruction)
         n = max(n, bytes(callee.return_attributes))
     end
     return n
-end
-
-# `Value::getPointerAlignment`, for the values that type tags are
-function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
-    if v isa LLVM.Function
-        return 1
-    elseif v isa LLVM.GlobalVariable
-        align = LLVM.alignment(v)
-        align > 0 && return align
-        issized(LLVM.global_value_type(v)) || return 1
-        if !LLVM.isdeclaration(v)
-            return preferred_alignment(p.gc.dl, v)
-        end
-        return abi_alignment(p.gc.dl, LLVM.global_value_type(v))
-    elseif v isa LLVM.AllocaInst
-        return LLVM.alignment(v)
-    elseif v isa LLVM.CallBase
-        align = get(v.return_attributes, :align, nothing)
-        callee = v.called_function
-        if align === nothing && callee !== nothing
-            align = get(callee.return_attributes, :align, nothing)
-        end
-        return align === nothing ? 1 : Int(LLVM.value(align))
-    elseif v isa LLVM.LoadInst
-        md = v.metadata
-        haskey(md, LLVM.MD_align) && return get_load_value_align(v)
-    elseif v isa LLVM.Argument
-        f = LLVM.parent(v)
-        align = get(f.parameter_attributes[v.index], :align, nothing)
-        return align === nothing ? 1 : Int(LLVM.value(align))
-    elseif v isa LLVM.Constant
-        # constant addresses: their trailing zeros, up to LLVM's maximum alignment
-        c = strip_pointer_casts(v)
-        # LLVM 22 and later only look at integer constants cast to pointers
-        addr = if c isa LLVM.PointerNull &&
-                  library_facts(context(c)).null_pointer_alignment
-            UInt64(0)
-        elseif c isa LLVM.ConstantExpr && c.opcode == LLVM.Opcode.IntToPtr &&
-               c.operands[1] isa LLVM.ConstantInt
-            convert(UInt64, c.operands[1])
-        else
-            return 1
-        end
-        return 1 << min(trailing_zeros(addr), 32)
-    end
-    return 1
-end
-
-# `IRBuilder::CreateAlignmentAssumption`
-function emit_alignment_assumption!(p::LateLowerGCFrame, @nospecialize(ptr::Value), align::Int)
-    assume = Intrinsic("llvm.assume")
-    f = LLVM.Function(p.mod, assume)
-    T_intptr = LLVM.IntType(8 * storage_size(p.gc.dl, LLVM.value_type(ptr)))
-    bundle = OperandBundle("align", Value[ptr, ConstantInt(T_intptr, align)])
-    call!(p.builder, f.function_type, f, Value[ConstantInt(LLVM.Int1Type(), 1)],
-          [bundle])
 end
 
 # `julia.typeof(obj)` => the type tag without the GC bits

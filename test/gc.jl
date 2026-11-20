@@ -189,6 +189,38 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     @test occursin("ret void", llgcf(plain, foreign, ""))
     @test_throws JuliaIR.RuntimeError llgcf(transition(X86_64), foreign, "")
 
+    # The type tag of an allocation gets an alignment assumption unless LLVM knows that it
+    # is aligned to 16 bytes (`Value::getPointerAlignment`)
+    tagged(tag; decl="", args="", layout=X86_64) = """
+        $layout
+        $decl
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+        declare void @use(ptr addrspace(10))
+        define void @f(ptr %task$args) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %v = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) $tag)
+          call void @use(ptr addrspace(10) %v)
+          ret void
+        }"""
+    assumes(ir) = has(llgcf(ir, v"1.12"),
+                      r"^call void @llvm.assume\(i1 true\) \[ \"align\"\(ptr( addrspace\(10\))? [@%](tag|g), i64 16\) \]$")
+    assumes_any(ir) = occursin("\"align\"(", llgcf(ir, v"1.12"))
+    # a global of more than 16 bytes defined in the module has that alignment, but not one
+    # that the linker may replace by another definition
+    global_tag(decl) = tagged("addrspacecast (ptr @tag to ptr addrspace(10))"; decl)
+    @test !assumes_any(global_tag("@tag = global [32 x i8] zeroinitializer"))
+    @test assumes(global_tag("@tag = weak global [32 x i8] zeroinitializer"))
+    # an sret argument has the ABI alignment of its type
+    @test !assumes_any(tagged("%tag"; args=", ptr addrspace(10) sret(i128) %tag"))
+    @test assumes(tagged("%tag"; args=", ptr addrspace(10) sret(i64) %tag"))
+    # a function, that of function pointers in the data layout
+    function_tag(layout) = tagged("addrspacecast (ptr @g to ptr addrspace(10))";
+                                  decl="declare void @g()", layout)
+    @test !assumes_any(function_tag(replace(X86_64, "-S128" => "-Fi128-S128")))
+    @test assumes(function_tag(X86_64))
+
     # `julia.gc_alloc_memory` (Julia 1.14 and later): a pooled object with inline data if
     # its size is a constant that fits, the runtime's allocation otherwise; the header is
     # initialized for the pointer size of the target
