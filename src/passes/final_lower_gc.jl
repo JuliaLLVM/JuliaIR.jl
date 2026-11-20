@@ -107,28 +107,12 @@ should_run_final_gc(p::FinalLowerGC) =
 
 ## positions
 
-is_debug_intrinsic_call(inst::Instruction) =
-    inst isa LLVM.CallInst && (callee = inst.called_function) !== nothing &&
-    is_debug_intrinsic(callee)
-
-# the debug location that C++'s `IRBuilder` takes from the instruction it is positioned
-# at (`getStableDebugLoc` from LLVM 18 on: the next instruction's for a debug intrinsic)
-function stable_debug_location(inst::Instruction)
-    if LLVM.version() >= v"18"
-        while is_debug_intrinsic_call(inst) && inst.next !== nothing
-            inst = inst.next
-        end
-    end
-    return inst.debug_location
-end
-
-# position the builder for the code that replaces `target`: before it, with its debug
-# location, or, where Julia 1.10 inserts after it (`IRBuilder<>(target->getNextNode())`),
-# with the next instruction's debug location
+# position the builder for the code that replaces `target`, like C++'s `IRBuilder<>`
+# constructed at an instruction: before it, with its debug location, or, where Julia 1.10
+# inserts after it (`IRBuilder<>(target->getNextNode())`), before the next instruction
 function position_for!(p::FinalLowerGC, target::Instruction; after::Bool=false)
     at = after ? target.next::Instruction : target
     position!(p.builder, LLVM.before(at))
-    p.builder.debug_location = stable_debug_location(at)
 end
 
 
