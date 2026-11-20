@@ -35,7 +35,7 @@ produced the IR, with the intentional differences listed below.
   (`Context(; opaque_pointers=true)`), which upgrades it.
 - **Julia's stock GC.** MMTk builds are not supported.
 
-JuliaIR.jl is not registered yet. It needs LLVM.jl 10.4 or later.
+JuliaIR.jl is not registered yet. It needs LLVM.jl 10.6 or later.
 
 ## Using the passes
 
