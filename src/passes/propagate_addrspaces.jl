@@ -245,8 +245,9 @@ function propagate_addrspaces!(f::LLVM.Function, am, opts::PassOptions)
     memtransfers = (Intrinsic("llvm.memcpy"), Intrinsic("llvm.memcpy.inline"),
                     Intrinsic("llvm.memmove"))
     @dispose builder=IRBuilder() begin
-        p = PropagateAddrspaces(mod, builder, alloca_addrspace(mod), Dict{Value,Value}(),
-                                Set{Value}(), Dict{Int,Instruction}(), Instruction[])
+        p = PropagateAddrspaces(mod, builder, mod.datalayout.alloca_addrspace,
+                                Dict{Value,Value}(), Set{Value}(), Dict{Int,Instruction}(),
+                                Instruction[])
         for bb in f.blocks, inst in bb.instructions
             if inst isa LLVM.LoadInst || inst isa LLVM.StoreInst
                 visit_memop!(p, f, inst, inst isa LLVM.LoadInst ? 1 : 2)

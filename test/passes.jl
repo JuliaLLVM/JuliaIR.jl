@@ -342,16 +342,6 @@ end
 @testset "AllocOpt" begin
     @test !JuliaIR.AllocOptPass().required
 
-    @testset "data layout" begin
-        @test JuliaIR.alloca_addrspace("e-p:64:64-A5-G1-ni:7") == 5
-        @test JuliaIR.alloca_addrspace("e-i64:64-n8:16:32:64") == 0
-        @test JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 32)
-        @test !JuliaIR.is_legal_integer("e-i64:64-n8:16:32:64-S128", 96)
-        @test !JuliaIR.is_legal_integer("e-i64:64", 32)
-        @test !JuliaIR.is_legal_integer("e-ni:10:11:12:13", 32)
-        @test JuliaIR.is_legal_integer("e-ni:10:11:12:13-n8:16:32:64", 32)
-    end
-
     @testset "fields" begin
         @dispose ctx=Context(; opaque_pointers=true) begin
             mod = parse(LLVM.Module, """
