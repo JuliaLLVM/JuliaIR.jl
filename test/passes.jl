@@ -658,6 +658,22 @@ end
     push!(expected, (:passed, "MarkedUnsafeAlgebra", "marked unsafe algebra on fadd", 0))
     @test [(r.kind, r.name, r.message, r.line) for r in remarks] == expected
     @test all(r -> r.pass_name == "lower_simd_loop", remarks)
+
+    # LLVM can't find the start of a loop whose loop ID has null operands: the remark has
+    # no location then
+    remarks = []
+    null_ir = replace(ir, "!5 = distinct !{!5, !\"julia.simdloop\", !6}" =>
+                          "!5 = distinct !{!5, !\"julia.simdloop\", null, !6}")
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, null_ir) begin
+        @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
+            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass())
+            add!(pb, "function(loop-mssa(jl-lower-simdloop))")
+            run!(pb, mod)
+        end
+        @test occursin(r"!llvm.loop (![0-9]+)\n.*\n\1 = distinct !{\1, null, ![0-9]+}\n"s,
+                       string(mod))
+    end
+    @test (first(remarks).name, first(remarks).line) == ("Loop SIMD Flags", 0)
 end
 
 @testset "JuliaLICM" begin

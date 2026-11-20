@@ -15,72 +15,14 @@
 
 const SIMDLOOP_REMARKS = "lower_simd_loop"
 
-# The loop ID of `loop` (`Loop::getLoopID`): the `!llvm.loop` node of the terminators of
-# all latches, if they agree and the node refers to itself.
-function loop_id(loop::Loop)
-    header = loop.header
-    id = nothing
-    for pred in header.predecessors
-        pred in loop || continue
-        mds = LLVM.terminator(pred).metadata
-        haskey(mds, LLVM.MD_loop) || return nothing
-        md = mds[LLVM.MD_loop]
-        if id === nothing
-            id = md
-        elseif md != id
-            return nothing
-        end
-    end
-    id isa MDNode || return nothing
-    ops = id.operands
-    (isempty(ops) || ops[1] != id) && return nothing
-    return id
-end
-
-# Set the loop ID of `loop` (`Loop::setLoopID`), on the terminators of its latches.
-function set_loop_id!(loop::Loop, id::MDNode)
-    header = loop.header
-    for bb in loop.blocks
-        term = LLVM.terminator(bb)
-        if header in bb.successors
-            term.metadata[LLVM.MD_loop] = id
-        end
-    end
-end
-
-# A loop ID with the given operands besides the self reference. It is distinct, as in
-# Julia 1.14: Julia 1.13 and older create a uniqued node and then make it refer to
-# itself, which changes any other user of an identical node (e.g. `!{null}`, the type
-# array of a subroutine type without arguments, when every other operand was removed).
-function new_loop_id(ops::Vector{Metadata})
-    TemporaryMDNode() do temp
-        id = MDNode(Metadata[temp.node; ops])
-        replace_temporary!(temp, id)
-        id
-    end
-end
-
-# The start of the source range of a loop (`Loop::getStartLoc`): the first location in its
-# loop ID, else that of the preheader's terminator, else the header's.
-function loop_start_loc(loop::Loop, id::MDNode)
-    for op in id.operands[2:end]
-        op isa DILocation && return op
-    end
-    pre = loop.preheader
-    if pre !== nothing
-        loc = LLVM.terminator(pre).debug_location
-        loc === nothing || return loc
-    end
-    return LLVM.terminator(loop.header).debug_location
-end
-
 # The C++ pass emits the remark about the loop flags at the start of the loop, with the
 # header as the code region; LLVM.jl emits remarks about an instruction, at its location
 # and in its block. Use the header's terminator, at the start location for the remark.
-function remark_loop_flags!(ar::LoopAnalysisResults, loop::Loop, id::MDNode, simd::Bool,
-                            ivdep::Bool)
+function remark_loop_flags!(ar::LoopAnalysisResults, loop::Loop, simd::Bool, ivdep::Bool)
     term = LLVM.terminator(loop.header)
-    loc = loop_start_loc(loop, id)
+    # LLVM can't look for the start location in a loop ID with null operands (the C++ pass
+    # crashes on one): report the remark without a location
+    loc = all(!isnothing, loop_id(loop).operands) ? start_location(loop) : nothing
     old = term.debug_location
     term.debug_location = loc
     try
@@ -218,9 +160,14 @@ function lower_simdloop!(loop::Loop, ar::LoopAnalysisResults, opts::PassOptions)
     end
     simd || ivdep || return PreservedAnalyses(AllAnalyses)
 
-    id = new_loop_id(ops)
-    set_loop_id!(loop, id)
-    remark_loop_flags!(ar, loop, id, simd, ivdep)
+    # distinct, as in Julia 1.14: Julia 1.13 and older create a uniqued node and then make
+    # it refer to itself, which changes any other user of an identical node (e.g. `!{null}`,
+    # the type array of a subroutine type without arguments, when every other operand was
+    # removed)
+    id = MDNode([nothing; ops]; distinct=true)
+    id.operands[1] = id
+    loop_id!(loop, id)
+    remark_loop_flags!(ar, loop, simd, ivdep)
 
     if ivdep
         # tell LLVM that the iterations are independent through memory, so that

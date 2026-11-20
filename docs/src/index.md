@@ -222,7 +222,9 @@ Differences with Julia's C++ passes:
   which also changes every other use of an identical node, e.g. `!{null}`, the type
   array of a subroutine type, when the loop ID has no other operands. The remark about
   a loop's flags is attached to the header's terminator (with the location of the start
-  of the loop) instead of the header block.
+  of the loop) instead of the header block. A loop ID with null operands, on which the
+  C++ pass segfaults, is lowered too; the remark then has no location, as LLVM can't
+  find the start of such a loop.
 - CPUFeatures throws a `JuliaIR.CPUFeaturesError` for uses of its intrinsics it can't
   fold (not called, passed as an argument, called with `invoke`), where the C++ pass
   crashes or corrupts the IR. Up to Julia 1.13, it reads the JIT's answers from the code
