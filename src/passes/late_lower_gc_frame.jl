@@ -31,72 +31,6 @@ end
 
 is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
-# the opcode of an instruction or constant expression (`Operator::getOpcode`), or nothing
-function operator_opcode(@nospecialize(v::Value))
-    return v isa Union{Instruction,LLVM.ConstantExpr} ? v.opcode : nothing
-end
-
-# the argument a call returns (`CallBase::getReturnedArgOperand`), or nothing
-function returned_argument(call::Instruction)
-    callee = call.called_operand
-    for i in 1:length(call.arguments)
-        if haskey(call.argument_attributes[i], :returned) ||
-           callee isa LLVM.Function && i <= length(callee.parameters) &&
-           haskey(callee.parameter_attributes[i], :returned)
-            return call.arguments[i]
-        end
-    end
-    return nothing
-end
-
-# `Value::stripInBoundsOffsets`: through inbounds GEPs, bitcasts, address space casts and
-# calls returning an argument
-function strip_in_bounds_offsets(@nospecialize(v::Value))
-    is_pointer_value(v) || return v
-    visited = Set{Value}((v,))
-    while true
-        op = operator_opcode(v)
-        if op == LLVM.Opcode.GetElementPtr
-            v.inbounds || return v
-            v = v.operands[1]
-        elseif op == LLVM.Opcode.BitCast
-            new = v.operands[1]
-            is_pointer_value(new) || return v
-            v = new
-        elseif op == LLVM.Opcode.AddrSpaceCast
-            v = v.operands[1]
-        elseif v isa LLVM.CallBase
-            ret = returned_argument(v)
-            ret === nothing && return v
-            v = ret
-        else
-            return v
-        end
-        v in visited && return v
-        push!(visited, v)
-    end
-end
-
-# `CallBase::getMemoryEffects`: the call's and the callee's effects, where operand
-# bundles (other than the ones that LLVM knows not to access memory) make the callee's
-# read and write anything
-function call_memory_effects(call::Instruction)
-    effects = MemoryEffects(call.function_attributes)
-    callee = call.called_operand
-    if callee isa LLVM.Function
-        fn_effects = MemoryEffects(callee.memory_effects)
-        bundles = [LLVM.tag(b) for b in call.operand_bundles]
-        if !intrinsic_is(call, Intrinsic("llvm.assume"))
-            any(t -> !(t in ("ptrauth", "kcfi", "convergencectrl")), bundles) &&
-                (fn_effects |= MemoryEffects(:read))
-            any(t -> !(t in ("deopt", "funclet", "ptrauth", "kcfi", "convergencectrl")), bundles) &&
-                (fn_effects |= MemoryEffects(:write))
-        end
-        effects &= fn_effects
-    end
-    return effects
-end
-
 # `MemoryEffects::onlyReadsMemory` and `onlyAccessesArgPointees`, over all the locations
 # of the LLVM in use
 only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
@@ -888,7 +822,7 @@ end
 function is_load_from_const_gv(p::LateLowerGCFrame, li::LLVM.LoadInst, task_local::Ref{Bool},
                                seen=nothing)
     # codegen only emits single-slot globals, but LLVM's global merging may introduce GEPs
-    load_base = strip_in_bounds_offsets(li.operands[1])
+    load_base = strip_inbounds_offsets(li.operands[1])
     gv = load_base isa LLVM.GlobalVariable ? load_base : nothing
     if is_load_from_rooted_region(p, li)
         gv === nothing || return true
@@ -900,7 +834,7 @@ end
 
 function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value),
                                      task_local::Ref{Bool}, seen=nothing)
-    v = strip_in_bounds_offsets(v)
+    v = strip_inbounds_offsets(v)
     v isa LLVM.LoadInst && return is_load_from_const_gv(p, v, task_local, seen)
     v isa LLVM.GlobalVariable && return is_const_gv(v)
     v isa LLVM.ConstantData && return true  # null pointer
@@ -949,7 +883,7 @@ end
 # loads from a jlcall argument array (Julia 1.12 and older)
 function looks_like_frame_ref(@nospecialize(v::Value))
     is_special_ptr(v.value_type) && return false
-    v = strip_in_bounds_offsets(v)
+    v = strip_inbounds_offsets(v)
     is_special_ptr(v.value_type) && return false
     return v isa LLVM.Argument
 end
@@ -1097,7 +1031,7 @@ function find_alloca_bases(@nospecialize(v::Value))
     visited = Set{Value}((v,))
     while !isempty(worklist)
         w = pop!(worklist)
-        stripped = strip_in_bounds_offsets(w)
+        stripped = strip_inbounds_offsets(w)
         if stripped isa LLVM.AllocaInst
             any(a -> a == stripped, allocas) || push!(allocas, stripped)
         elseif w isa LLVM.PHIInst
@@ -1131,7 +1065,7 @@ is_tracked_pointer_type(@nospecialize(t::LLVMType)) =
     t isa PointerType && t.addrspace == AS_TRACKED
 
 function maybe_track_store!(p::LateLowerGCFrame, S::State, si::Instruction)
-    ptr_base = strip_in_bounds_offsets(si.operands[2])
+    ptr_base = strip_inbounds_offsets(si.operands[2])
     tracked = CountTrackedPointers(si.operands[1].value_type)
     tracked.count == 0 && return false  # nothing to track is being stored
     # SROA and InstCombine can merge conditional stores to allocas into a select or phi
@@ -1193,7 +1127,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
             attr === nothing && continue
             return_roots = something(tryparse(Int, attr), 0)
             has_def_before = true
-            gc_allocas = find_alloca_bases(strip_in_bounds_offsets(call.arguments[i]))
+            gc_allocas = find_alloca_bases(strip_inbounds_offsets(call.arguments[i]))
             isempty(gc_allocas) && error(SRET_ERROR * ": $(string(call))")
             for ai in gc_allocas
                 elt = LLVM.allocated_type(ai)
@@ -1210,7 +1144,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
         tracked = CountTrackedPointers(elt, true)
         tracked.count == 0 && return false
         has_def_before = true
-        sret_base = strip_in_bounds_offsets(call.arguments[1])
+        sret_base = strip_inbounds_offsets(call.arguments[1])
         allocas = find_alloca_bases(sret_base)
         # trampolines forward their own sret argument, rooted by their caller
         if isempty(allocas) && !(sret_base isa LLVM.Argument && argument_has_sret(sret_base))
@@ -1222,7 +1156,7 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
             if tracked.all
                 set_array_alloca!(S, sret, tracked.count * alloca_array_size(sret))
             else
-                arg1 = strip_in_bounds_offsets(call.arguments[2])
+                arg1 = strip_inbounds_offsets(call.arguments[2])
                 gc_allocas = find_alloca_bases(arg1)
                 isempty(gc_allocas) && error(SRET_ERROR * ": $(string(call))")
                 for sret_gc in gc_allocas
@@ -1331,7 +1265,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
         end
         # intrinsics are never safepoints
         is_intrinsic_call(ci) && return
-        effects = call_memory_effects(ci)
+        effects = effective_memory_effects(ci)
         # readonly functions, and those that cannot change GC state (which is
         # inaccessible memory), are not safepoints
         if !marked_safepoint &&
@@ -1825,7 +1759,7 @@ function prologue_null_store(p::LateLowerGCFrame, S::State, inst::Instruction)
     else
         return false
     end
-    ptr = strip_in_bounds_offsets(ptr)
+    ptr = strip_inbounds_offsets(ptr)
     ptr isa LLVM.GetElementPtrInst && return nothing
     (ptr isa LLVM.AllocaInst && has_array_alloca(S, ptr)) || return false
     # stop at a pointer operation that can't be analyzed or isn't a null store
