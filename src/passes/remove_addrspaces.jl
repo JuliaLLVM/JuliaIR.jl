@@ -145,30 +145,11 @@ function forget_analyses!(am, f::LLVM.Function)
     return
 end
 
-# Julia 1.15 moves the bodies of functions without address-taken blocks instead of cloning
-# them (JuliaLang/julia#65016): their instructions and blocks keep their uses in the order
-# they had, which the order of the clone's uses (that of the instructions that use them)
-# generally isn't. Setting an operand makes its use the first of the value's, so setting
-# the clone's in the reverse order of the original's uses restores that order.
-function restore_use_order!(f::LLVM.Function, vmap::ValueMap)
-    function restore!(old)
-        uses = collect(LLVM.uses(old))
-        length(uses) > 1 || return
-        new = vmap[old]
-        for use in Iterators.reverse(uses)
-            LLVM.operands(vmap[LLVM.user(use)])[use.operand_index] = new
-        end
-    end
-    for bb in f.blocks
-        restore!(bb)
-        foreach(restore!, bb.instructions)
-    end
-end
-
 # Rebuild `mod` with the address space `as` of every pointer type replaced by `asmap(as)`
 # (C++ `removeAddrspaces`). `am` is the module analysis manager of the pipeline, or
 # `nothing`; the analyses of the functions that are deleted are removed from it.
-# With `move_bodies` (Julia 1.15 and later), the functions keep the order of uses.
+# With `move_bodies` (Julia 1.15 and later), the bodies of functions without address-taken
+# blocks are moved instead of cloned.
 function remove_addrspaces!(mod::LLVM.Module, am, asmap; move_bodies::Bool=false)
     r = AddrspaceRemapper(asmap)
     @dispose vmap=ValueMap() begin
@@ -248,12 +229,25 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap; move_bodies::Bool=false
                 new_arg.name = arg.name
                 vmap[arg] = new_arg
             end
-            # Julia clones the body of a function with an address-taken block, and moves
-            # the others
-            moved = move_bodies && !any(bb -> bb.address_taken, f.blocks)
-            clone_into!(new, f; value_map=vmap, type_mapper=r, materializer=m,
-                        changes=LLVM.CloneFunctionChangeType.GlobalChanges)
-            moved && restore_use_order!(f, vmap)
+            if !move_bodies || any(bb -> bb.address_taken, f.blocks)
+                clone_into!(new, f; value_map=vmap, type_mapper=r, materializer=m,
+                            changes=LLVM.CloneFunctionChangeType.GlobalChanges)
+            else
+                # moved locals are absent from the map and keep their identity
+                flags = (; reuse_and_mutate_distinct_mds=true, ignore_missing_locals=true)
+                clone_attributes_into!(new, f; value_map=vmap, type_mapper=r,
+                                       materializer=m)
+                for (kind, md) in f.metadata
+                    add_metadata!(new, kind,
+                                  map_metadata(md, vmap; type_mapper=r, materializer=m,
+                                               flags...))
+                end
+                foreach(bb -> move!(bb, LLVM.at_end(new)), collect(f.blocks))
+                # a DILocation only refers to scopes, which are distinct and mutated in
+                # place
+                remap_instructions!(new, vmap; type_mapper=r, materializer=m,
+                                    identity_md=DILocation, flags...)
+            end
             remap_type_attributes!(new, r)
             copy_comdat!(new, f)
             remove_noop_addrspace_casts!(new)
