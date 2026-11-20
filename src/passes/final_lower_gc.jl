@@ -233,13 +233,6 @@ function lower_safepoint!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-# `CreateZExtOrTrunc`
-function zext_or_trunc!(builder::IRBuilder, @nospecialize(v::Value), ty::LLVMType)
-    from, to = LLVM.width(LLVM.value_type(v)), LLVM.width(ty)
-    from == to && return v
-    return from < to ? zext!(builder, v, ty) : trunc!(builder, v, ty)
-end
-
 # `julia.gc_alloc_bytes(ptls, size[, tag])`: allocate from the pool of the size class of a
 # constant size, as a big object, or of a dynamic size
 function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)

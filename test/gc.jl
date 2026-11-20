@@ -355,6 +355,26 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
                        llgcf(target_mem("argmem: write, target_mem0: read"), v"1.14", facts64))
         @test !occursin("@julia.new_gc_frame", llgcf(target_mem("argmem: write"), v"1.14", facts64))
     end
+
+    # the size of an allocation is unsigned: zero-extended to the size of a pointer
+    alloc_i32 = """
+        $X86_64
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i32, ptr addrspace(10))
+        define ptr addrspace(10) @f(ptr %task, i32 %n) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i32 %n, ptr addrspace(10) @tag)
+          ret ptr addrspace(10) %obj
+        }"""
+    for v in (v"1.10", v"1.14")
+        @test has(llgcf(alloc_i32, v, facts64), r"^%\d+ = zext i32 %n to i64$")
+    end
+    # to the size of an existing declaration
+    alloc_decl = replace(alloc_i32, "i32" => "i64") *
+                 "\ndeclare ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i32, i64)"
+    @test has(llgcf(alloc_decl, v"1.14", facts64), r"^%\d+ = trunc i64 %n to i32$")
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 

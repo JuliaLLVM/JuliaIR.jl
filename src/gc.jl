@@ -485,6 +485,13 @@ function emit_load_tag!(g::GCCodegen, @nospecialize(v::Value))
     return load
 end
 
+# `CreateZExtOrTrunc`, or `CreateIntCast` of an unsigned integer
+function zext_or_trunc!(builder::IRBuilder, @nospecialize(v::Value), ty::LLVMType)
+    from, to = LLVM.width(LLVM.value_type(v)), LLVM.width(ty)
+    from == to && return v
+    return from < to ? zext!(builder, v, ty) : trunc!(builder, v, ty)
+end
+
 
 ## write barriers
 
