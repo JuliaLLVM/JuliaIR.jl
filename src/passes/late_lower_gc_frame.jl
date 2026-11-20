@@ -2282,9 +2282,17 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
     update_ptr_numbering!(S, call, new_call)
 end
 
+# `CallBase::getRetDereferenceableBytes`: the call's, and from LLVM 17 on the callee's if
+# that is more
 function return_dereferenceable_bytes(call::Instruction)
-    attr = get(call.return_attributes, :dereferenceable, nothing)
-    return attr === nothing ? 0 : Int(LLVM.value(attr))
+    bytes(attrs) = (attr = get(attrs, :dereferenceable, nothing);
+                    attr === nothing ? UInt64(0) : UInt64(LLVM.value(attr)))
+    n = bytes(call.return_attributes)
+    callee = call.called_function
+    if callee !== nothing && library_facts(context(call)).llvm >= v"17"
+        n = max(n, bytes(callee.return_attributes))
+    end
+    return n
 end
 
 # `Value::getPointerAlignment`, for the values that type tags are

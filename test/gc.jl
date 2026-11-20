@@ -375,6 +375,25 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
     alloc_decl = replace(alloc_i32, "i32" => "i64") *
                  "\ndeclare ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i32, i64)"
     @test has(llgcf(alloc_decl, v"1.14", facts64), r"^%\d+ = trunc i64 %n to i32$")
+
+    # the allocation is dereferenceable for as many bytes as the call or, from LLVM 17 on,
+    # the function it calls says
+    deref(call, decl) = """
+        $X86_64
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare $decl ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+        define ptr addrspace(10) @f(ptr %task) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call $call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 16, ptr addrspace(10) @tag)
+          ret ptr addrspace(10) %obj
+        }"""
+    @test has(llgcf(deref("dereferenceable(8)", ""), v"1.14", facts64),
+              r"^%obj = call noalias nonnull dereferenceable\(8\) ptr addrspace\(10\) @julia.gc_alloc_bytes\(")
+    bytes = LLVM.version() >= v"17" ? 16 : 8
+    @test has(llgcf(deref("dereferenceable(8)", "dereferenceable(16)"), v"1.14", facts64),
+              Regex("^%obj = call noalias nonnull dereferenceable\\($bytes\\) ptr addrspace\\(10\\) @julia.gc_alloc_bytes\\("))
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 
