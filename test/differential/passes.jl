@@ -199,6 +199,10 @@ const PASS_SPECS = [
              prefixes=["raw", "simplified", "gc-lowered"]),
     # also changes functions without cancellation points (calls in IPO-safe functions)
     PassSpec("CancellationLowering"; prefixes=["raw", "optimized"]),
+    # rebuilds every module; GPUCompiler runs them on GC-lowered code
+    PassSpec("RemoveJuliaAddrspaces"; kind=:module, prefixes=["raw", "gc-lowered"]),
+    PassSpec("RemoveAddrspaces"; kind=:module, prefixes=["raw", "gc-lowered"],
+             inherits=["RemoveJuliaAddrspaces"]),
 ]
 
 # Julia's optimization pipeline (`julia<level=N>`), rebuilt from the ports, at every
