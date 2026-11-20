@@ -56,16 +56,6 @@ function depth_first(entry::BasicBlock)
     return order
 end
 
-# the declaration of a runtime function, created like the C++ pass does if the module
-# doesn't have one
-function runtime_function!(mod::LLVM.Module, name::String, ft::LLVM.FunctionType)
-    f = get(mod.functions, name, nothing)
-    f === nothing || return f
-    (haskey(mod.globals, name) || haskey(LLVM.aliases(mod), name)) &&
-        throw(ArgumentError("module has a global named $name that is not a function"))
-    return LLVM.Function(mod, name, ft)
-end
-
 function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
     dialect = opts.dialect
     dialect.except_enter === :none && return PreservedAnalyses(AllAnalyses)
@@ -140,14 +130,14 @@ function lower_exc_handlers!(f::LLVM.Function, am, opts::PassOptions)
     # the declarations, in the order the C++ pass creates them
     enter_params = task_arg ? LLVMType[enter_func.function_type.parameters[1], T_ptr] :
                               LLVMType[T_ptr]
-    jlenter_func = runtime_function!(mod, ENTER_HANDLER,
-                                     LLVM.FunctionType(T_void, enter_params))
-    setjmp_func = get(fns, setjmp_name, nothing)
-    if setjmp_func === nothing
+    jlenter_func = get!(fns, ENTER_HANDLER) do
+        LLVM.Function(mod, ENTER_HANDLER, LLVM.FunctionType(T_void, enter_params))
+    end
+    setjmp_func = get!(fns, setjmp_name) do
         params = savemask ? LLVMType[T_ptr, T_int32] : LLVMType[T_ptr]
-        setjmp_func = runtime_function!(mod, setjmp_name,
-                                        LLVM.FunctionType(T_int32, params))
-        push!(setjmp_func.function_attributes, EnumAttribute("returns_twice"))
+        fn = LLVM.Function(mod, setjmp_name, LLVM.FunctionType(T_int32, params))
+        push!(fn.function_attributes, EnumAttribute("returns_twice"))
+        fn
     end
     # (the lifetime intrinsics for generic pointers are declared even where unused)
     lifetime_start = Intrinsic("llvm.lifetime.start")
@@ -238,15 +228,10 @@ end
 
 # Whether setjmp takes a `savemask` argument: as in the C++ pass, unless the module's
 # triple is for Windows, whatever the running Julia's runtime (whose setjmp name is used
-# regardless). The triple is taken apart like LLVM's `Triple` constructor does, without
-# normalizing it: `x86_64-w64-mingw32` isn't Windows to the C++ pass either.
-function setjmp_savemask(option::Union{Nothing,Bool}, triple::String)
-    option === nothing || return option
-    parts = split(triple, '-')
-    windows = length(parts) >= 3 &&
-              (startswith(parts[3], "windows") || startswith(parts[3], "win32"))
-    return !windows
-end
+# regardless). The triple isn't normalized: `x86_64-w64-mingw32` isn't Windows to the C++
+# pass either.
+setjmp_savemask(option::Union{Nothing,Bool}, triple::String) =
+    option === nothing ? !LLVM.iswindows(LLVM.Triple(triple)) : option
 
 const LOWER_EXC_HANDLERS =
     define_pass("jl-lower-exc-handlers", :function, lower_exc_handlers!; required=true,
