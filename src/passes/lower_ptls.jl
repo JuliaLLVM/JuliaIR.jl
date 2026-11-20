@@ -182,12 +182,6 @@ end
 restores_gc_state(f::LLVM.Function) =
     CountTrackedPointers(LLVM.return_type(f.function_type)).count == 0
 
-# Call another function (`CallBase::setCalledOperand`), which may be in another address
-# space than the getter: the callee is the last operand of a call. (LLVM.jl's
-# `called_operand!` insists on the same pointer type.)
-set_called_operand!(call::Instruction, @nospecialize(callee::Value)) =
-    (LLVM.operands(call)[end] = callee)
-
 # Lower one call of a getter (`fix_pgcstack_use`).
 function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Function, or_new::Bool)
     builder = p.builder
@@ -207,20 +201,17 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
         # ... phi ...
         # unless the function returns tracked pointers: at every return,
         #     <restore last_gc_state>
-        next = LLVM.next(call)
-        position_before!(builder, next; debug=true)
-        cmp = icmp!(builder, LLVM.IntPredicate.NE, call, LLVM.null(LLVM.value_type(call)))
-        # (the C++ creates the phi before the split, and splits before it: the same IR)
-        fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, next; weights=(9, 1))
-        p.cfg_modified = true
-        position_before!(builder, next; debug=true)
+        position_before!(builder, LLVM.next(call); debug=true)
         phi = phi!(builder, LLVM.value_type(call), "pgcstack")
         replace_uses!(call, phi)
-        LLVM.operands(cmp)[1] = call
+        position_before!(builder, phi; debug=true)
+        cmp = icmp!(builder, LLVM.IntPredicate.NE, call, LLVM.null(LLVM.value_type(call)))
+        fast_term, slow_term = split_block_and_insert_if_then_else!(cmp, phi; weights=(9, 1))
+        p.cfg_modified = true
 
         adopt = copy(call)
         adopt_fn = declare_like!(p, p.dialect.ptls_adopt_thread, getter)
-        LLVM.called_operand!(adopt, adopt_fn)
+        adopt.called_operand = adopt_fn
         move!(adopt, LLVM.before(slow_term))
         push!(phi.incoming, (adopt, slow_term.parent))
 
@@ -278,7 +269,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             replace_uses!(call, phi)
             move!(call, LLVM.before(slow_term))
             position_before!(builder, call; debug=true)
-            set_called_operand!(call, load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT))
+            call.called_operand = load_slot!(p, T_ptr, PGCSTACK_FUNC_SLOT)
             set_pgcstack_attrs!(call)
             push!(phi.incoming, (fast_tls, fast_tls.parent))
             push!(phi.incoming, (call, call.parent))
@@ -295,7 +286,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             erase!(call)
             call = new_call
         else
-            set_called_operand!(call, getter_ptr)
+            call.called_operand = getter_ptr
         end
         set_pgcstack_attrs!(call)
     elseif !p.tls_getters && layout(p).tls_offset != -1 &&
@@ -314,7 +305,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             erase!(call)
             call = new_call
         else
-            set_called_operand!(call, target)
+            call.called_operand = target
         end
         set_pgcstack_attrs!(call)
     else
@@ -324,7 +315,7 @@ function fix_pgcstack_use!(p::LowerPTLS, call::Instruction, getter::LLVM.Functio
             resolved = LLVM.Function(p.mod, PGCSTACK_RESOLVED,
                                      LLVM.FunctionType(LLVM.VoidType()))
         end
-        set_called_operand!(call, resolved)
+        call.called_operand = resolved
         set_pgcstack_attrs!(call)
     end
     return
@@ -360,7 +351,7 @@ function create_slot!(p::LowerPTLS, name::String)
     elseif gv === nothing
         # JIT code links to the runtime's variables (Julia 1.15 and later)
         gv = GlobalVariable(p.mod, slot_type(p, name), name, p.gc.dl.globals_addrspace)
-        LLVM.iswindows(p.triple) && LLVM.dllstorage!(gv, LLVM.API.LLVMDLLImportStorageClass)
+        LLVM.iswindows(p.triple) && (gv.dllstorage = LLVM.DLLStorageClass.Import)
     end
     p.slots[name] = gv
     return gv
