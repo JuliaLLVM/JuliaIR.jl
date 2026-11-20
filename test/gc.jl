@@ -316,6 +316,84 @@ LLVM.version() >= v"16" && @testset "LateLowerGCFrame" begin
           br label %next
         next:""")
     @test has_barrier(llgcf(joined, v"1.14", facts64))
+
+    # A call that only reads memory is not a safepoint, on every location LLVM knows of:
+    # writing errno (LLVM 21 and later), which LLVM infers for libm functions, may reach
+    # one.
+    if LLVM.version() >= v"21"
+        libm(effects) = """
+            $X86_64
+            declare ptr @julia.get_pgcstack()
+            declare ptr addrspace(10) @get()
+            declare double @sin(double) memory($effects)
+            define ptr addrspace(10) @f(double %x, ptr %y) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @get()
+              %s = call double @sin(double %x)
+              store double %s, ptr %y
+              ret ptr addrspace(10) %v
+            }"""
+        @test occursin("@julia.new_gc_frame", llgcf(libm("errnomem: write"), v"1.14", facts64))
+        @test !occursin("@julia.new_gc_frame", llgcf(libm("read"), v"1.14", facts64))
+    end
+    # also target memory (LLVM 22 and later), as the call accesses it
+    if LLVM.version() >= v"22"
+        target_mem(effects) = """
+            $X86_64
+            declare ptr @julia.get_pgcstack()
+            declare ptr addrspace(10) @get()
+            declare void @ext(ptr)
+            define ptr addrspace(10) @f(ptr %p) {
+            top:
+              %pgcstack = call ptr @julia.get_pgcstack()
+              %v = call ptr addrspace(10) @get()
+              call void @ext(ptr %p) memory($effects)
+              ret ptr addrspace(10) %v
+            }"""
+        @test occursin("@julia.new_gc_frame",
+                       llgcf(target_mem("argmem: write, target_mem0: read"), v"1.14", facts64))
+        @test !occursin("@julia.new_gc_frame", llgcf(target_mem("argmem: write"), v"1.14", facts64))
+    end
+
+    # the size of an allocation is unsigned: zero-extended to the size of a pointer
+    alloc_i32 = """
+        $X86_64
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i32, ptr addrspace(10))
+        define ptr addrspace(10) @f(ptr %task, i32 %n) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i32 %n, ptr addrspace(10) @tag)
+          ret ptr addrspace(10) %obj
+        }"""
+    for v in (v"1.10", v"1.14")
+        @test has(llgcf(alloc_i32, v, facts64), r"^%\d+ = zext i32 %n to i64$")
+    end
+    # to the size of an existing declaration
+    alloc_decl = replace(alloc_i32, "i32" => "i64") *
+                 "\ndeclare ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i32, i64)"
+    @test has(llgcf(alloc_decl, v"1.14", facts64), r"^%\d+ = trunc i64 %n to i32$")
+
+    # the allocation is dereferenceable for as many bytes as the call or, from LLVM 17 on,
+    # the function it calls says
+    deref(call, decl) = """
+        $X86_64
+        @tag = external addrspace(10) global {}, align 16
+        declare ptr @julia.get_pgcstack()
+        declare $decl ptr addrspace(10) @julia.gc_alloc_obj(ptr, i64, ptr addrspace(10))
+        define ptr addrspace(10) @f(ptr %task) {
+        top:
+          %pgcstack = call ptr @julia.get_pgcstack()
+          %obj = call $call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 16, ptr addrspace(10) @tag)
+          ret ptr addrspace(10) %obj
+        }"""
+    @test has(llgcf(deref("dereferenceable(8)", ""), v"1.14", facts64),
+              r"^%obj = call noalias nonnull dereferenceable\(8\) ptr addrspace\(10\) @julia.gc_alloc_bytes\(")
+    bytes = LLVM.version() >= v"17" ? 16 : 8
+    @test has(llgcf(deref("dereferenceable(8)", "dereferenceable(16)"), v"1.14", facts64),
+              Regex("^%obj = call noalias nonnull dereferenceable\\($bytes\\) ptr addrspace\\(10\\) @julia.gc_alloc_bytes\\("))
 end
 LLVM.version() >= v"16" || @test_skip "LateLowerGCFrame needs LLVM 16"
 

@@ -31,12 +31,6 @@ end
 
 is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
-# `ConstantData`: constants without operands
-is_constant_data(@nospecialize(v::Value)) =
-    v isa Union{ConstantInt,ConstantFP,LLVM.PointerNull,LLVM.ConstantAggregateZero,
-                LLVM.ConstantDataSequential,LLVM.ConstantTokenNone,LLVM.UndefValue,
-                LLVM.PoisonValue}
-
 # the opcode of an instruction or constant expression (`Operator::getOpcode`), or nothing
 function operator_opcode(@nospecialize(v::Value))
     return v isa Union{Instruction,LLVM.ConstantExpr} ? v.opcode : nothing
@@ -83,8 +77,6 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     end
 end
 
-function_memory_effects(f::LLVM.Function) = MemoryEffects(f.function_attributes)
-
 # `CallBase::getMemoryEffects`: the call's and the callee's effects, where operand
 # bundles (other than the ones that LLVM knows not to access memory) make the callee's
 # read and write anything
@@ -92,7 +84,7 @@ function call_memory_effects(call::Instruction)
     effects = MemoryEffects(call.function_attributes)
     callee = call.called_operand
     if callee isa LLVM.Function
-        fn_effects = function_memory_effects(callee)
+        fn_effects = MemoryEffects(callee.memory_effects)
         bundles = [LLVM.tag(b) for b in call.operand_bundles]
         if !intrinsic_is(call, Intrinsic("llvm.assume"))
             any(t -> !(t in ("ptrauth", "kcfi", "convergencectrl")), bundles) &&
@@ -105,15 +97,11 @@ function call_memory_effects(call::Instruction)
     return effects
 end
 
-const MEMORY_LOCATIONS = (:argmem, :inaccessiblemem, :other)
-
-only_reads_memory(e::MemoryEffects) =
-    all(loc -> !(e[loc] in (:write, :readwrite)), MEMORY_LOCATIONS)
+# `MemoryEffects::onlyReadsMemory` and `onlyAccessesArgPointees`, over all the locations
+# of the LLVM in use
+only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
 only_accesses_arg_pointees(e::MemoryEffects) =
-    all(loc -> loc === :argmem || e[loc] === :none, MEMORY_LOCATIONS)
-
-# shuffle mask elements that are undefined (`-1` in LLVM's C++ API)
-const UNDEF_MASK_ELEM = -1
+    (e & MemoryEffects(:readwrite; argmem=:none)).access === :none
 
 # the constant-folding builder inserts constants instead of instructions; these create
 # an instruction (like the C++'s `XInst::Create`) by building it from a placeholder
@@ -157,106 +145,6 @@ function new_addrspacecast!(builder::IRBuilder, @nospecialize(v::Value), ty::LLV
     inst.operands[1] = v
     erase!(tmp)
     return inst
-end
-
-
-## InstSimplifyFolder, for the extractions of Julia 1.12 and later
-
-# `getSplatValue`
-function splat_value(@nospecialize(v::Value))
-    if v isa LLVM.Constant
-        is_vector_type(v.value_type) || return nothing
-        n = composite_num_elements(v.value_type)
-        n == 0 && return nothing
-        first_elt = aggregate_element(v, 0)
-        first_elt === nothing && return nothing
-        for i in 1:n-1
-            e = aggregate_element(v, i)
-            (e === nothing || e != first_elt) && return nothing
-        end
-        return first_elt
-    end
-    # shuffle (insertelement ?, splat, 0), ?, zeroinitializer
-    if v isa LLVM.ShuffleVectorInst
-        ins = v.operands[1]
-        if ins isa LLVM.InsertElementInst
-            idx = ins.operands[3]
-            if idx isa LLVM.ConstantInt && convert(Int, idx) == 0 &&
-               all(m -> m == 0 || m == UNDEF_MASK_ELEM, v.shuffle_mask)
-                return ins.operands[2]
-            end
-        end
-    end
-    return nothing
-end
-
-# `findScalarElement`
-function find_scalar_element(@nospecialize(v::Value), elt::Int)
-    t = v.value_type
-    elt_type = t.element_type
-    if t isa VectorType && elt >= composite_num_elements(t)
-        return PoisonValue(elt_type)
-    end
-    v isa LLVM.Constant && return aggregate_element(v, elt)
-    if v isa LLVM.InsertElementInst
-        idx = v.operands[3]
-        idx isa LLVM.ConstantInt || return nothing
-        convert(Int, idx) == elt && return v.operands[2]
-        v.operands[1] == v && return nothing
-        return find_scalar_element(v.operands[1], elt)
-    end
-    if v isa LLVM.ShuffleVectorInst && t isa VectorType
-        lhs_width = composite_num_elements(v.operands[1].value_type)
-        in_elt = v.shuffle_mask[elt+1]
-        in_elt < 0 && return PoisonValue(elt_type)
-        in_elt < lhs_width && return find_scalar_element(v.operands[1], in_elt)
-        return find_scalar_element(v.operands[2], in_elt - lhs_width)
-    end
-    if t isa ScalableVectorType
-        splat = splat_value(v)
-        splat !== nothing && elt < composite_num_elements(t) && return splat
-    end
-    return nothing
-end
-
-# `simplifyExtractValueInst`
-function simplify_extract_value(@nospecialize(agg::Value), idxs::Vector{Int})
-    if agg isa LLVM.Constant
-        c = agg
-        for i in idxs
-            c = aggregate_element(c, i)
-            c === nothing && return nothing
-        end
-        return c
-    end
-    ivi = agg
-    while ivi isa LLVM.InsertValueInst
-        ins_idxs = collect(ivi.indices)
-        n = min(length(ins_idxs), length(idxs))
-        if ins_idxs[1:n] == idxs[1:n]
-            length(ins_idxs) == length(idxs) && return ivi.operands[2]
-            break
-        end
-        ivi = ivi.operands[1]
-    end
-    return nothing
-end
-
-# `simplifyExtractElementInst` with a constant index
-function simplify_extract_element(@nospecialize(vec::Value), idx::Int)
-    t = vec.value_type
-    if vec isa LLVM.Constant
-        return aggregate_element(vec, idx)
-    end
-    nelts = composite_num_elements(t)
-    if t isa VectorType && idx >= nelts
-        return PoisonValue(t.element_type)
-    end
-    if idx < nelts
-        splat = splat_value(vec)
-        splat !== nothing && return splat
-    end
-    return find_scalar_element(vec, idx)
 end
 
 
@@ -526,26 +414,29 @@ end
 # `XInst::Create(..., insert_before)`
 function extract_value_at!(p::LateLowerGCFrame, @nospecialize(agg::Value), idxs::Vector{Int},
                            insert_before::Instruction)
-    if p.dialect.gc_extract_simplify
-        folded = simplify_extract_value(agg, idxs)
-        folded === nothing || return folded
-        position_before!(p.builder, insert_before; debug=true)
-    else
-        position_before!(p.builder, insert_before; debug=false)
-    end
-    return new_extract_value!(p.builder, agg, idxs)
+    folding = p.dialect.gc_extract_simplify
+    position_before!(p.builder, insert_before; debug=folding)
+    folding || return new_extract_value!(p.builder, agg, idxs)
+    return simplify_new!(extract_value!(p.builder, agg, idxs))
 end
 
 function extract_element_at!(p::LateLowerGCFrame, @nospecialize(vec::Value), idx::Int,
                              insert_before::Instruction)
-    if p.dialect.gc_extract_simplify
-        folded = simplify_extract_element(vec, idx)
-        folded === nothing || return folded
-        position_before!(p.builder, insert_before; debug=true)
-    else
-        position_before!(p.builder, insert_before; debug=false)
-    end
-    return new_extract_element!(p.builder, vec, ConstantInt(LLVM.Int32Type(), idx))
+    folding = p.dialect.gc_extract_simplify
+    position_before!(p.builder, insert_before; debug=folding)
+    idx = ConstantInt(LLVM.Int32Type(), idx)
+    folding || return new_extract_element!(p.builder, vec, idx)
+    return simplify_new!(extract_element!(p.builder, vec, idx))
+end
+
+# `InstSimplifyFolder`: what an instruction that was just built folds to (the builder's
+# constant folding already folds constant operands), erasing it if it does
+function simplify_new!(@nospecialize(v::Value))
+    v isa Instruction || return v
+    simple = simplify_instruction(v)
+    simple === nothing && return v
+    erase!(v)
+    return simple
 end
 
 function maybe_extract_scalar(p::LateLowerGCFrame, S::State, val_expr::Tuple{Value,Int},
@@ -1012,9 +903,9 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     v = strip_in_bounds_offsets(v)
     v isa LLVM.LoadInst && return is_load_from_const_gv(p, v, task_local, seen)
     v isa LLVM.GlobalVariable && return is_const_gv(v)
-    is_constant_data(v) && return true  # null pointer
+    v isa LLVM.ConstantData && return true  # null pointer
     if v isa LLVM.ConstantExpr  # literal pointers
-        return v.opcode == LLVM.Opcode.IntToPtr && is_constant_data(v.operands[1])
+        return v.opcode == LLVM.Opcode.IntToPtr && v.operands[1] isa LLVM.ConstantData
     end
     if v isa LLVM.SelectInst
         return is_load_from_const_gv_value(p, v.operands[2], task_local, seen) &&
@@ -1066,10 +957,7 @@ end
 function get_load_value_align(li::Instruction)
     md = li.metadata
     haskey(md, LLVM.MD_align) || return 1
-    # single-constant nodes come back as the constant itself
-    node = md[LLVM.MD_align]
-    c = node isa MDNode ? node.operands[1] : node
-    return Int(min(convert(UInt64, Value(c)), UInt64(typemax(Int))))
+    return Int(min(convert(UInt64, Value(md[LLVM.MD_align].operands[1])), UInt64(typemax(Int))))
 end
 
 function get_phi_refinements(p::LateLowerGCFrame, phi::Instruction, S::State)
@@ -1349,9 +1237,8 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
     return has_def_before
 end
 
-argument_index(arg::LLVM.Argument) = findfirst(==(arg), collect(LLVM.parent(arg).parameters))
 argument_has_sret(arg::LLVM.Argument) =
-    haskey(LLVM.parent(arg).parameter_attributes[argument_index(arg)], :sret)
+    haskey(LLVM.parent(arg).parameter_attributes[arg.index], :sret)
 
 # calls emitted by codegen that are not safepoints
 const NON_SAFEPOINT_RUNTIME_CALLS = ("jl_egal__unboxed", "jl_lock_value", "jl_unlock_value",
@@ -1436,7 +1323,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
                 return
             end
             is_non_safepoint_callee(p, callee) && return
-            effects = function_memory_effects(callee)
+            effects = MemoryEffects(callee.memory_effects)
             if !marked_safepoint &&
                (only_reads_memory(effects) || only_accesses_arg_pointees(effects))
                 return
@@ -1606,37 +1493,10 @@ end
 
 ## liveness
 
-# the reachable blocks in post order
-function post_order(f::LLVM.Function)
-    order = BasicBlock[]
-    visited = Set{BasicBlock}()
-    entry = first(f.blocks)
-    stack = [(entry, 1)]
-    push!(visited, entry)
-    succs = Dict{BasicBlock,Vector{BasicBlock}}()
-    successors_of(bb) = get!(() -> collect(bb.successors), succs, bb)
-    while !isempty(stack)
-        bb, i = stack[end]
-        ss = successors_of(bb)
-        if i <= length(ss)
-            stack[end] = (bb, i + 1)
-            s = ss[i]
-            if !(s in visited)
-                push!(visited, s)
-                push!(stack, (s, 1))
-            end
-        else
-            pop!(stack)
-            push!(order, bb)
-        end
-    end
-    return order
-end
-
 # LiveIn[BB] = UpExposedUses[BB] ∪ (LiveOut[BB] - Defs[BB])
 # LiveOut[BB] = PhiUses[BB] ∪ ∪_{Succ} LiveIn[Succ]
 function compute_liveness!(p::LateLowerGCFrame, S::State)
-    blocks = post_order(S.f)
+    blocks = reverse(reverse_postorder_blocks(S.f))  # `post_order`
     converged = false
     while !converged
         any_changed = false
@@ -2235,7 +2095,7 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     if !p.dialect.gc_alloc_bytes_tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = intcast!(builder, size, T_size)
+        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes, Value[ptls, size],
                          other_bundles(call))
         take_name!(new_call, call)
@@ -2268,7 +2128,7 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         # its tag
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
-        size = intcast!(builder, size, T_size)
+        size = zext_or_trunc!(builder, size, alloc_bytes.function_type.parameters[2])
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
                          Value[ptls, size, tagint], other_bundles(call))
@@ -2383,9 +2243,17 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
     update_ptr_numbering!(S, call, new_call)
 end
 
+# `CallBase::getRetDereferenceableBytes`: the call's, and from LLVM 17 on the callee's if
+# that is more
 function return_dereferenceable_bytes(call::Instruction)
-    attr = get(call.return_attributes, :dereferenceable, nothing)
-    return attr === nothing ? 0 : Int(LLVM.value(attr))
+    bytes(attrs) = (attr = get(attrs, :dereferenceable, nothing);
+                    attr === nothing ? UInt64(0) : UInt64(LLVM.value(attr)))
+    n = bytes(call.return_attributes)
+    callee = call.called_function
+    if callee !== nothing && library_facts(context(call)).llvm >= v"17"
+        n = max(n, bytes(callee.return_attributes))
+    end
+    return n
 end
 
 # `Value::getPointerAlignment`, for the values that type tags are
@@ -2414,7 +2282,7 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         haskey(md, LLVM.MD_align) && return get_load_value_align(v)
     elseif v isa LLVM.Argument
         f = LLVM.parent(v)
-        align = get(f.parameter_attributes[argument_index(v)], :align, nothing)
+        align = get(f.parameter_attributes[v.index], :align, nothing)
         return align === nothing ? 1 : Int(LLVM.value(align))
     elseif v isa LLVM.Constant
         # constant addresses: their trailing zeros, up to LLVM's maximum alignment
@@ -2450,13 +2318,11 @@ function lower_typeof!(p::LateLowerGCFrame, call::Instruction, S)
     position_before!(builder, call; debug=true)
     tag = emit_load_tag!(p.gc, call.arguments[1])
     T_size = p.gc.T_size
-    masked = and!(builder, tag, ConstantInt(T_size, ~UInt64(15) & typemax_of(T_size)))
+    masked = and!(builder, tag, ConstantInt(T_size, ~UInt64(15)))
     typ = addrspacecast!(builder, inttoptr!(builder, masked, LLVM.PointerType(AS_GENERIC)),
                          p.gc.T_prjlvalue)
     replace_call!(typ, call, S)
 end
-
-typemax_of(t::LLVMType) = LLVM.width(t) >= 64 ? typemax(UInt64) : (UInt64(1) << LLVM.width(t)) - 1
 
 # `julia.blackbox(ptr)` => `asm "=r,0"` on the untracked pointer
 function lower_blackbox!(p::LateLowerGCFrame, call::Instruction, S)

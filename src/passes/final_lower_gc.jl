@@ -9,6 +9,7 @@ mutable struct FinalLowerGC
     mod::LLVM.Module
     builder::IRBuilder
     gc::GCCodegen
+    fns::JuliaFunctions
     # the GC stack of the function being lowered: a call in the entry block, or an argument
     pgcstack::Union{Nothing,Value}
     # the runtime functions the intrinsics are lowered to, once declared
@@ -18,8 +19,8 @@ end
 
 function FinalLowerGC(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder)
     gc = GCCodegen(dialect, mod, builder, runtime_layout(dialect, mod))
-    return FinalLowerGC(dialect, mod, builder, gc, nothing, Dict{Symbol,LLVM.Function}(),
-                        false)
+    return FinalLowerGC(dialect, mod, builder, gc, JuliaFunctions(mod, dialect), nothing,
+                        Dict{Symbol,LLVM.Function}(), false)
 end
 
 # the runtime functions that FinalLowerGC declares, in the order the C++ declares them
@@ -69,7 +70,7 @@ function check_declarations(p::FinalLowerGC, functions)
     queue_root = get(mod.functions, "julia.queue_gc_root", nothing)
     queue_root === nothing && return
     name, ft = gc_declaration(p.gc, :gc_queue_root)
-    if any(call -> parent_function(call) in functions && !isempty(barrier_children(call)),
+    if any(call -> parent_function(call) in functions && !isempty(barrier_children(p, call)),
            barrier_calls(p))
         queue_root.function_type == ft ||
             throw(DeclarationError(LLVM.name(queue_root), string(ft),
@@ -107,28 +108,12 @@ should_run_final_gc(p::FinalLowerGC) =
 
 ## positions
 
-is_debug_intrinsic_call(inst::Instruction) =
-    inst isa LLVM.CallInst && (callee = inst.called_function) !== nothing &&
-    is_debug_intrinsic(callee)
-
-# the debug location that C++'s `IRBuilder` takes from the instruction it is positioned
-# at (`getStableDebugLoc` from LLVM 18 on: the next instruction's for a debug intrinsic)
-function stable_debug_location(inst::Instruction)
-    if LLVM.version() >= v"18"
-        while is_debug_intrinsic_call(inst) && inst.next !== nothing
-            inst = inst.next
-        end
-    end
-    return inst.debug_location
-end
-
-# position the builder for the code that replaces `target`: before it, with its debug
-# location, or, where Julia 1.10 inserts after it (`IRBuilder<>(target->getNextNode())`),
-# with the next instruction's debug location
+# position the builder for the code that replaces `target`, like C++'s `IRBuilder<>`
+# constructed at an instruction: before it, with its debug location, or, where Julia 1.10
+# inserts after it (`IRBuilder<>(target->getNextNode())`), before the next instruction
 function position_for!(p::FinalLowerGC, target::Instruction; after::Bool=false)
     at = after ? target.next::Instruction : target
     position!(p.builder, LLVM.before(at))
-    p.builder.debug_location = stable_debug_location(at)
 end
 
 
@@ -233,13 +218,6 @@ function lower_safepoint!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-# `CreateZExtOrTrunc`
-function zext_or_trunc!(builder::IRBuilder, @nospecialize(v::Value), ty::LLVMType)
-    from, to = LLVM.width(LLVM.value_type(v)), LLVM.width(ty)
-    from == to && return v
-    return from < to ? zext!(builder, v, ty) : trunc!(builder, v, ty)
-end
-
 # `julia.gc_alloc_bytes(ptls, size[, tag])`: allocate from the pool of the size class of a
 # constant size, as a big object, or of a dynamic size
 function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
@@ -287,22 +265,18 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
     erase!(target)
 end
 
-# the children of a write barrier that need one: the arguments after the parent, without
-# the slot operands of field barriers (`JuliaPassContext::writeBarrierChildren`) and the
-# null pointers (a field that is cleared)
-function barrier_children(call::Instruction)
-    args = collect(call.arguments)
-    field = startswith(LLVM.name(call.called_operand), "julia.field_write_barrier")
-    return [args[i] for i in 2:length(args)
-            if (!field || iseven(i - 1)) && !(strip_pointer_casts(args[i]) isa LLVM.PointerNull)]
-end
+# the children of a write barrier that need one: not the null pointers (a field that is
+# cleared)
+barrier_children(p::FinalLowerGC, call::Instruction) =
+    filter(child -> !(strip_pointer_casts(child) isa LLVM.PointerNull),
+           write_barrier_children(p.fns, call))
 
 # a write barrier (Julia 1.14 and later), the stock GC's: like Julia 1.13's in
 # LateLowerGCFrame (on 1.15 with the levels of permanent objects), without the children
 # that are null (a field that is cleared)
 function lower_write_barrier!(p::FinalLowerGC, target::Instruction)
     parent = target.arguments[1]
-    children = barrier_children(target)
+    children = barrier_children(p, target)
     isempty(children) && return
     p.cfg_modified = true
     queue_root = emit_write_barrier!(p.gc, target, parent, children,
