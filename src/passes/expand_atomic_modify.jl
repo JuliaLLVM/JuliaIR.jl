@@ -229,15 +229,6 @@ end
 
 ## the compare-exchange loop
 
-# the integer type of the size of a floating-point type (`getPrimitiveSizeInBits`)
-function float_bits(@nospecialize(T::LLVMType))
-    T isa Union{HalfType,BFloatType} && return 16
-    T isa FloatType && return 32
-    T isa DoubleType && return 64
-    T isa X86FP80Type && return 80
-    return 128  # fp128, ppc_fp128
-end
-
 # Replace the atomic modification by a loop around a compare-exchange (C++
 # `insertRMWCmpXchgLoop` and `createWeakCmpXchgInstFun`, after LLVM's AtomicExpand, but
 # with a monotonic failure ordering and an unordered initial load). The builder is at the
@@ -269,7 +260,8 @@ function insert_cmpxchg_loop!(rb::ReplacementBuilder, modify::Instruction,
     cmp, new = loaded, new_val
     need_bitcast = T isa LLVM.FloatingPointType
     if need_bitcast
-        int_T = LLVM.IntType(float_bits(T))
+        # (the size of a floating-point type doesn't depend on the data layout)
+        int_T = LLVM.IntType(bit_size(bb.parent.parent.datalayout, T))
         new = fold!(inserted!(rb, bitcast!(builder, new, int_T)))
         cmp = fold!(inserted!(rb, bitcast!(builder, cmp, int_T)))
     end

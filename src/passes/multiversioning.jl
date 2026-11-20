@@ -154,36 +154,6 @@ end
 normalize_target(t::MultiVersioningTarget, dialect::Dialect) =
     decode_target(t.cpu, t.features, t.base, encode_flags(t, dialect), dialect)
 
-# Module flags are read and added through the `llvm.module.flags` metadata, as LLVM's C
-# API can't represent some of their behaviors (`Max`, which `julia.mv.veccall` has).
-const MODULE_FLAG_ERROR = 1
-const MODULE_FLAG_MAX = 7
-
-# the behavior and value of a module flag, or `nothing` (`Module::getModuleFlag`)
-function module_flag(mod::LLVM.Module, name::String)
-    flags = get(mod.metadata, "llvm.module.flags", nothing)
-    flags === nothing && return nothing
-    for flag in flags.operands
-        ops = flag.operands
-        length(ops) == 3 && ops[2] isa MDString && convert(String, ops[2]) == name ||
-            continue
-        behavior = metadata_integer(ops[1])
-        behavior === nothing && continue
-        return (; behavior=Int(behavior), value=ops[3])
-    end
-    return nothing
-end
-
-# `Module::addModuleFlag`: a flag is added even if the module has one of the same name
-function add_module_flag!(mod::LLVM.Module, behavior::Int, name::String, value::Metadata)
-    i32 = Metadata(ConstantInt(LLVM.Int32Type(), behavior))
-    push!(get!(mod.metadata, "llvm.module.flags").operands,
-          MDNode([i32, MDString(name), value]))
-    return
-end
-add_module_flag!(mod::LLVM.Module, behavior::Int, name::String, value::Integer) =
-    add_module_flag!(mod, behavior, name, Metadata(ConstantInt(LLVM.Int32Type(), value)))
-
 # the integer of a `ConstantAsMetadata`, or `nothing`
 function metadata_integer(md)
     md isa ValueAsMetadata || return nothing
@@ -204,12 +174,12 @@ running Julia version does: the `JL_TARGET_*` bits of Julia's `processor.h` up t
 target_specs(mod::LLVM.Module) = target_specs(mod, Dialect(VERSION))
 
 function target_specs(mod::LLVM.Module, dialect::Dialect)
-    flag = module_flag(mod, "julia.mv.specs")
-    flag === nothing && return nothing
+    haskey(mod.flags, "julia.mv.specs") || return nothing
+    specs = mod.flags["julia.mv.specs"]
     malformed(what) = throw(MultiVersioningError("the module flag julia.mv.specs is malformed: $what"))
-    flag.value isa MDTuple || malformed("not a tuple")
+    specs isa MDTuple || malformed("not a tuple")
     targets = MultiVersioningTarget[]
-    for (i, spec) in enumerate(flag.value.operands)
+    for (i, spec) in enumerate(specs.operands)
         spec isa MDTuple && length(spec.operands) == 4 ||
             malformed("target $(i-1) is not a tuple of four elements")
         cpu, features, base, flags = spec.operands
@@ -233,7 +203,7 @@ function set_target_specs!(mod::LLVM.Module, targets::Vector{MultiVersioningTarg
     i32(x) = Metadata(ConstantInt(LLVM.Int32Type(), x))
     specs = MDNode([MDNode([MDString(t.cpu), MDString(t.features), i32(UInt32(t.base)),
                             i32(encode_flags(t, dialect))]) for t in targets])
-    add_module_flag!(mod, MODULE_FLAG_ERROR, "julia.mv.specs", specs)
+    mod.flags["julia.mv.specs", LLVM.ModuleFlagBehavior.Error] = specs
     return
 end
 
@@ -282,7 +252,7 @@ function collect_func_info(f::LLVM.Function, am, triple::LLVM.Triple, dialect::D
     flag = UInt32(0)
     has_veccall = false
     li = am[f][LoopInfo]
-    iterate(li) === nothing || (flag |= clone_bit(:loop))
+    isempty(li) || (flag |= clone_bit(:loop))
     if is_vector_function(f.function_type)
         flag |= clone_bit(:simd)
         has_veccall = true
@@ -501,12 +471,22 @@ end
 # C++ pass adds a second flag, which makes the module invalid; the port keeps an identical
 # one, and rejects others.
 function check_veccall_flag(mod::LLVM.Module)
-    flag = module_flag(mod, "julia.mv.veccall")
-    flag === nothing && return false
-    flag.behavior == MODULE_FLAG_MAX && metadata_integer(flag.value) == 1 &&
-        Value(flag.value).value_type == LLVM.Int32Type() ||
+    haskey(mod.flags, "julia.mv.veccall") || return false
+    module_flag_behavior(mod, "julia.mv.veccall") == MODULE_FLAG_MAX &&
+        mod.flags["julia.mv.veccall"] == Metadata(ConstantInt(Int32(1))) ||
         throw(MultiVersioningError("the module already has a julia.mv.veccall flag, which differs from the one the annotation adds (i32 1, behavior Max)"))
     return true
+end
+
+# The behavior of the first module flag named `name`, from its entry in `llvm.module.flags`
+# (LLVM.jl doesn't expose it): 7 is `Max`.
+const MODULE_FLAG_MAX = 7
+function module_flag_behavior(mod::LLVM.Module, name::String)
+    for flag in mod.metadata["llvm.module.flags"].operands
+        ops = flag.operands
+        length(ops) == 3 && ops[2] == MDString(name) && return metadata_integer(ops[1])
+    end
+    return nothing
 end
 
 # record the annotation in the module: the function attributes and module flags
@@ -521,9 +501,9 @@ function annotate!(mod::LLVM.Module, sets::CloneSets, has_veccall_flag::Bool)
         push!(f.function_attributes, StringAttribute("julia.mv.clones", clones_string(c)))
     end
     if sets.has_veccall && !has_veccall_flag
-        add_module_flag!(mod, MODULE_FLAG_MAX, "julia.mv.veccall", 1)
+        mod.flags["julia.mv.veccall", LLVM.ModuleFlagBehavior.Max] = Metadata(ConstantInt(Int32(1)))
     end
-    add_module_flag!(mod, MODULE_FLAG_ERROR, "julia.mv.annotated", 1)
+    mod.flags["julia.mv.annotated", LLVM.ModuleFlagBehavior.Error] = Metadata(ConstantInt(Int32(1)))
     return
 end
 
@@ -586,8 +566,8 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
         check_index_table(mod, "jl_fvar_idxs", length(fvar_list))
         offsets && check_index_table(mod, "jl_gvar_idxs",
                                      length(table_elements(mod.globals["jl_gvars"], false)))
-        suffix = module_flag(mod, "julia.mv.suffix")
-        suffix === nothing || suffix.value isa MDString ||
+        suffix = haskey(mod.flags, "julia.mv.suffix") ? mod.flags["julia.mv.suffix"] : nothing
+        suffix === nothing || suffix isa MDString ||
             throw(MultiVersioningError("the module flag julia.mv.suffix is not a string"))
     end
 
@@ -1197,8 +1177,8 @@ function emit_metadata!(ctx::CloneCtx)
     # an image without functions can't be loaded, but this is for reduced test cases
     ctx.external && nfvars == 0 && return
     mod = ctx.mod
-    suffix_flag = module_flag(mod, "julia.mv.suffix")
-    suffix = suffix_flag === nothing ? "" : convert(String, suffix_flag.value::MDString)
+    suffix = haskey(mod.flags, "julia.mv.suffix") ?
+             convert(String, mod.flags["julia.mv.suffix"]::MDString) : ""
     i32 = LLVM.Int32Type()
 
     offsets = ctx.dialect.mv_tables === :offsets
@@ -1323,16 +1303,16 @@ end
 
 function run_multiversioning!(mod::LLVM.Module, am, dialect::Dialect, external::Bool,
                               option::Union{Nothing,Vector{MultiVersioningTarget}})
-    module_flag(mod, "julia.mv.enable") !== nothing || return false
+    haskey(mod.flags, "julia.mv.enable") || return false
     targets, add_specs = resolve_targets(mod, option, dialect)
     check_targets(targets)
 
     # Julia annotates its modules before running the pass; `opt` tests let it annotate
-    annotated = module_flag(mod, "julia.mv.annotated") !== nothing
+    annotated = haskey(mod.flags, "julia.mv.annotated")
     sets = annotated ? clone_sets(mod, length(targets)) :
                        annotate_module_clones(mod, am, targets, dialect)
     has_veccall_flag = !annotated && sets.has_veccall && check_veccall_flag(mod)
-    skipcloning = module_flag(mod, "julia.mv.skipcloning") !== nothing
+    skipcloning = haskey(mod.flags, "julia.mv.skipcloning")
     clone = !skipcloning && check_cloning(mod, targets, sets, dialect, external)
 
     add_specs && set_target_specs!(mod, targets, dialect)

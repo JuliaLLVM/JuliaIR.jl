@@ -289,8 +289,7 @@ flag_count(mod, name) =
         @test JuliaIR.target_specs(mod) == normalized
         @test flag_count(mod, "julia.mv.annotated") == 1
         @test flag_count(mod, "julia.mv.veccall") == 1
-        @test JuliaIR.module_flag(mod, "julia.mv.veccall") ==
-              (; behavior=JuliaIR.MODULE_FLAG_MAX, value=Metadata(ConstantInt(Int32(1))))
+        @test JuliaIR.check_veccall_flag(mod)
     end
     multiversion("define void @f() {\n ret void\n}\n" * mv_flags(SKIPCLONING); targets) do mod
         @test flag_count(mod, "julia.mv.veccall") == 0

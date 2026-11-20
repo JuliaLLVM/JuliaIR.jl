@@ -414,17 +414,11 @@ instructions(mod::LLVM.Module) =
 
 # the base pointer and constant byte offset of a pointer
 function base_offset(ptr::LLVM.Value, dl::DataLayout)
-    offset = 0
-    while true
-        if ptr isa LLVM.GetElementPtrInst
-            offset += LLVM.constant_offset(Int, ptr, dl)
-            ptr = ptr.operands[1]
-        elseif ptr isa LLVM.BitCastInst || ptr isa LLVM.AddrSpaceCastInst
-            ptr = ptr.operands[1]
-        else
-            return ptr, offset
-        end
-    end
+    base, offset = LLVM.strip_and_accumulate_constant_offsets(Int, ptr, dl;
+                                                              allow_non_inbounds=true)
+    base isa LLVM.GetElementPtrInst &&
+        throw(RuntimeError("a pointer in the generated code has a variable offset"))
+    return base, offset
 end
 
 # A safepoint is a volatile load from the page that the thread-local state's `safepoint`
