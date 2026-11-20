@@ -57,10 +57,6 @@ end
 inst_dominates_block(opt::AllocOpt, def::Instruction, bb::BasicBlock) =
     dominates(domtree(opt), def, first(bb.instructions))
 
-# whether block `a` dominates block `b`, both reachable
-block_dominates(opt::AllocOpt, a::BasicBlock, b::BasicBlock) =
-    a == b || dominates(domtree(opt), first(a.instructions), first(b.instructions))
-
 # remarks, like the C++ pass emits them (without printing the IR)
 remark(opt::AllocOpt, kind, name, inst, message) =
     remark!(opt.am, kind, "alloc-opt", name, inst, message)
@@ -248,10 +244,9 @@ end
 
 function is_safepoint(opt::AllocOpt, inst::Instruction)
     inst isa CallInst || return false
+    is_intrinsic_call(inst) && return false
     callee = inst.called_function
     callee === nothing && return true
-    # intrinsics (C++'s `IntrinsicInst`: any function with a name starting with `llvm.`)
-    startswith(callee.name, "llvm.") && return false
     # functions emitted by codegen that are not safepoints
     callee == opt.fns.pointer_from_objref && return false
     opt.fns.gc_loaded !== nothing && callee == opt.fns.gc_loaded && return false
@@ -342,9 +337,9 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
         pbb in reachable || continue
         ends = [user.parent for user in preserve.users]
         for bb in opt.f.blocks
-            bb in reachable && block_dominates(opt, pbb, bb) || continue
+            bb in reachable && dominates(domtree(opt), pbb, bb) || continue
             bb in extra_use && continue
-            any(e -> e == bb || (e in reachable && block_dominates(opt, e, bb)), ends) &&
+            any(e -> e == bb || (e in reachable && dominates(domtree(opt), e, bb)), ends) &&
                 continue
             add!(bb)
             push!(extra_use, bb)
