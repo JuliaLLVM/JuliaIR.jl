@@ -1491,6 +1491,17 @@ end
         end
     end
     @test occursin("indirectbr", taken[1]) && taken[1] == taken[2]
+    # inline assembly, which LLVM.jl types as a `Constant` but isn't a `User` to LLVM
+    @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
+            define void @f() {
+              call void asm sideeffect "nop", ""()
+              ret void
+            }""") begin
+        JuliaIR.remove_addrspaces!(mod, nothing, JuliaIR.remove_julia_addrspace;
+                                   move_bodies=true)
+        @test verify(mod) === nothing
+        @test occursin("call void asm sideeffect \"nop\", \"\"()", string(mod))
+    end
     @test JuliaIR.Dialect(v"1.15").remove_addrspaces_moves_bodies
     @test !JuliaIR.Dialect(v"1.14").remove_addrspaces_moves_bodies
 

@@ -165,40 +165,12 @@ function restore_use_order!(f::LLVM.Function, vmap::ValueMap)
     end
 end
 
-# the functions with a `blockaddress` of one of their blocks (`BasicBlock::hasAddressTaken`),
-# whose bodies Julia clones: those that the module's code and initializers refer to (from
-# LLVM 23 on, the constant doesn't use the function or the block)
-function address_taken_functions(mod::LLVM.Module)
-    taken = Set{LLVM.Function}()
-    seen = Set{Value}()
-    function visit(v)
-        v isa LLVM.Constant && !(v isa LLVM.GlobalValue) && !(v in seen) || return
-        push!(seen, v)
-        if v isa LLVM.BlockAddress
-            fn = LLVM.version() >= v"19" ?
-                 Value(LLVM.API.LLVMGetBlockAddressFunction(v)) : LLVM.operands(v)[1]
-            push!(taken, fn)
-        else
-            foreach(visit, LLVM.operands(v))
-        end
-    end
-    for gv in mod.globals
-        init = LLVM.initializer(gv)
-        init === nothing || visit(init)
-    end
-    for f in mod.functions, bb in f.blocks, inst in bb.instructions
-        foreach(visit, LLVM.operands(inst))
-    end
-    return taken
-end
-
 # Rebuild `mod` with the address space `as` of every pointer type replaced by `asmap(as)`
 # (C++ `removeAddrspaces`). `am` is the module analysis manager of the pipeline, or
 # `nothing`; the analyses of the functions that are deleted are removed from it.
 # With `move_bodies` (Julia 1.15 and later), the functions keep the order of uses.
 function remove_addrspaces!(mod::LLVM.Module, am, asmap; move_bodies::Bool=false)
     r = AddrspaceRemapper(asmap)
-    address_taken = move_bodies ? address_taken_functions(mod) : Set{LLVM.Function}()
     @dispose vmap=ValueMap() begin
         m = AddrspaceMaterializer(r, vmap)
 
@@ -276,9 +248,12 @@ function remove_addrspaces!(mod::LLVM.Module, am, asmap; move_bodies::Bool=false
                 new_arg.name = arg.name
                 vmap[arg] = new_arg
             end
+            # Julia clones the body of a function with an address-taken block, and moves
+            # the others
+            moved = move_bodies && !any(bb -> bb.address_taken, f.blocks)
             clone_into!(new, f; value_map=vmap, type_mapper=r, materializer=m,
                         changes=LLVM.CloneFunctionChangeType.GlobalChanges)
-            move_bodies && !(f in address_taken) && restore_use_order!(f, vmap)
+            moved && restore_use_order!(f, vmap)
             remap_type_attributes!(new, r)
             copy_comdat!(new, f)
             remove_noop_addrspace_casts!(new)
