@@ -31,12 +31,6 @@ end
 
 is_undef(@nospecialize(v::Value)) = v isa UndefValue || v isa PoisonValue
 
-# `ConstantData`: constants without operands
-is_constant_data(@nospecialize(v::Value)) =
-    v isa Union{ConstantInt,ConstantFP,LLVM.PointerNull,LLVM.ConstantAggregateZero,
-                LLVM.ConstantDataSequential,LLVM.ConstantTokenNone,LLVM.UndefValue,
-                LLVM.PoisonValue}
-
 # the opcode of an instruction or constant expression (`Operator::getOpcode`), or nothing
 function operator_opcode(@nospecialize(v::Value))
     return v isa Union{Instruction,LLVM.ConstantExpr} ? v.opcode : nothing
@@ -83,8 +77,6 @@ function strip_in_bounds_offsets(@nospecialize(v::Value))
     end
 end
 
-function_memory_effects(f::LLVM.Function) = MemoryEffects(f.function_attributes)
-
 # `CallBase::getMemoryEffects`: the call's and the callee's effects, where operand
 # bundles (other than the ones that LLVM knows not to access memory) make the callee's
 # read and write anything
@@ -92,7 +84,7 @@ function call_memory_effects(call::Instruction)
     effects = MemoryEffects(call.function_attributes)
     callee = call.called_operand
     if callee isa LLVM.Function
-        fn_effects = function_memory_effects(callee)
+        fn_effects = MemoryEffects(callee.memory_effects)
         bundles = [LLVM.tag(b) for b in call.operand_bundles]
         if !intrinsic_is(call, Intrinsic("llvm.assume"))
             any(t -> !(t in ("ptrauth", "kcfi", "convergencectrl")), bundles) &&
@@ -911,9 +903,9 @@ function is_load_from_const_gv_value(p::LateLowerGCFrame, @nospecialize(v::Value
     v = strip_in_bounds_offsets(v)
     v isa LLVM.LoadInst && return is_load_from_const_gv(p, v, task_local, seen)
     v isa LLVM.GlobalVariable && return is_const_gv(v)
-    is_constant_data(v) && return true  # null pointer
+    v isa LLVM.ConstantData && return true  # null pointer
     if v isa LLVM.ConstantExpr  # literal pointers
-        return v.opcode == LLVM.Opcode.IntToPtr && is_constant_data(v.operands[1])
+        return v.opcode == LLVM.Opcode.IntToPtr && v.operands[1] isa LLVM.ConstantData
     end
     if v isa LLVM.SelectInst
         return is_load_from_const_gv_value(p, v.operands[2], task_local, seen) &&
@@ -965,10 +957,7 @@ end
 function get_load_value_align(li::Instruction)
     md = li.metadata
     haskey(md, LLVM.MD_align) || return 1
-    # single-constant nodes come back as the constant itself
-    node = md[LLVM.MD_align]
-    c = node isa MDNode ? node.operands[1] : node
-    return Int(min(convert(UInt64, Value(c)), UInt64(typemax(Int))))
+    return Int(min(convert(UInt64, Value(md[LLVM.MD_align].operands[1])), UInt64(typemax(Int))))
 end
 
 function get_phi_refinements(p::LateLowerGCFrame, phi::Instruction, S::State)
@@ -1248,9 +1237,8 @@ function note_return_roots!(p::LateLowerGCFrame, S::State, call::Instruction)
     return has_def_before
 end
 
-argument_index(arg::LLVM.Argument) = findfirst(==(arg), collect(LLVM.parent(arg).parameters))
 argument_has_sret(arg::LLVM.Argument) =
-    haskey(LLVM.parent(arg).parameter_attributes[argument_index(arg)], :sret)
+    haskey(LLVM.parent(arg).parameter_attributes[arg.index], :sret)
 
 # calls emitted by codegen that are not safepoints
 const NON_SAFEPOINT_RUNTIME_CALLS = ("jl_egal__unboxed", "jl_lock_value", "jl_unlock_value",
@@ -1335,7 +1323,7 @@ function scan_call!(p::LateLowerGCFrame, S::State, BBS::BBState, ci::Instruction
                 return
             end
             is_non_safepoint_callee(p, callee) && return
-            effects = function_memory_effects(callee)
+            effects = MemoryEffects(callee.memory_effects)
             if !marked_safepoint &&
                (only_reads_memory(effects) || only_accesses_arg_pointees(effects))
                 return
@@ -2321,7 +2309,7 @@ function pointer_alignment(p::LateLowerGCFrame, @nospecialize(v::Value))
         haskey(md, LLVM.MD_align) && return get_load_value_align(v)
     elseif v isa LLVM.Argument
         f = LLVM.parent(v)
-        align = get(f.parameter_attributes[argument_index(v)], :align, nothing)
+        align = get(f.parameter_attributes[v.index], :align, nothing)
         return align === nothing ? 1 : Int(LLVM.value(align))
     elseif v isa LLVM.Constant
         # constant addresses: their trailing zeros, up to LLVM's maximum alignment
@@ -2357,13 +2345,11 @@ function lower_typeof!(p::LateLowerGCFrame, call::Instruction, S)
     position_before!(builder, call; debug=true)
     tag = emit_load_tag!(p.gc, call.arguments[1])
     T_size = p.gc.T_size
-    masked = and!(builder, tag, ConstantInt(T_size, ~UInt64(15) & typemax_of(T_size)))
+    masked = and!(builder, tag, ConstantInt(T_size, ~UInt64(15)))
     typ = addrspacecast!(builder, inttoptr!(builder, masked, LLVM.PointerType(AS_GENERIC)),
                          p.gc.T_prjlvalue)
     replace_call!(typ, call, S)
 end
-
-typemax_of(t::LLVMType) = LLVM.width(t) >= 64 ? typemax(UInt64) : (UInt64(1) << LLVM.width(t)) - 1
 
 # `julia.blackbox(ptr)` => `asm "=r,0"` on the untracked pointer
 function lower_blackbox!(p::LateLowerGCFrame, call::Instruction, S)

@@ -227,9 +227,8 @@ end
 function GCCodegen(dialect::Dialect, mod::LLVM.Module, builder::IRBuilder,
                    layout::RuntimeFacts; tbaa::Union{Nothing,TBAATags}=nothing)
     dl = mod.datalayout
-    T_size = LLVM.IntType(8 * storage_size(dl, LLVM.PointerType(AS_GENERIC)))
-    return GCCodegen(dialect, mod, builder, layout, dl, LLVM.PointerType(AS_TRACKED), T_size,
-                     tbaa)
+    return GCCodegen(dialect, mod, builder, layout, dl, LLVM.PointerType(AS_TRACKED),
+                     intptr(dl), tbaa)
 end
 
 function tbaa_tags(g::GCCodegen)
@@ -237,7 +236,7 @@ function tbaa_tags(g::GCCodegen)
     return g.tbaa::TBAATags
 end
 
-pointer_size(g::GCCodegen) = storage_size(g.dl, LLVM.PointerType(AS_GENERIC))
+pointer_size(g::GCCodegen) = LLVM.pointersize(g.dl)
 pointer_align(g::GCCodegen) = abi_alignment(g.dl, LLVM.PointerType(AS_GENERIC))
 
 
@@ -480,8 +479,7 @@ function emit_load_tag!(g::GCCodegen, @nospecialize(v::Value))
     load.metadata[LLVM.MD_tbaa] = tbaa_tags(g).tag
     # the tag is at least 16 (a type), so it is still not null after masking the GC bits
     load.metadata[LLVM.MD_range] =
-        MDNode([Metadata(ConstantInt(g.T_size, JL_SMALL_BYTE_ALIGNMENT)),
-                Metadata(ConstantInt(g.T_size, 0))])
+        MDNode(ConstantRange(LLVM.width(g.T_size), JL_SMALL_BYTE_ALIGNMENT, 0))
     return load
 end
 
