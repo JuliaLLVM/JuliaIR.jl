@@ -1988,7 +1988,7 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         tagint = ptrtoint!(builder, tag, T_size)
         new_call = call!(builder, alloc_bytes.function_type, alloc_bytes,
                          Value[ptls, size, tagint], other_bundles(call))
-        copy_function_attributes!(new_call, alloc_bytes)
+        copy_attribute_list!(new_call, alloc_bytes)
         deref = return_dereferenceable_bytes(call)
         deref > 0 && push!(new_call.return_attributes, EnumAttribute("dereferenceable", deref))
         # the allocation runs in the call's cancellation reset region, if any (Julia 1.15)
@@ -2075,7 +2075,7 @@ function lower_alloc_memory!(p::LateLowerGCFrame, call::Instruction, S)
         ptls = current_ptls_from_task!(g, task, tbaa_tags(g).gcframe)
         untracked_tag = addrspacecast!(builder, tag, T_ptr)
         new_call = call!(builder, alloc.function_type, alloc, Value[ptls, nbytes, untracked_tag])
-        copy_function_attributes!(new_call, alloc)
+        copy_attribute_list!(new_call, alloc)
         push!(new_call.return_attributes, EnumAttribute("align", JL_HEAP_ALIGNMENT))
         push!(new_call.return_attributes,
               EnumAttribute("dereferenceable", genericmemory_header_size(ptrsize)))

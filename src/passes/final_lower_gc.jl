@@ -254,7 +254,7 @@ function lower_gc_alloc_bytes!(p::FinalLowerGC, target::Instruction)
         deref = UInt64(pointer_size(p.gc))
     end
     new_call = call!(builder, callee.function_type, callee, call_args)
-    copy_function_attributes!(new_call, callee)
+    copy_attribute_list!(new_call, callee)
     if dialect.gc_alloc_bytes_tag
         align = max(something(ret_align(target), 1), pointer_align(p.gc))
         push!(new_call.return_attributes, EnumAttribute("align", align))

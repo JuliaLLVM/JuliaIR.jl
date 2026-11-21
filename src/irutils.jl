@@ -131,19 +131,6 @@ end
 
 can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
 
-# the attributes of a function, on a call of it
-function copy_function_attributes!(call::Instruction, f::LLVM.Function)
-    for attr in collect(f.function_attributes)
-        push!(call.function_attributes, attr)
-    end
-    for attr in collect(f.return_attributes)
-        push!(call.return_attributes, attr)
-    end
-    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
-        push!(call.argument_attributes[i], attr)
-    end
-end
-
 
 ## metadata
 
