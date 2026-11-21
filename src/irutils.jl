@@ -113,11 +113,12 @@ function reverse_postorder_blocks(f::LLVM.Function)
     return reverse!(order)
 end
 
-# position the builder before `inst`, with `inst`'s debug location like C++'s
-# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
+# position the builder before `inst`, with the debug location of C++'s
+# `IRBuilder<> builder(inst)` (`inst`'s, or from LLVM 18 on, the next instruction's when
+# `inst` is a debug intrinsic), or without one (`XInst::Create(..., inst)`)
 function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
     position!(builder, LLVM.before(inst))
-    builder.debug_location = debug ? inst.debug_location : nothing
+    debug || (builder.debug_location = nothing)
 end
 
 # `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
