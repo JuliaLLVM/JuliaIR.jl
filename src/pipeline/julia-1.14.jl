@@ -163,7 +163,7 @@ function vectorization!(fpm, p::JuliaPipeline, r::Recipe{14})
         add!(fpm, LoopDistributePass())
         add!(fpm, InjectTLIMappings())
         add!(fpm, LoopVectorizePass())
-        add!(fpm, INFER_ALIGNMENT)
+        add!(fpm, InferAlignmentPass())
         add!(fpm, LoopLoadEliminationPass())
         add!(fpm, aggressive_simplifycfg(r))
         add!(fpm, LoopPassManager(; use_memory_ssa=true)) do lpm
@@ -177,7 +177,7 @@ function vectorization!(fpm, p::JuliaPipeline, r::Recipe{14})
         add!(fpm, VectorCombinePass())
         add!(fpm, LoopUnrollPass(; opt_level=p.level))
         add!(fpm, sroa_preserve_cfg())
-        add!(fpm, INFER_ALIGNMENT)
+        add!(fpm, InferAlignmentPass())
         add!(fpm, InstSimplifyPass())
     end
     add!(fpm, "AfterVectorization")
@@ -207,7 +207,7 @@ function intrinsic_lowering!(mpm, p::JuliaPipeline, r::Recipe{14})
             end
             add!(fpm, InstCombinePass())
             add!(fpm, aggressive_simplifycfg(r))
-            add!(fpm, INFER_ALIGNMENT)
+            add!(fpm, InferAlignmentPass())
         end
     elseif !p.options.remove_ni
         julia_pass!(mpm, p, "jl-remove-ni")

@@ -79,7 +79,7 @@ function intrinsic_lowering!(mpm, p::JuliaPipeline, r::Recipe{15})
             end
             add!(fpm, InstCombinePass())
             add!(fpm, aggressive_simplifycfg(r))
-            add!(fpm, INFER_ALIGNMENT)
+            add!(fpm, InferAlignmentPass())
         end
     elseif !p.options.remove_ni
         julia_pass!(mpm, p, "jl-remove-ni")

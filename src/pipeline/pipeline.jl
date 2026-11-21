@@ -189,9 +189,6 @@ basic_simplifycfg() = SimplifyCFGPass(; forward_switch_cond=true, switch_range_t
 # `GlobalsAA`, required by Julia 1.11 to 1.13
 const REQUIRE_GLOBALS_AA = "require<globals-aa>"
 
-# `InferAlignmentPass()`
-const INFER_ALIGNMENT = "infer-alignment"
-
 # `InvalidateAnalysisPass<MemorySSAAnalysis>()`
 const INVALIDATE_MEMORYSSA = "invalidate<memoryssa>"
 
