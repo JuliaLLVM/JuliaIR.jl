@@ -174,8 +174,8 @@ running Julia version does: the `JL_TARGET_*` bits of Julia's `processor.h` up t
 target_specs(mod::LLVM.Module) = target_specs(mod, Dialect(VERSION))
 
 function target_specs(mod::LLVM.Module, dialect::Dialect)
-    haskey(mod.flags, "julia.mv.specs") || return nothing
-    specs = mod.flags["julia.mv.specs"]
+    specs = get(mod.flags, "julia.mv.specs", nothing)
+    specs === nothing && return nothing
     malformed(what) = throw(MultiVersioningError("the module flag julia.mv.specs is malformed: $what"))
     specs isa MDTuple || malformed("not a tuple")
     targets = MultiVersioningTarget[]
@@ -471,22 +471,12 @@ end
 # C++ pass adds a second flag, which makes the module invalid; the port keeps an identical
 # one, and rejects others.
 function check_veccall_flag(mod::LLVM.Module)
-    haskey(mod.flags, "julia.mv.veccall") || return false
-    module_flag_behavior(mod, "julia.mv.veccall") == MODULE_FLAG_MAX &&
+    behavior = flag_behavior(mod.flags, "julia.mv.veccall")
+    behavior === nothing && return false
+    behavior == LLVM.ModuleFlagBehavior.Max &&
         mod.flags["julia.mv.veccall"] == Metadata(ConstantInt(Int32(1))) ||
         throw(MultiVersioningError("the module already has a julia.mv.veccall flag, which differs from the one the annotation adds (i32 1, behavior Max)"))
     return true
-end
-
-# The behavior of the first module flag named `name`, from its entry in `llvm.module.flags`
-# (LLVM.jl doesn't expose it): 7 is `Max`.
-const MODULE_FLAG_MAX = 7
-function module_flag_behavior(mod::LLVM.Module, name::String)
-    for flag in mod.metadata["llvm.module.flags"].operands
-        ops = flag.operands
-        length(ops) == 3 && ops[2] == MDString(name) && return metadata_integer(ops[1])
-    end
-    return nothing
 end
 
 # record the annotation in the module: the function attributes and module flags
@@ -566,7 +556,7 @@ function check_cloning(mod::LLVM.Module, targets::Vector{MultiVersioningTarget},
         check_index_table(mod, "jl_fvar_idxs", length(fvar_list))
         offsets && check_index_table(mod, "jl_gvar_idxs",
                                      length(table_elements(mod.globals["jl_gvars"], false)))
-        suffix = haskey(mod.flags, "julia.mv.suffix") ? mod.flags["julia.mv.suffix"] : nothing
+        suffix = get(mod.flags, "julia.mv.suffix", nothing)
         suffix === nothing || suffix isa MDString ||
             throw(MultiVersioningError("the module flag julia.mv.suffix is not a string"))
     end

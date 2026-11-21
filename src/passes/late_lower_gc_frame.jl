@@ -2376,9 +2376,9 @@ function is_perm_rooted(S, @nospecialize(v::Value))
 end
 
 function module_debug_level(mod::LLVM.Module)
-    flags = mod.flags
-    haskey(flags, "julia.debug_level") || return 1
-    return convert(Int, Value(flags["julia.debug_level"]))
+    level = get(mod.flags, "julia.debug_level", nothing)
+    level === nothing && return 1
+    return convert(Int, Value(level))
 end
 
 # A fresh object can't become old before a safepoint (cf. `jl_gc_wb_fresh`): remove the
