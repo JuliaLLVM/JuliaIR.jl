@@ -137,11 +137,15 @@ unsupported_target(p::LowerPTLS) =
     (p.dialect.ptls_jit_getter === :slots ? "(`tls-elf-support=no`, or `tls-getters` in JIT mode)" :
      "(JIT mode with `tls-offset=-1`, or imaging mode with `tls-elf-support=no`)")
 
-# The getter calls are pure and don't throw: `memory(none)`, or `readnone` before LLVM 16.
+# The getter calls are pure and don't throw. Before LLVM 16, the C++ adds `readnone` to the
+# call's other memory attributes, while the `memory_effects` setter would replace them.
 function set_pgcstack_attrs!(call::Instruction)
-    attrs = call.function_attributes
-    push!(attrs, LLVM.version() >= v"16" ? EnumAttribute("memory", 0) : EnumAttribute("readnone"))
-    push!(attrs, EnumAttribute("nounwind"))
+    if LLVM.version() >= v"16"
+        call.memory_effects = MemoryEffects(:none)
+    else
+        push!(call.function_attributes, EnumAttribute("readnone"))
+    end
+    push!(call.function_attributes, EnumAttribute("nounwind"))
     return
 end
 
