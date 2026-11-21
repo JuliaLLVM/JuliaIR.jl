@@ -37,51 +37,6 @@ only_reads_memory(e::MemoryEffects) = e.access in (:none, :read)
 only_accesses_arg_pointees(e::MemoryEffects) =
     (e & MemoryEffects(:readwrite; argmem=:none)).access === :none
 
-# the constant-folding builder inserts constants instead of instructions; these create
-# an instruction (like the C++'s `XInst::Create`) by building it from a placeholder
-# operand and swapping the real operand in
-function placeholder(builder::IRBuilder, @nospecialize(v::Value))
-    return freeze!(builder, v)
-end
-
-function new_select!(builder::IRBuilder, @nospecialize(cond::Value), @nospecialize(a::Value),
-                     @nospecialize(b::Value), name::String)
-    tmp = placeholder(builder, a)
-    inst = select!(builder, cond, tmp, b, name)::Instruction
-    inst.operands[2] = a
-    erase!(tmp)
-    return inst
-end
-
-function new_extract_element!(builder::IRBuilder, @nospecialize(vec::Value),
-                              @nospecialize(idx::Value), name::String="")
-    tmp = placeholder(builder, vec)
-    inst = extract_element!(builder, tmp, idx, name)::Instruction
-    inst.operands[1] = vec
-    erase!(tmp)
-    return inst
-end
-
-function new_extract_value!(builder::IRBuilder, @nospecialize(agg::Value), idxs::Vector{Int},
-                            name::String="")
-    tmp = placeholder(builder, agg)
-    inst = extract_value!(builder, tmp, idxs, name)::Instruction
-    inst.operands[1] = agg
-    erase!(tmp)
-    return inst
-end
-
-function new_addrspacecast!(builder::IRBuilder, @nospecialize(v::Value), ty::LLVMType,
-                            name::String="")
-    v isa LLVM.Constant || return addrspacecast!(builder, v, ty, name)::Instruction
-    tmp = placeholder(builder, v)
-    inst = addrspacecast!(builder, tmp, ty, name)::Instruction
-    inst.operands[1] = v
-    erase!(tmp)
-    return inst
-end
-
-
 ## the pass
 
 # a basic block's results of the local scan, and its liveness
@@ -348,18 +303,18 @@ end
 # `XInst::Create(..., insert_before)`
 function extract_value_at!(p::LateLowerGCFrame, @nospecialize(agg::Value), idxs::Vector{Int},
                            insert_before::Instruction)
-    folding = p.dialect.gc_extract_simplify
-    position_before!(p.builder, insert_before; debug=folding)
-    folding || return new_extract_value!(p.builder, agg, idxs)
+    p.dialect.gc_extract_simplify ||
+        return LLVM.ExtractValueInst(LLVM.before(insert_before), agg, idxs)
+    position_before!(p.builder, insert_before; debug=true)
     return simplify_new!(extract_value!(p.builder, agg, idxs))
 end
 
 function extract_element_at!(p::LateLowerGCFrame, @nospecialize(vec::Value), idx::Int,
                              insert_before::Instruction)
-    folding = p.dialect.gc_extract_simplify
-    position_before!(p.builder, insert_before; debug=folding)
     idx = ConstantInt(LLVM.Int32Type(), idx)
-    folding || return new_extract_element!(p.builder, vec, idx)
+    p.dialect.gc_extract_simplify ||
+        return LLVM.ExtractElementInst(LLVM.before(insert_before), vec, idx)
+    position_before!(p.builder, insert_before; debug=true)
     return simplify_new!(extract_element!(p.builder, vec, idx))
 end
 
@@ -454,11 +409,10 @@ function lift_select!(p::LateLowerGCFrame, S::State, si::Instruction)
         false_elem = is_pointer_value(false_base) ? false_base : false_bases[i+1]
         cond = si.operands[1]
         if is_vector_type(cond.value_type)
-            position_before!(p.builder, si; debug=false)
-            cond = new_extract_element!(p.builder, cond, ConstantInt(LLVM.Int32Type(), i))
+            cond = LLVM.ExtractElementInst(LLVM.before(si), cond,
+                                           ConstantInt(LLVM.Int32Type(), i))
         end
-        position_before!(p.builder, si; debug=false)
-        select_base = new_select!(p.builder, cond, true_elem, false_elem, "gclift")
+        select_base = LLVM.SelectInst(LLVM.before(si), cond, true_elem, false_elem, "gclift")
         number = (S.max_ptr_number += 1)
         S.all_ptr_numbering[select_base] = number
         S.reverse_ptr_numbering[number] = select_base
@@ -2279,11 +2233,11 @@ function cleanup_call!(p::LateLowerGCFrame, call::Instruction, S, frame::Instruc
        is_fn(fns.gc_preserve_end, callee)
         # no replacement
     elseif is_fn(fns.pointer_from_objref, callee)
-        position_before!(p.builder, call; debug=false)
-        replace_call!(new_addrspacecast!(p.builder, call.arguments[1], call.value_type), call, S)
+        replace_call!(LLVM.AddrSpaceCastInst(LLVM.before(call), call.arguments[1],
+                                             call.value_type), call, S)
     elseif is_fn(fns.gc_loaded, callee)
-        position_before!(p.builder, call; debug=false)
-        replace_call!(new_addrspacecast!(p.builder, call.arguments[2], call.value_type), call, S)
+        replace_call!(LLVM.AddrSpaceCastInst(LLVM.before(call), call.arguments[2],
+                                             call.value_type), call, S)
     elseif is_fn(fns.blackbox, callee)
         lower_blackbox!(p, call, S)
     elseif is_fn(fns.alloc_obj, callee)
