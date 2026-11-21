@@ -113,11 +113,12 @@ function reverse_postorder_blocks(f::LLVM.Function)
     return reverse!(order)
 end
 
-# position the builder before `inst`, with `inst`'s debug location like C++'s
-# `IRBuilder<> builder(inst)`, or without one (`XInst::Create(..., inst)`)
+# position the builder before `inst`, with the debug location of C++'s
+# `IRBuilder<> builder(inst)` (`inst`'s, or from LLVM 18 on, the next instruction's when
+# `inst` is a debug intrinsic), or without one (`XInst::Create(..., inst)`)
 function position_before!(builder::IRBuilder, inst::Instruction; debug::Bool)
     position!(builder, LLVM.before(inst))
-    builder.debug_location = debug ? inst.debug_location : nothing
+    debug || (builder.debug_location = nothing)
 end
 
 # `CallBase::hasFnAttr`: on the call, or on the function it calls, also when the call's
@@ -130,19 +131,6 @@ function call_has_fn_attr(call::Instruction, kind::Union{Symbol,String})
 end
 
 can_return_twice(call::Instruction) = call_has_fn_attr(call, :returns_twice)
-
-# the attributes of a function, on a call of it
-function copy_function_attributes!(call::Instruction, f::LLVM.Function)
-    for attr in collect(f.function_attributes)
-        push!(call.function_attributes, attr)
-    end
-    for attr in collect(f.return_attributes)
-        push!(call.return_attributes, attr)
-    end
-    for i in 1:length(f.parameters), attr in collect(f.parameter_attributes[i])
-        push!(call.argument_attributes[i], attr)
-    end
-end
 
 
 ## metadata

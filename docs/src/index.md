@@ -35,7 +35,7 @@ produced the IR, with the intentional differences listed below.
   (`Context(; opaque_pointers=true)`), which upgrades it.
 - **Julia's stock GC.** MMTk builds are not supported.
 
-JuliaIR.jl is not registered yet. It needs LLVM.jl 10.6 or later.
+JuliaIR.jl is not registered yet. It needs LLVM.jl 10.7 or later.
 
 ## Using the passes
 
@@ -183,6 +183,12 @@ Differences with Julia's C++ passes:
   can remove volatile operations or turn them into ordinary accesses. Accesses of a
   zero-sized type to a split allocation are supported (the C++ pass divides their offset
   by their size, which crashes).
+- AllocOpt visits the `gc_preserve_begin` calls of an allocation in the order of its
+  uses. The C++ pass keeps them in a small set, which orders them by their address in
+  memory from the fifth one on. The order can matter: like the C++ pass, the port stops
+  walking the region of a preserve at a block that the walk from another one already
+  marked, so a block that only the later preserve covers can get a lifetime end inside
+  that preserve's region.
 - AllocOpt takes the size and alignment of the reference slots of split allocations
   from the module's data layout (the store size and ABI alignment of a pointer in
   address space 10), where the C++ pass uses the host's pointer size. So does the

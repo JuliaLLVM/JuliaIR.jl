@@ -352,30 +352,34 @@ function escape_analysis!(info::AllocUseInfo, alloc::Instruction, fns::JuliaFunc
             return true
         elseif inst isa CallInst
             callee = inst.called_operand
-            if callee isa LLVM.Function && LLVM.isintrinsic(callee)
-                if LLVM.isintrinsic(callee, Intrinsic("llvm.memset"))
-                    iszero(convert(UInt64, inst.arguments[4])) || (info.hasvolatile = true)
-                    len = inst.arguments[3]
-                    val = inst.arguments[2]
-                    if offset == UNKNOWN_OFFSET || !(len isa ConstantInt) ||
-                       !(val isa ConstantInt) ||
-                       convert(UInt64, len) >= typemax(UInt32) - offset
-                        info.hasunknownmem = true
+            # an `IntrinsicInst` in C++: a call of a function named `llvm.*`, which includes
+            # Julia's `llvm.julia.*` functions
+            if is_intrinsic_call(inst)
+                if LLVM.isintrinsic(callee)
+                    if LLVM.isintrinsic(callee, Intrinsic("llvm.memset"))
+                        iszero(convert(UInt64, inst.arguments[4])) || (info.hasvolatile = true)
+                        len = inst.arguments[3]
+                        val = inst.arguments[2]
+                        if offset == UNKNOWN_OFFSET || !(len isa ConstantInt) ||
+                           !(val isa ConstantInt) ||
+                           convert(UInt64, len) >= typemax(UInt32) - offset
+                            info.hasunknownmem = true
+                        end
+                        return true
                     end
+                    is_lifetime_or_debug(callee) && return true
+                    # intrinsics don't care whether memory is on the stack or the heap
+                    info.addrescaped = true
                     return true
                 end
-                is_lifetime_or_debug(callee) && return true
-                # intrinsics don't care whether memory is on the stack or the heap
-                info.addrescaped = true
-                return true
-            end
-            if callee == fns.gc_preserve_begin
-                for user in inst.users
-                    add_use!(info, user)
+                if callee == fns.gc_preserve_begin
+                    for user in inst.users
+                        add_use!(info, user)
+                    end
+                    inst in info.preserves || push!(info.preserves, inst)
+                    info.haspreserve = true
+                    return true
                 end
-                inst in info.preserves || push!(info.preserves, inst)
-                info.haspreserve = true
-                return true
             end
             if callee == fns.pointer_from_objref
                 info.addrescaped = true

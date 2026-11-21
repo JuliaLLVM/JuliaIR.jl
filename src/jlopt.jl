@@ -227,18 +227,14 @@ end
 # parse the input like `opt` does, which names the module after the input file
 function parse_input(data::Vector{UInt8}, name::String)
     bitcode = length(data) >= 4 && (data[1:4] == b"BC\xc0\xde" || data[1:4] == b"\xde\xc0\x17\x0b")
-    text = bitcode ? "" : String(copy(data))
-    mod = try
-        bitcode ? parse(LLVM.Module, data) : parse(LLVM.Module, text)
+    try
+        return bitcode ? parse(LLVM.Module, data; name) :
+                         parse(LLVM.Module, String(copy(data)); name)
     catch err
         err isa LLVMException || rethrow()
-        throw(JloptError("$name: $(err.info)"))
+        # the text parser's errors start with the file name already
+        throw(JloptError(bitcode ? "$name: $(err.info)" : err.info))
     end
-    mod.name = name
-    if !bitcode && !occursin(r"^\s*source_filename\s*="m, text)
-        mod.source_filename = name
-    end
-    return mod
 end
 
 """

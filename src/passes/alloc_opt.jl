@@ -234,16 +234,6 @@ function first_safepoint(opt::AllocOpt, bb::BasicBlock)
     return first
 end
 
-# the first instruction where non-PHI instructions can be inserted
-function first_insertion_inst(bb::BasicBlock)
-    for inst in bb.instructions
-        inst isa Union{PHIInst,EHPad} &&
-            continue
-        return inst
-    end
-    error("block without insertion point")
-end
-
 function lifetime_call!(opt::AllocOpt, f::LLVM.Function, ptr::Value, size::Integer,
                         at::Instruction)
     builder = opt.builder
@@ -294,21 +284,29 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
         end
     end
 
-    # blocks with invisible uses between `gc_preserve_begin` and `gc_preserve_end`: those
-    # dominated by the begin, until a block dominated by an end
+    # blocks with invisible uses between `gc_preserve_begin` and `gc_preserve_end`: walk the
+    # dominator tree from each begin, until a block dominated by an end. Like the C++, a walk
+    # also stops at a block that the walk from an earlier begin marked.
     extra_use = Set{BasicBlock}()
+    dominated = DomTreeNode[]
     dt = domtree(opt)
     for preserve in info.preserves
-        pbb = preserve.parent
-        isreachable(dt, pbb) || continue
-        ends = [user.parent for user in preserve.users]
-        for bb in opt.f.blocks
-            isreachable(dt, bb) && dominates(dt, pbb, bb) || continue
+        root = dt[preserve.parent]
+        root === nothing && continue
+        push!(dominated, root)
+        while !isempty(dominated)
+            node = pop!(dominated)
+            bb = node.block
             bb in extra_use && continue
-            any(e -> e == bb || (isreachable(dt, e) && dominates(dt, e, bb)), ends) &&
-                continue
+            ended = any(preserve.users) do user
+                end_bb = user.parent
+                end_node = dt[end_bb]
+                end_bb == bb || (end_node !== nothing && dominates(dt, end_node, node))
+            end
+            ended && continue
             add!(bb)
             push!(extra_use, bb)
+            append!(dominated, node.children)
         end
     end
 
@@ -359,7 +357,7 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
             # allocation is dead when entering it; otherwise there could be uses we don't
             # track before the next safepoint
             if !dominates(domtree(opt), orig, bb)
-                insert_lifetime_end!(opt, ptr, size, first_insertion_inst(bb))
+                insert_lifetime_end!(opt, ptr, size, LLVM.anchor(LLVM.after_phis(bb)))
                 continue
             elseif (insert = first_safepoint(opt, bb)) !== nothing
                 insert_lifetime_end!(opt, ptr, size, insert)

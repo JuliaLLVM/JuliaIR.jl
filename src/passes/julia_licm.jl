@@ -102,8 +102,7 @@ end
 # block with only a `catchswitch`).
 function exit_insertion_inst(bb::BasicBlock)
     pos = LLVM.after_phis(bb)
-    pos === nothing && return nothing
-    return Instruction(pos.anchor)
+    return pos === nothing ? nothing : LLVM.anchor(pos)
 end
 
 # Where to sink the ends of a token defined in `begin_loop` (`nothing` if it is defined
