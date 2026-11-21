@@ -1,5 +1,15 @@
 # JuliaIR.jl release notes
 
+## v0.1.4
+
+- Require LLVM.jl 10.7, and use its newer APIs (dominator-tree nodes, non-folding
+  instruction constructors, module-flag behaviors and others) instead of emulating them.
+- AllocOpt walks the dominator tree from each `gc_preserve_begin` to find the blocks of its
+  region, like the C++, which changes where lifetimes end when preserves overlap.
+- Builders positioned at a debug intrinsic take their debug location from the next
+  instruction on LLVM 18 and later, like C++'s `IRBuilder`, so LowerPTLS no longer gives
+  the code after a `julia.get_pgcstack_or_new` the line of a following `dbg.value`.
+
 ## v0.1.3
 
 - Require LLVM.jl 10.6, and call the LLVM APIs that Julia's C++ passes call instead of
