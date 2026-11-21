@@ -234,16 +234,6 @@ function first_safepoint(opt::AllocOpt, bb::BasicBlock)
     return first
 end
 
-# the first instruction where non-PHI instructions can be inserted
-function first_insertion_inst(bb::BasicBlock)
-    for inst in bb.instructions
-        inst isa Union{PHIInst,EHPad} &&
-            continue
-        return inst
-    end
-    error("block without insertion point")
-end
-
 function lifetime_call!(opt::AllocOpt, f::LLVM.Function, ptr::Value, size::Integer,
                         at::Instruction)
     builder = opt.builder
@@ -367,7 +357,7 @@ function insert_lifetime!(opt::AllocOpt, ptr::Value, size::Integer, orig::Instru
             # allocation is dead when entering it; otherwise there could be uses we don't
             # track before the next safepoint
             if !dominates(domtree(opt), orig, bb)
-                insert_lifetime_end!(opt, ptr, size, first_insertion_inst(bb))
+                insert_lifetime_end!(opt, ptr, size, LLVM.anchor(LLVM.after_phis(bb)))
                 continue
             elseif (insert = first_safepoint(opt, bb)) !== nothing
                 insert_lifetime_end!(opt, ptr, size, insert)
