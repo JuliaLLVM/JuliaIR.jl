@@ -173,7 +173,7 @@ runtime_fact(dialect::Dialect, mod::LLVM.Module, name::Symbol; kwargs...) =
 # needed: the runtime's own structures and exported functions where possible, and the
 # code that Julia's code generator and C++ passes emit for a small function otherwise.
 const FACT_PROBES = (
-    task_gcstack = :task, task_ptls = :safepoint, task_eh = :task,
+    task_gcstack = :task_offsets, task_ptls = :task_offsets, task_eh = :task,
     task_reset_ctx = :cancel, tls_safepoint = :safepoint, tls_gc_state = :gc_state,
     handler_size = :handler, handler_align = :handler, setjmp = :handler,
     reset_ctx_size = :cancel, reset_ctx_align = :cancel,
@@ -216,10 +216,16 @@ function native_fact(name::Symbol, option::String)
     return value
 end
 
-# the current task's `gcstack` (whose address the runtime hands out as the task's
-# `pgcstack`), and its `eh`: the field that a `try` changes (to its handler) and that is
-# restored when it is left
+# the offsets of the task's `gcstack` and `ptls`, which the runtime exports for code
+# generators
+run_probe(::Val{:task_offsets}) =
+    (; task_gcstack=Int(unsafe_load(cglobal(:jl_task_gcstack_offset, Cint))),
+     task_ptls=Int(unsafe_load(cglobal(:jl_task_ptls_offset, Cint))))
+
+# the task's `eh`: the field after `gcstack` that a `try` changes (to its handler) and
+# that is restored when it is left
 function run_probe(::Val{:task})
+    gcstack = native_probe(:task_offsets).task_gcstack
     task = current_task()
     W = sizeof(Ptr{Cvoid})
     n = 8
@@ -227,11 +233,7 @@ function run_probe(::Val{:task})
     inside = Vector{UInt}(undef, n)
     restored = Vector{UInt}(undef, n)
     GC.@preserve task outside inside restored begin
-        pgcstack = ccall(:jl_get_pgcstack, Ptr{Cvoid}, ())
-        gcstack = Int(pgcstack - pointer_from_objref(task))
-        0 < gcstack < 4096 ||
-            throw(RuntimeError("the current task's `pgcstack` is not inside the task"))
-        words = Ptr{UInt}(pgcstack)
+        words = Ptr{UInt}(pointer_from_objref(task) + gcstack)
         read_words!(outside, words)
         try
             read_words!(inside, words)
@@ -242,7 +244,7 @@ function run_probe(::Val{:task})
     changed = [i for i in 1:n if inside[i] != outside[i]]
     (length(changed) == 1 && outside == restored && inside[only(changed)] != 0) ||
         throw(RuntimeError("entering a `try` doesn't change exactly one field of the task after `gcstack`"))
-    return (; task_gcstack=gcstack, task_eh=gcstack + (only(changed) - 1) * W)
+    return (; task_eh=gcstack + (only(changed) - 1) * W)
 end
 
 @noinline function read_words!(buf::Vector{UInt}, ptr::Ptr{UInt})
@@ -324,7 +326,7 @@ end
 function run_probe(::Val{:world_age})
     task = current_task()
     W = sizeof(Ptr{Cvoid})
-    gcstack = native_probe(:task).task_gcstack
+    gcstack = native_probe(:task_offsets).task_gcstack
     offsets = GC.@preserve task begin
         base = Ptr{UInt}(pointer_from_objref(task))
         [off for off in 0:W:(gcstack + 8W)
@@ -434,7 +436,8 @@ function run_probe(::Val{:safepoint})
     with_probe_ir(probe_safepoint, Tuple{}, "`GC.safepoint()`") do mod
         dl = mod.datalayout
         # (code coverage adds other volatile accesses)
-        polls = Set{Tuple{Int,Int}}()
+        offsets = native_probe(:task_offsets)
+        polls = Set{Int}()
         for inst in instructions(mod)
             (inst isa LLVM.LoadInst && inst.volatile) || continue
             page = inst.operands[1]
@@ -442,12 +445,11 @@ function run_probe(::Val{:safepoint})
             ptls, safepoint = base_offset(page.operands[1], dl)
             ptls isa LLVM.LoadInst || continue
             _, ptls_offset = base_offset(ptls.operands[1], dl)
-            push!(polls, (ptls_offset, safepoint))
+            ptls_offset == offsets.task_ptls - offsets.task_gcstack || continue
+            push!(polls, safepoint)
         end
         length(polls) == 1 || return nothing
-        ptls_offset, safepoint = only(polls)
-        gcstack = native_probe(:task).task_gcstack
-        return (; task_ptls=gcstack + ptls_offset, tls_safepoint=safepoint)
+        return (; tls_safepoint=only(polls))
     end
 end
 
@@ -479,7 +481,7 @@ function run_probe(::Val{:cancel})
     isdefined(@__MODULE__, :probe_cancel) ||
         return (; task_reset_ctx=nothing, reset_ctx_size=nothing, reset_ctx_align=nothing,
                 reset_ctx_gcstack=nothing, reset_ctx_eh=nothing, reset_ctx_mctx=nothing)
-    gcstack = native_probe(:task).task_gcstack
+    gcstack = native_probe(:task_offsets).task_gcstack
     with_probe_ir(probe_cancel, Tuple{}, "`Base.@cancel_check`") do mod
         dl = mod.datalayout
         calls = [inst for inst in instructions(mod)

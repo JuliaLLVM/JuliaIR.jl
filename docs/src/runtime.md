@@ -48,12 +48,12 @@ read the first time a pass needs it, once per process:
 
 | Facts | Read from |
 |-------|-----------|
-| `task_gcstack` | the task's `pgcstack` (`jl_get_pgcstack`) relative to the current task |
+| `task_gcstack`, `task_ptls` | the runtime's `jl_task_gcstack_offset` and `jl_task_ptls_offset` |
 | `task_eh` | the field of the current task that changes inside a `try` and is restored after it |
 | `tls_gc_state` | the byte of the thread-local state that becomes `JL_GC_STATE_SAFE` across `jl_gc_safe_enter` |
 | `tls_elf_support`, `tls_offset` | the runtime's `jl_tls_elf_support` and `jl_tls_offset` |
 | `pgcstack_getter`, `pgcstack_key` | the runtime's `jl_pgcstack_getkey` |
-| `task_ptls`, `tls_safepoint` | the code Julia generates for `GC.safepoint()`: the load of the thread-local state from the task and the safepoint load from it |
+| `tls_safepoint` | the code Julia generates for `GC.safepoint()`: the safepoint load from the thread-local state |
 | `handler_size`, `handler_align`, `setjmp` | the code Julia generates for a `try`: the stack buffer that `setjmp` is called on (lowered by Julia's LowerExcHandlers up to Julia 1.12, emitted by its code generator later) |
 | `task_reset_ctx`, `reset_ctx_*` | the code Julia generates for `Base.@cancel_check` (Julia 1.15 and later) |
 | `smalltag_shift` | the header of a boxed `Int64`, whose small type tag is a field of `Int64.flags` |
