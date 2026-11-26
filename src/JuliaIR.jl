@@ -1,7 +1,6 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
-import InteractiveUtils
 using LLVM: DataLayout, bit_size, storage_size, abi_size, abi_alignment, offsetof, intptr
 
 include("dialect.jl")

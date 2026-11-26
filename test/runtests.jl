@@ -28,7 +28,8 @@ include("upstream.jl")
 
 @testset "Aqua" begin
     using Aqua
-    Aqua.test_all(JuliaIR)
+    # InteractiveUtils is only loaded when needed
+    Aqua.test_all(JuliaIR; stale_deps=(; ignore=[:InteractiveUtils]))
 end
 
 end
