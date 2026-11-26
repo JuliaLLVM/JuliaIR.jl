@@ -386,9 +386,15 @@ end
     probe_cancel() = (Base.@cancel_check; 1)
 end
 
+# InteractiveUtils is loaded when a probe first needs it: loading it takes longer than
+# loading this package
+const INTERACTIVE_UTILS = Base.PkgId(Base.UUID("b77e0a4c-d291-57a0-90e8-8db25a27a240"),
+                                     "InteractiveUtils")
+
 function with_probe_ir(f, probe, types, what)
-    ir = sprint(io -> InteractiveUtils.code_llvm(io, probe, types; optimize=true,
-                                                 dump_module=true, debuginfo=:none))
+    code_llvm = Base.require(INTERACTIVE_UTILS).code_llvm
+    ir = sprint(io -> Base.invokelatest(code_llvm, io, probe, types; optimize=true,
+                                        dump_module=true, debuginfo=:none))
     # Julia's code generator wrote the probe for its own LLVM, which may be newer than the
     # library that a pass runs with: inspect it with Julia's, then restore the caller's.
     result = Context(; library=:julia, opaque_pointers=true) do ctx
