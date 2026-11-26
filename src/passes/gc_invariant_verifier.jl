@@ -207,15 +207,20 @@ end
 const GC_INVARIANT_VERIFIER = define_pass("jl-gc-invariant-verifier", :function,
                                           gc_invariant_verifier!; required=true,
                                           options=(; strong=false),
-                                          cpp_name="GCInvariantVerifier")
+                                          cpp_name="GCInvariantVerifier",
+                                          cpp_options=(:strong,))
 
 """
-    JuliaIR.GCInvariantVerifierPass(; strong=false)
+    JuliaIR.GCInvariantVerifierPass(; ports=nothing, strong=false)
 
 Check that functions obey the invariants of Julia's GC address spaces
 (`jl-gc-invariant-verifier` in a pipeline, `jl-gc-invariant-verifier<strong>` for
 `strong=true`), and throw a [`JuliaIR.GCInvariantError`](@ref) listing every violation
 otherwise. `strong` also rejects GEPs of tracked pointers, which Julia's code generator
 never emits but the optimizer may introduce.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-GCInvariantVerifierPass(; kwargs...) = custom_pass(GC_INVARIANT_VERIFIER; kwargs...)
+GCInvariantVerifierPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(GC_INVARIANT_VERIFIER, ports; kwargs...)

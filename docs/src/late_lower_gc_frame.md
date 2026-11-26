@@ -28,7 +28,7 @@ that the function pushes onto its task's GC stack. The pass
 [FinalLowerGC](final_lower_gc.md) then lowers the frame intrinsics and
 `julia.gc_alloc_bytes` to Julia's runtime.
 
-`jl-late-lower-gc-frame` (`JuliaIR.LateLowerGCFramePass`) ports the pass for the IR of
+`jl-late-lower-gc-frame` (`JuliaIR.LateLowerGCPass`) ports the pass for the IR of
 every Julia version from 1.10 on, and `jlopt` runs it for Julia's name of the pass
 (`LateLowerGCFrame`). It is a required function pass. The code keeps the names and the
 structure of the C++ (`local_scan` for `LocalScan`, `compute_liveness!` for

@@ -197,7 +197,7 @@ const LOWER_SIMDLOOP = define_pass("jl-lower-simdloop", :loop, lower_simdloop!;
                                    required=false, cpp_name="LowerSIMDLoop")
 
 """
-    JuliaIR.LowerSIMDLoopPass()
+    JuliaIR.LowerSIMDLoopPass(; ports=nothing)
 
 Lower the loop markers of Julia's `@simd` (`jl-lower-simdloop` in a pipeline; a loop
 pass, for `loop(...)` and `loop-mssa(...)` pipelines). Julia marks the loop ID of a loop
@@ -207,5 +207,9 @@ and allows reassociating and contracting the floating-point reductions of `simd`
 For the IR of Julia 1.12 and later, it also marks the multiplications that only feed an
 addition of a reduction as `contract`. Like Julia's C++ pass, it is skipped on `optnone`
 functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-LowerSIMDLoopPass(; kwargs...) = custom_pass(LOWER_SIMDLOOP; kwargs...)
+LowerSIMDLoopPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(LOWER_SIMDLOOP, ports; kwargs...)

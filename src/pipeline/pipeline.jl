@@ -36,12 +36,17 @@ function pipeline_option_names(minor::VersionNumber)
 end
 
 """
-    JuliaIR.JuliaPipeline(; level=2, ports=true, options...)
+    JuliaIR.JuliaPipeline(; level=2, ports=nothing, options...)
 
 The optimization pipeline of the running Julia (what its `julia<level=...;...>` pipeline
 element builds), at optimization level `level` (0 to 3; other values are clamped, like
 Julia does), with Julia's passes replaced by this package's ports (`ports=true`), or named
-by their C++ names (`ports=false`, which only works on Julia's own LLVM).
+by their C++ names (`ports=false`, which only works on Julia's own LLVM). By default
+(`ports=nothing`), the ports are used unless the library active when the pipeline is
+constructed is Julia's LLVM (see [`JuliaIR.Pass`](@ref)). Either way, the pipeline is
+this package's recipe of the running Julia's: with `ports=false` it names Julia's C++
+passes, but it isn't Julia's own `julia<...>` pipeline element (which
+`LLVM.Interop.JuliaPipeline` gives).
 
 The other keyword arguments are the options of Julia's pipeline (`OptimizationOptions` in
 Julia's `src/jitlayers.h`), which Julia 1.10 has four of and later versions more:
@@ -80,7 +85,7 @@ struct JuliaPipeline
     options::typeof(PIPELINE_OPTIONS)
 end
 
-function JuliaPipeline(; level::Integer=2, ports::Bool=true, options...)
+function JuliaPipeline(; level::Integer=2, ports::Union{Nothing,Bool}=nothing, options...)
     minor = dialect_minor(VERSION)
     known = pipeline_option_names(minor)
     for (name, value) in pairs(options)
@@ -98,7 +103,7 @@ function JuliaPipeline(; level::Integer=2, ports::Bool=true, options...)
     end
     opts.lower_intrinsics && !opts.remove_ni &&
         throw(ArgumentError("option remove_ni can't be turned off while lowering intrinsics"))
-    return JuliaPipeline(minor, VERSION, clamp(level, 0, 3), ports, opts)
+    return JuliaPipeline(minor, VERSION, clamp(level, 0, 3), use_ports(ports), opts)
 end
 
 """
@@ -129,7 +134,7 @@ function parse_pipeline_options(str::AbstractString)
     return NamedTuple(parsed)
 end
 
-JuliaPipeline(str::AbstractString; ports::Bool=true) =
+JuliaPipeline(str::AbstractString; ports::Union{Nothing,Bool}=nothing) =
     JuliaPipeline(; ports, parse_pipeline_options(str)...)
 
 
@@ -164,7 +169,15 @@ end
 # them out (`llvm_only`; Julia's loop passes and RemoveJuliaAddrspaces are not among them,
 # and are added with `add!` instead)
 function julia_pass!(pm, p::JuliaPipeline, name::String; options...)
-    p.options.llvm_only || add!(pm, julia_pass(p, name; options...))
+    p.options.llvm_only && return pm
+    # (the recipes are written for releases, whose C++ passes development versions may lack)
+    if !p.ports && pm isa LLVM.PassManager
+        level = pipeline_level(pm)
+        defs = filter(def -> def.name == name, PASSES)
+        isempty(defs) || any(def -> def.kind === level && cpp_available(def), defs) ||
+            error("Julia $VERSION has no C++ $level pass $(first(defs).cpp_name) for its pipeline; use `ports=true`")
+    end
+    add!(pm, julia_pass(p, name; options...))
     return pm
 end
 
@@ -251,7 +264,7 @@ const IRCE_WITH_CLEANUP = define_pass("jl-irce-with-cleanup", :function,
 
 """
     JuliaIR.build_pipeline!(pm, p::JuliaPipeline)
-    JuliaIR.build_pipeline!(pm; level=2, ports=true, options...)
+    JuliaIR.build_pipeline!(pm; level=2, ports=nothing, options...)
 
 Add the passes of Julia's optimization pipeline `p` (see [`JuliaIR.JuliaPipeline`](@ref)
 for the keyword arguments) to a module pass manager or a pass builder `pm`, which needs
@@ -290,7 +303,7 @@ end
 
 """
     JuliaIR.pipeline(p::JuliaPipeline) -> String
-    JuliaIR.pipeline(; level=2, ports=true, options...) -> String
+    JuliaIR.pipeline(; level=2, ports=nothing, options...) -> String
 
 The text of Julia's optimization pipeline `p` (see [`JuliaIR.JuliaPipeline`](@ref) for the
 keyword arguments), for a pass builder with this package's passes registered.
@@ -326,7 +339,7 @@ function alias_analyses!(pb::PassBuilder, level::Integer)
 end
 
 """
-    JuliaIR.optimize!(mod::LLVM.Module, [tm::TargetMachine]; level=2, ports=true, options...)
+    JuliaIR.optimize!(mod::LLVM.Module, [tm::TargetMachine]; level=2, ports=nothing, options...)
 
 Optimize `mod` like Julia does, with its optimization pipeline (see
 [`JuliaIR.JuliaPipeline`](@ref) for the keyword arguments) and its choice of alias
@@ -335,17 +348,18 @@ answers for `tm` where a function doesn't say its target; with `ports=false`, Ju
 CPUFeatures runs by name, which can't be given a target machine (as in `opt`).
 """
 function optimize!(mod::LLVM.Module, tm::Union{Nothing,LLVM.TargetMachine}=nothing; kwargs...)
-    p = JuliaPipeline(; kwargs...)
-    options = Dict{String,NamedTuple}()
-    # (earlier versions' CPUFeatures uses the JIT's features, whatever the target machine)
-    if tm !== nothing && Dialect(VERSION).cpu_features_rule === :subtarget
-        options[CPU_FEATURES.name] = (; target_machine=tm)
-    end
     # the pass builder, and the pipeline's choices that depend on the LLVM version, are
     # those of the library that `mod` belongs to
     LLVM.library!(mod.library) do
+        p = JuliaPipeline(; kwargs...)
+        options = Dict{String,NamedTuple}()
+        # (earlier versions' CPUFeatures uses the JIT's features, whatever the target
+        # machine)
+        if p.ports && tm !== nothing && Dialect(VERSION).cpu_features_rule === :subtarget
+            options[CPU_FEATURES.name] = (; target_machine=tm)
+        end
         @dispose pb=PassBuilder() begin
-            register!(pb; options)
+            register!(pb; p.ports, options)
             alias_analyses!(pb, p.level)
             build_pipeline!(pb, p)
             run!(pb, mod, tm)
@@ -379,13 +393,13 @@ function split_pipeline(text::AbstractString)
 end
 
 """
-    JuliaIR.expand_julia_pipeline(text; ports=true) -> String
+    JuliaIR.expand_julia_pipeline(text; ports=nothing) -> String
 
 Replace the `julia` and `julia<...>` elements of the module pipeline `text` (also in nested
 `module(...)` managers) by the text of the pipelines they stand for (see
 [`JuliaIR.JuliaPipeline`](@ref)).
 """
-function expand_julia_pipeline(text::AbstractString; ports::Bool=true)
+function expand_julia_pipeline(text::AbstractString; ports::Union{Nothing,Bool}=nothing)
     elements = map(split_pipeline(text)) do element
         if (m = match(r"^julia(?:<(.*)>)?$", element)) !== nothing
             pipeline(JuliaPipeline(something(m[1], ""); ports))

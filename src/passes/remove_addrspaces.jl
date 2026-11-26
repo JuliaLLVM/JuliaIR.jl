@@ -315,7 +315,7 @@ const REMOVE_ADDRSPACES =
                 required=true, cpp_name="RemoveAddrspaces")
 
 """
-    JuliaIR.RemoveJuliaAddrspacesPass()
+    JuliaIR.RemoveJuliaAddrspacesPass(; ports=nothing)
 
 Remove Julia's address spaces from a module (`jl-remove-addrspaces` in a pipeline):
 pointers in address spaces 10 to 13 (tracked, derived, callee-rooted and loaded
@@ -329,21 +329,33 @@ identified struct type that has a body; the old struct types are renamed
 `<name>.bad`, also for other modules of the same context. References to the global
 values of the module taken before the pass are invalid afterwards: look them up by name
 again.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-RemoveJuliaAddrspacesPass(; kwargs...) = custom_pass(REMOVE_JULIA_ADDRSPACES; kwargs...)
+RemoveJuliaAddrspacesPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(REMOVE_JULIA_ADDRSPACES, ports; kwargs...)
 
 """
-    JuliaIR.RemoveAddrspacesPass([asmap])
+    JuliaIR.RemoveAddrspacesPass([asmap]; ports=nothing)
 
 Map the address spaces of the pointer types in a module (`jl-remove-all-addrspaces` in a
 pipeline, which maps every address space to 0). `asmap` is a function that takes an
 address space (an `Int`) and returns the address space to use instead; without it, every
 address space becomes 0. Otherwise the pass works like
 [`JuliaIR.RemoveJuliaAddrspacesPass`](@ref).
+
+With `asmap`, only the port can be used, which needs a registration of its own (see
+[`JuliaIR.Pass`](@ref)): it can be run with `run!`, but not be added to a pipeline with
+`add!`.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-RemoveAddrspacesPass(; kwargs...) = custom_pass(REMOVE_ADDRSPACES; kwargs...)
-function RemoveAddrspacesPass(asmap; kwargs...)
+RemoveAddrspacesPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(REMOVE_ADDRSPACES, ports; kwargs...)
+function RemoveAddrspacesPass(asmap; ports::Union{Nothing,Bool}=nothing, kwargs...)
     impl = (mod, am, opts) -> remove_addrspaces!(mod, am, asmap;
         move_bodies=opts.dialect.remove_addrspaces_moves_bodies)
-    return custom_pass(with_impl(REMOVE_ADDRSPACES, impl); kwargs...)
+    return make_pass(with_impl(REMOVE_ADDRSPACES, impl), ports; configured=true, kwargs...)
 end

@@ -8,7 +8,7 @@ const PIPELINE_MINOR = JuliaIR.dialect_minor(VERSION)
 # a pipeline as LLVM parses it, with this package's passes
 function printed(text)
     @dispose ctx=Context() pb=PassBuilder() begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, text)
         sprint(print_pipeline, pb)
     end
@@ -72,7 +72,7 @@ end
 @testset "structure: $(julia_element(config))" for config in configurations()
     # with the ports, which take the place of the C++ passes (except for those in
     # `CPP_FALLBACKS`), on any LLVM
-    ports = printed(JuliaIR.pipeline(; config...))
+    ports = printed(JuliaIR.pipeline(; ports=true, config...))
     @test !any(name -> occursin(Regex("\\b$name\\b"), ports),
                setdiff(keys(JuliaIR.cpp_mapping()), values(JuliaIR.CPP_FALLBACKS)))
 
@@ -93,7 +93,8 @@ end
 
 @testset "options" begin
     p = JuliaPipeline()
-    @test p.level == 2 && p.ports && p.options == PIPELINE_OPTIONS
+    @test p.level == 2 && p.options == PIPELINE_OPTIONS
+    @test p.ports == (LLVM.library() !== LLVM.julia_library)
     @test JuliaPipeline(; level=7).level == 3
     @test JuliaPipeline(; level=-1).level == 0
     @test_throws "unknown option frobnicate" JuliaPipeline(; frobnicate=true)
@@ -124,7 +125,7 @@ end
 @testset "spelling" begin
     # where the C++ uses `VectorCombinePass(/*TryEarlyFoldsOnly=*/true)`, which prints
     # like the other one
-    scalar = JuliaIR.scalar_optimization!(FunctionPassManager(), JuliaPipeline())
+    scalar = JuliaIR.scalar_optimization!(FunctionPassManager(), JuliaPipeline(; ports=true))
     @test ("vector-combine<early>" in scalar.passes) == (PIPELINE_MINOR >= v"1.13")
     @test !("vector-combine" in scalar.passes)
 
@@ -162,7 +163,7 @@ end
             function optimized(text)
                 mod = parse(LLVM.Module, ir)
                 @dispose pb=PassBuilder() begin
-                    JuliaIR.register!(pb)
+                    JuliaIR.register!(pb; ports=true)
                     JuliaIR.alias_analyses!(pb, level)
                     add!(pb, text)
                     run!(pb, mod)
@@ -179,7 +180,7 @@ end
 
             # with the ports, everything of Julia's is lowered
             mod = parse(LLVM.Module, ir)
-            JuliaIR.optimize!(mod; level)
+            JuliaIR.optimize!(mod; ports=true, level)
             verify(mod)
             @test !occursin(r"call [^@]*@julia\.", string(mod))
         end
@@ -191,7 +192,7 @@ end
         ctx = Context(; library=:julia, opaque_pointers=true)
         try
             mod = context!(() -> parse(LLVM.Module, unoptimized_ir(boxed, (Int,))), ctx)
-            JuliaIR.optimize!(mod)
+            JuliaIR.optimize!(mod; ports=true)
             context!(ctx) do
                 verify(mod)
                 @test !occursin(r"call [^@]*@julia\.", string(mod))
@@ -218,7 +219,7 @@ end
                 mod = parse(LLVM.Module, ir)
                 tm = JuliaIR.target_machine(mod; cpu)
                 try
-                    JuliaIR.optimize!(mod, tm; level=0)
+                    JuliaIR.optimize!(mod, tm; ports=true, level=0)
                     occursin("ret i1 true", string(mod))
                 finally
                     dispose(tm)
@@ -268,7 +269,7 @@ end
     run_pipeline(text, name) = @dispose ctx=Context(; opaque_pointers=true) begin
         mod = parse(LLVM.Module, ir)
         @dispose pb=PassBuilder() begin
-            JuliaIR.register!(pb)
+            JuliaIR.register!(pb; ports=true)
             add!(pb, text)
             run!(pb, mod)
         end

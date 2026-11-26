@@ -50,6 +50,7 @@ function __init__()
     # (should precompiling this package fill them)
     empty!(DIALECTS)
     empty!(REGISTRATIONS)
+    empty!(CPP_PASSES)
 end
 
 end

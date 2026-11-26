@@ -258,7 +258,7 @@ const PROPAGATE_ADDRSPACES = define_pass("jl-propagate-addrspaces", :function,
                                          cpp_name="PropagateJuliaAddrspaces")
 
 """
-    JuliaIR.PropagateAddrspacesPass()
+    JuliaIR.PropagateJuliaAddrspacesPass(; ports=nothing)
 
 Make loads, stores, atomics and memory intrinsics that access memory through one of
 Julia's special address spaces use the untracked pointer the address was derived from,
@@ -266,5 +266,11 @@ when that pointer can be recovered through address space casts, GEPs, phis and s
 (`jl-propagate-addrspaces` in a pipeline). Run `dce` or another cleanup afterwards to
 remove the instructions that became unused. Like Julia's C++ pass, it is required, so it
 also runs on `optnone` functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-PropagateAddrspacesPass(; kwargs...) = custom_pass(PROPAGATE_ADDRSPACES; kwargs...)
+PropagateJuliaAddrspacesPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(PROPAGATE_ADDRSPACES, ports; kwargs...)
+
+@deprecate PropagateAddrspacesPass(; kwargs...) PropagateJuliaAddrspacesPass(; kwargs...) false

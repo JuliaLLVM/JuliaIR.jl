@@ -423,7 +423,7 @@ const FINAL_LOWER_GC_FUNCTION = define_pass("jl-final-lower-gc", :function,
                                             required=true, cpp_name="FinalLowerGC")
 
 """
-    JuliaIR.FinalLowerGCPass(; kind=:auto)
+    JuliaIR.FinalLowerGCPass(; ports=nothing, kind=:auto)
 
 Julia's final GC lowering (`jl-final-lower-gc` in a pipeline, `FinalLowerGC` in Julia's
 pipelines): lowers the GC frame intrinsics that LateLowerGCFrame emits, allocations,
@@ -432,15 +432,23 @@ write barriers. See the documentation for what it does on each Julia version.
 
 The pass is both a module pass and a function pass; `kind` selects one (`:module`,
 `:function`), by default the one of the running Julia's pipeline (a module pass on Julia
-1.10, a function pass later).
+1.10, a function pass later). Julia's C++ pass only has that kind.
 
 Allocations of a constant size are lowered to the pool of their size class in the running
 Julia's GC (see [`JuliaIR.gc_pool_class`](@ref)).
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-function FinalLowerGCPass(; kind::Symbol=:auto, kwargs...)
-    kind === :auto && (kind = Dialect(VERSION).gc_final_module ? :module : :function)
+function FinalLowerGCPass(; ports::Union{Nothing,Bool}=nothing, kind::Symbol=:auto,
+                          kwargs...)
+    if kind === :auto
+        module_pass = use_ports(ports) ? Dialect(VERSION).gc_final_module :
+                                         cpp_available(FINAL_LOWER_GC_MODULE)
+        kind = module_pass ? :module : :function
+    end
     kind in (:module, :function) ||
         throw(ArgumentError("invalid kind $kind; expected :module, :function or :auto"))
-    return custom_pass(kind === :module ? FINAL_LOWER_GC_MODULE : FINAL_LOWER_GC_FUNCTION;
-                       kwargs...)
+    return make_pass(kind === :module ? FINAL_LOWER_GC_MODULE : FINAL_LOWER_GC_FUNCTION,
+                     ports; kwargs...)
 end

@@ -488,7 +488,7 @@ const CANCELLATION_LOWERING =
                 cpp_name="CancellationLowering")
 
 """
-    JuliaIR.CancellationLoweringPass(; task_gcstack=nothing, task_ptls=nothing,
+    JuliaIR.CancellationLoweringPass(; ports=nothing, task_gcstack=nothing, task_ptls=nothing,
                                      task_eh=nothing, task_reset_ctx=nothing,
                                      tls_safepoint=nothing, reset_ctx_size=nothing,
                                      reset_ctx_align=nothing, reset_ctx_gcstack=nothing,
@@ -510,5 +510,9 @@ The lowering needs the layout of the runtime's task and reset context and the na
 its `setjmp`, which are taken from the running Julia (see
 [`JuliaIR.runtime_layout`](@ref)) only for functions that need them; the keyword
 arguments give these facts explicitly.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-CancellationLoweringPass(; kwargs...) = custom_pass(CANCELLATION_LOWERING; kwargs...)
+CancellationLoweringPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(CANCELLATION_LOWERING, ports; kwargs...)

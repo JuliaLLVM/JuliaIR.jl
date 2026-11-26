@@ -502,7 +502,7 @@ const EXPAND_ATOMIC_MODIFY = define_pass("jl-expand-atomic-modify", :function,
                                          cpp_name="ExpandAtomicModify")
 
 """
-    JuliaIR.ExpandAtomicModifyPass()
+    JuliaIR.ExpandAtomicModifyPass(; ports=nothing)
 
 Lower the `julia.atomicmodify.*` calls that Julia emits for `@atomic` modify operations
 (`jl-expand-atomic-modify` in a pipeline). Such a call atomically replaces the value at a
@@ -516,5 +516,9 @@ compare-exchange loop.
 
 Julia 1.13 introduced these calls, so the pass does nothing for the IR of earlier
 versions. Like Julia's C++ pass, it is skipped on `optnone` functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-ExpandAtomicModifyPass(; kwargs...) = custom_pass(EXPAND_ATOMIC_MODIFY; kwargs...)
+ExpandAtomicModifyPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(EXPAND_ATOMIC_MODIFY, ports; kwargs...)

@@ -5,16 +5,19 @@ The API is not exported; use qualified names (`JuliaIR.register!`).
 ## Passes
 
 ```@docs
+JuliaIR.Pass
+JuliaIR.LLVM.run!(::JuliaIR.Pass, ::Union{JuliaIR.LLVM.Module,JuliaIR.LLVM.Function})
+JuliaIR.LLVM.register!(::JuliaIR.LLVM.PassBuilder, ::JuliaIR.Pass)
 JuliaIR.register!
 JuliaIR.passes
 JuliaIR.RemoveNIPass
 JuliaIR.AllocOptPass
-JuliaIR.PropagateAddrspacesPass
+JuliaIR.PropagateJuliaAddrspacesPass
 JuliaIR.DemoteFloat16Pass
 JuliaIR.GCInvariantVerifierPass
 JuliaIR.GCInvariantError
 JuliaIR.GCInvariantViolation
-JuliaIR.LateLowerGCFramePass
+JuliaIR.LateLowerGCPass
 JuliaIR.LateGCCleanupPass
 JuliaIR.FinalLowerGCPass
 JuliaIR.DeclarationError
