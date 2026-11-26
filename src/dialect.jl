@@ -204,6 +204,11 @@ struct Dialect
     "Whether `julia.gc_alloc_bytes` takes the type tag as an argument and carries the
     allocation attributes (Julia 1.11 and later)."
     gc_alloc_bytes_tag::Bool
+    "Whether the runtime's small and big allocators set the type tag of the objects they
+    allocate, so that LateLowerGCFrame stores no tag after `julia.gc_alloc_bytes` and the
+    allocators have no `allocsize` attribute, as the size they take includes the header
+    that precedes the pointer they return (Julia 1.15 and later; JuliaLang/julia#65204)."
+    gc_alloc_sets_tag::Bool
     "Whether the field extractions that GC lowering creates are simplified (with LLVM's
     `InstSimplifyFolder`; Julia 1.12 and later)."
     gc_extract_simplify::Bool
@@ -301,6 +306,10 @@ struct Dialect
     "Whether FinalLowerGC skips functions when no GC intrinsic in the module has a use
     (Julia 1.13 and later)."
     gc_final_skip_unused::Bool
+    "Whether FinalLowerGC addresses frame slots with byte offsets (`getelementptr inbounds
+    nuw i8`, the form InstCombine canonicalizes to) rather than with indices of pointers
+    (Julia 1.15 and later; JuliaLang/julia#65275)."
+    gc_frame_slot_bytes::Bool
     "Whether FinalLowerGC inserts the lowered frame allocation and push after the
     intrinsic, with the debug location of the next instruction (Julia 1.10)."
     gc_final_debugloc_next::Bool
@@ -423,6 +432,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_names = minor >= v"1.11",
         gc_tag_load_volatile = minor >= v"1.11",
         gc_alloc_bytes_tag = minor >= v"1.11",
+        gc_alloc_sets_tag = minor >= v"1.15",
         gc_extract_simplify = minor >= v"1.12",
         gc_ptls_gep = minor <= v"1.11" ? :pointer : :byte,
         gc_barrier_lowering,
@@ -450,6 +460,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         boxes_kinds = minor >= v"1.14",
         gc_final_module = minor == v"1.10",
         gc_final_skip_unused = minor >= v"1.13",
+        gc_frame_slot_bytes = minor >= v"1.15",
         gc_final_debugloc_next = minor == v"1.10",
         gc_alloc_entry_points = minor == v"1.10" ? :pool :
                                 minor == v"1.11" ? :pool_instrumented : :small,

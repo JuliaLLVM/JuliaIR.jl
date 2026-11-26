@@ -190,8 +190,17 @@ function lower_get_gc_frame_slot!(p::FinalLowerGC, target::Instruction)
     builder = p.builder
     gcframe, index = target.arguments
     position_for!(p, target)
-    index = add!(builder, index, ConstantInt(LLVM.Int32Type(), GC_FRAME_HEADER_SLOTS))
-    gep = inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [index])
+    # Julia 1.15 requires a constant index; the GEP over pointers serves any other
+    gep = if p.dialect.gc_frame_slot_bytes && index isa LLVM.ConstantInt
+        # the canonical form, which InstCombine doesn't revisit the frame for
+        offset = (convert(UInt64, index) + GC_FRAME_HEADER_SLOTS) * pointer_size(p.gc)
+        gep = inbounds_gep!(builder, LLVM.Int8Type(), gcframe, [ConstantInt(p.gc.T_size, offset)])
+        gep isa LLVM.GetElementPtrInst && LLVM.version() >= v"19" && (gep.nuw = true)
+        gep
+    else
+        index = add!(builder, index, ConstantInt(LLVM.Int32Type(), GC_FRAME_HEADER_SLOTS))
+        inbounds_gep!(builder, p.gc.T_prjlvalue, gcframe, [index])
+    end
     take_name!(gep, target)
     replace_uses!(target, gep)
     erase!(target)

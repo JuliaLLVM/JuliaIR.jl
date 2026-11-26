@@ -19,7 +19,7 @@
 ; its own) and explicit ones (in bytes from Julia 1.12 on)
 ; RUN: opt -passes='function(LateLowerGCFrame)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=NATIVE
 ; RUN: %if julia-ge-1.12 %{ opt -passes='function(LateLowerGCFrame<task-ptls=100>)' -S %t/unknown-target.ll | FileCheck %t/unknown-target.ll --check-prefix=OPTION %}
-; RUN: %if julia-ge-1.12 %{ opt -passes='function(LateLowerGCFrame<task-ptls=124>)' -S %t/i686.ll | FileCheck %t/i686.ll %}
+; RUN: %if julia-ge-1.12 %{ opt -passes='function(LateLowerGCFrame<task-ptls=124>)' -S %t/i686.ll | FileCheck %t/i686.ll --check-prefixes=CHECK,%if julia-ge-1.15 %{ALLOCATOR-TAG%} %else %{IR-TAG%} %}
 
 ; jlopt maps Julia's name to the port
 ; RUN: rm -f %t.ledger
@@ -200,7 +200,12 @@ declare ptr addrspace(10) @julia.gc_alloc_obj(ptr, i32, ptr addrspace(10))
 
 ; CHECK-LABEL: @alloc(
 ; CHECK: %ptls_field = getelementptr inbounds i8, ptr %task, i32 124
-; CHECK: @julia.gc_alloc_bytes(ptr %ptls_load, i32 8, i32 ptrtoint (ptr addrspace(10) @tag to i32))
+; CHECK: %v = call noalias nonnull ptr addrspace(10) @julia.gc_alloc_bytes(ptr %ptls_load, i32 8, i32 ptrtoint (ptr addrspace(10) @tag to i32))
+; the tag is stored in IR, or from Julia 1.15 on by the allocator
+; IR-TAG-NEXT: %v.tag_addr = getelementptr inbounds ptr addrspace(10), ptr addrspace(10) %v, i32 -1
+; IR-TAG-NEXT: store atomic ptr addrspace(10) @tag, ptr addrspace(10) %v.tag_addr unordered, align 4
+; IR-TAG-NEXT: ret ptr addrspace(10) %v
+; ALLOCATOR-TAG-NEXT: ret ptr addrspace(10) %v
 define ptr addrspace(10) @alloc(ptr %task) {
 top:
   %pgcstack = call ptr @julia.get_pgcstack()
