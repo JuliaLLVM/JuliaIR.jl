@@ -17,10 +17,10 @@ that the function pushes onto its task's GC stack. The pass
 4. creates the frame (`julia.new_gc_frame`, `julia.push_gc_frame`, `julia.pop_gc_frame`),
    stores the values to their slots before the safepoints they need to survive, and
    moves allocas of tracked pointers into the frame (`julia.get_gc_frame_slot`);
-5. cleans up: lowers allocations (`julia.gc_alloc_obj` to `julia.gc_alloc_bytes` and a
-   store of the type tag; `julia.gc_alloc_memory` to the same, or to a call of the
-   runtime, followed by the initialization of the Memory's header), `julia.typeof`,
-   write barriers, jlcalls (`julia.call*`),
+5. cleans up: lowers allocations (`julia.gc_alloc_obj` to `julia.gc_alloc_bytes` and,
+   before Julia 1.15, a store of the type tag; `julia.gc_alloc_memory` to the same, or
+   to a call of the runtime, followed by the initialization of the Memory's header),
+   `julia.typeof`, write barriers, jlcalls (`julia.call*`),
    calls with a `gc-transition` bundle (switching the thread to the GC-safe state around
    them), `julia.pointer_from_objref` and `julia.gc_loaded`, and removes the metadata,
    intrinsics and operand bundles that only hold before this pass.
@@ -45,27 +45,28 @@ without a GC frame, as GPU back-ends emit them, after checking an input contract
 The pass follows the C++ pass of the running Julia's version. The differences between
 versions are fields of `JuliaIR.Dialect`:
 
-| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 and later |
-|-----------|------|------|------|------|----------------|
-| loads that are rooted by the object they load from | `!invariant.load`, or TBAA of `jtbaa_immut`, `jtbaa_const`, `jtbaa_datatype` | same, and `jtbaa_memoryptr`, `jtbaa_memorylen`, `jtbaa_memoryown` | same | same | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten |
-| loads through an argument (jlcall argument arrays) rooted by the caller | yes | yes | yes | no | no |
-| no frame without a safepoint after the first definition | no | no | no | yes | yes |
-| roots returned in memory | `sret` arguments and the alloca passed after them | same | same | same | `julia.return_roots` argument attributes |
-| frame slots reset to null when their value dies | no | no | yes | yes | yes |
-| adjacent slots that die together reset at once (a `memset` for four or more) | no | no | no | no | yes |
-| frame slot addresses of rooted allocas computed in each block that uses them, of tracked stores before the store | no | no | no | no | yes |
-| null stores to rooted allocas in the prologue removed | no | no | yes | yes | yes |
-| allocas of single tracked pointers placed first | yes | yes | no | no | no |
-| GC stack in a `gcstack` argument | no | no | no | yes | yes |
-| names (`jlcallframe`, `gc_slot_addr`, `.tag_addr`, `.tag`), volatile tag loads | no | yes | yes | yes | yes |
-| `julia.gc_alloc_bytes(ptls, size)` with the tag and allocation attributes | no | yes | yes | yes | yes |
-| extractions simplified (`InstSimplifyFolder`) | no | no | yes | yes | yes |
-| task-local state addressed in pointers or bytes | pointers | pointers | bytes | bytes | bytes |
-| write barriers | lowered | lowered, named at debug level 2 | lowered, named | lowered, also queuing image objects | elided when unnecessary, otherwise left to FinalLowerGC |
-| `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same |
-| `ijl_gc_small_alloc` declared | no | no | yes | yes | yes |
-| `julia.gc_alloc_memory` lowered | no | no | no | no | yes |
-| write barriers on an object allocated since the last safepoint on every path to them removed | no | no | no | no | yes |
+| Behaviour | 1.10 | 1.11 | 1.12 | 1.13 | 1.14 | 1.15 and later |
+|-----------|------|------|------|------|------|----------------|
+| loads that are rooted by the object they load from | `!invariant.load`, or TBAA of `jtbaa_immut`, `jtbaa_const`, `jtbaa_datatype` | same, and `jtbaa_memoryptr`, `jtbaa_memorylen`, `jtbaa_memoryown` | same | same | `!invariant.load`, or `!alias.scope` in a `jnoalias` region that is never overwritten | same |
+| loads through an argument (jlcall argument arrays) rooted by the caller | yes | yes | yes | no | no | no |
+| no frame without a safepoint after the first definition | no | no | no | yes | yes | yes |
+| roots returned in memory | `sret` arguments and the alloca passed after them | same | same | same | `julia.return_roots` argument attributes | same |
+| frame slots reset to null when their value dies | no | no | yes | yes | yes | yes |
+| adjacent slots that die together reset at once (a `memset` for four or more) | no | no | no | no | yes | yes |
+| frame slot addresses of rooted allocas computed in each block that uses them, of tracked stores before the store | no | no | no | no | yes | yes |
+| null stores to rooted allocas in the prologue removed | no | no | yes | yes | yes | yes |
+| allocas of single tracked pointers placed first | yes | yes | no | no | no | no |
+| GC stack in a `gcstack` argument | no | no | no | yes | yes | yes |
+| names (`jlcallframe`, `gc_slot_addr`, `.tag_addr`, `.tag`), volatile tag loads | no | yes | yes | yes | yes | yes |
+| `julia.gc_alloc_bytes(ptls, size)` with the tag and allocation attributes | no | yes | yes | yes | yes | yes |
+| type tag stored after `julia.gc_alloc_bytes` (the allocator sets it from 1.15 on, JuliaLang/julia#65204) | yes | yes | yes | yes | yes | no |
+| extractions simplified (`InstSimplifyFolder`) | no | no | yes | yes | yes | yes |
+| task-local state addressed in pointers or bytes | pointers | pointers | bytes | bytes | bytes | bytes |
+| write barriers | lowered | lowered, named at debug level 2 | lowered, named | lowered, also queuing image objects | elided when unnecessary, otherwise left to FinalLowerGC | same |
+| `gc-transition` bundles | dropped | dropped | lowered through the GC stack's task | lowered through the bundle's state | same | same |
+| `ijl_gc_small_alloc` declared | no | no | yes | yes | yes | yes |
+| `julia.gc_alloc_memory` lowered | no | no | no | no | yes | yes |
+| write barriers on an object allocated since the last safepoint on every path to them removed | no | no | no | no | yes | yes |
 
 From Julia 1.14 on, the `gc_barrier` policy of the dialect selects the write-barrier build
 configuration: with `:snapshot` (or `:snapshot_field_precise`), barriers are never

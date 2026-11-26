@@ -9,7 +9,7 @@
 ; RUN: opt -passes=FinalLowerGC -S %t/frames.ll | FileCheck %t/frames.ll --check-prefixes=CHECK,%if julia-1.10 %{V110%} %else %{NAMES%}
 ; RUN: opt -passes=FinalLowerGC -S %t/debugloc.ll | FileCheck %t/debugloc.ll --check-prefixes=%if julia-1.10 %{V110%} %else %{NEXT%}
 ; RUN: %if julia-1.10 %{ opt -passes=FinalLowerGC -S %t/alloc-1.10.ll | FileCheck %t/alloc-1.10.ll %}
-; RUN: %if julia-ge-1.11 %{ opt -passes=FinalLowerGC -S %t/alloc.ll | FileCheck %t/alloc.ll --check-prefixes=CHECK,%if julia-1.11 %{V111%} %else %{SMALL%} %}
+; RUN: %if julia-ge-1.11 %{ opt -passes=FinalLowerGC -S %t/alloc.ll | FileCheck %t/alloc.ll --check-prefixes=CHECK,%if julia-1.11 %{V111%} %else %{SMALL%},%if julia-ge-1.15 %{HEADER%} %else %{ALLOCSIZE%} %}
 ; RUN: opt -passes=FinalLowerGC -S %t/declarations.ll | FileCheck %t/declarations.ll --check-prefixes=%if julia-1.10 %{V110%}%if julia-1.11 %{GCSTACK%}%if julia-1.12 %{GCSTACK%}%if julia-ge-1.13 %{USES%}
 ; RUN: opt -passes=FinalLowerGC -S %t/no-julia.ll | FileCheck %t/no-julia.ll --check-prefixes=%if julia-1.10 %{V110%} %else %{NONE%}
 ; RUN: %if julia-ge-1.13 %{ opt -passes=FinalLowerGC -S %t/gcstack-arg.ll | FileCheck %t/gcstack-arg.ll %}
@@ -234,16 +234,24 @@ declare noalias nonnull ptr addrspace(10) @julia.gc_alloc_bytes(ptr, i64, i64) #
 ; V111: %small = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_pool_alloc_instrumented(ptr %ptls, i32 {{[0-9]+}}, i32 {{[0-9]+}}, i64 1234) #[[POOL:[0-9]+]]
 ; SMALL: %small = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_small_alloc(ptr %ptls, i32 {{[0-9]+}}, i32 {{[0-9]+}}, i64 1234) #[[POOL:[0-9]+]]
 ; CHECK-NEXT: %empty = call noalias nonnull align 8 ptr addrspace(10) @[[POOLFN:ijl_gc_pool_alloc_instrumented|ijl_gc_small_alloc]](ptr %ptls, i32 {{[0-9]+}}, i32 {{[0-9]+}}, i64 1234) #[[POOL]]
-; V111-NEXT: %big = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc_instrumented(ptr %ptls, i64 100008, i64 1234) #[[BIG:[0-9]+]]
-; SMALL-NEXT: %big = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc(ptr %ptls, i64 100008, i64 1234) #[[BIG:[0-9]+]]
+; V111-NEXT: %big = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc_instrumented(ptr %ptls, i64 100008, i64 1234)
+; SMALL-NEXT: %big = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc(ptr %ptls, i64 100008, i64 1234)
+; ALLOCSIZE-SAME: #[[BIG:[0-9]+]]
+; HEADER-SAME: #[[POOL]]{{$}}
 ; CHECK-NEXT: [[N:%[0-9]+]] = zext i32 %n to i64
-; CHECK-NEXT: %dynamic = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[N]], i64 1234) #[[BIG]]
+; ALLOCSIZE-NEXT: %dynamic = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[N]], i64 1234) #[[BIG]]
+; HEADER-NEXT: %dynamic = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[N]], i64 1234) #[[TYPED:[0-9]+]]
 ; CHECK-NEXT: [[W:%[0-9]+]] = trunc i128 %w to i64
-; CHECK-NEXT: %wide = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[W]], i64 1234) #[[BIG]]
+; ALLOCSIZE-NEXT: %wide = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[W]], i64 1234) #[[BIG]]
+; HEADER-NEXT: %wide = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 [[W]], i64 1234) #[[TYPED]]
 ; the alignment of the intrinsic's call is kept, its metadata dropped
 ; CHECK-NEXT: %aligned = call noalias nonnull align 64 dereferenceable(16) ptr addrspace(10) @[[POOLFN]](ptr %ptls, i32 {{[0-9]+}}, i32 {{[0-9]+}}, i64 1234) #[[POOL]]{{$}}
-; CHECK: attributes #[[POOL]] = { nounwind willreturn allockind("alloc") allocsize(2) memory(argmem: read, inaccessiblemem: readwrite) }
-; CHECK: attributes #[[BIG]] = { nounwind willreturn allockind("alloc") allocsize(1) memory(argmem: read, inaccessiblemem: readwrite) }
+; From Julia 1.15 on, the pool and big-object allocators have no `allocsize`: their size
+; includes the header before the pointer they return
+; ALLOCSIZE: attributes #[[POOL]] = { nounwind willreturn allockind("alloc") allocsize(2) memory(argmem: read, inaccessiblemem: readwrite) }
+; ALLOCSIZE: attributes #[[BIG]] = { nounwind willreturn allockind("alloc") allocsize(1) memory(argmem: read, inaccessiblemem: readwrite) }
+; HEADER: attributes #[[POOL]] = { nounwind willreturn allockind("alloc") memory(argmem: read, inaccessiblemem: readwrite) }
+; HEADER: attributes #[[TYPED]] = { nounwind willreturn allockind("alloc") allocsize(1) memory(argmem: read, inaccessiblemem: readwrite) }
 define void @alloc(i32 %n, i128 %w) {
 top:
   %pgcstack = call ptr @julia.get_pgcstack()
@@ -354,12 +362,16 @@ declare void @julia.queue_gc_root(ptr addrspace(10))
 ; CHECK-NOT: @julia.object_write_barrier(
 ; RESET: call void @ijl_gc_queue_root_reset_safe(ptr addrspace(10) %c), !julia.reset_region
 ; RESET: %a = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_small_alloc_reset_safe(
-; RESET: %b = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc_reset_safe(ptr %ptls, i64 100008, i64 1234)
-; RESET: %d = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed_reset_safe(ptr %ptls, i64 %n, i64 1234)
+; RESET-SAME: ) #[[RESET_POOL:[0-9]+]]
+; RESET: %b = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc_reset_safe(ptr %ptls, i64 100008, i64 1234) #[[RESET_POOL]]
+; RESET: %d = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed_reset_safe(ptr %ptls, i64 %n, i64 1234) #[[RESET_TYPED:[0-9]+]]
 ; NORESET: call void @ijl_gc_queue_root(ptr addrspace(10) %c), !julia.reset_region
 ; NORESET: %a = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_small_alloc(
 ; NORESET: %b = call noalias nonnull align 8 dereferenceable(100000) ptr addrspace(10) @ijl_gc_big_alloc(ptr %ptls, i64 100008, i64 1234)
 ; NORESET: %d = call noalias nonnull align 8 dereferenceable(8) ptr addrspace(10) @ijl_gc_alloc_typed(ptr %ptls, i64 %n, i64 1234)
+; the reset-safe pool and big-object allocators have no `allocsize` either
+; RESET-DAG: attributes #[[RESET_POOL]] = { nounwind willreturn allockind("alloc") }
+; RESET-DAG: attributes #[[RESET_TYPED]] = { nounwind willreturn allockind("alloc") allocsize(1) }
 ; CHECK: [[WEIGHTS]] = !{!"branch_weights", i32 1, i32 9}
 define void @barriers(ptr addrspace(10) %p, ptr addrspace(10) %c, ptr addrspace(11) %s, i64 %n) {
 top:

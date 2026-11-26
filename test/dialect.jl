@@ -83,6 +83,7 @@ end
     @test !d12.gc_stack_argument && d13.gc_stack_argument
     @test !d10.gc_names && d11.gc_names && !d10.gc_tag_load_volatile && d11.gc_tag_load_volatile
     @test !d10.gc_alloc_bytes_tag && d11.gc_alloc_bytes_tag
+    @test !d14.gc_alloc_sets_tag && dm.gc_alloc_sets_tag
     @test !d11.gc_extract_simplify && d12.gc_extract_simplify
     @test (d11.gc_ptls_gep, d12.gc_ptls_gep) == (:pointer, :byte)
     @test map(d -> d.gc_barrier_lowering, (d10, d11, d12, d13, dm)) ==

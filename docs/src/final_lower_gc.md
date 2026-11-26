@@ -58,6 +58,7 @@ versions are fields of `JuliaIR.Dialect`:
 | names (`frame.nroots`, `frame.prev`, `task.gcstack`) | no | yes | yes | yes | yes | yes |
 | pool allocator | `ijl_gc_pool_alloc(ptls, offset, osize)` | `ijl_gc_pool_alloc_instrumented(ptls, offset, osize, tag)` | `ijl_gc_small_alloc(ptls, offset, osize, tag)` | same | same | same |
 | big-object allocator | `ijl_gc_big_alloc(ptls, size)` | `ijl_gc_big_alloc_instrumented(ptls, size, tag)` | `ijl_gc_big_alloc(ptls, size, tag)` | same | same | same |
+| `allocsize` on the pool and big-object allocators | yes | yes | yes | yes | yes | no: their size includes the header before the pointer they return (JuliaLang/julia#65204) |
 | typed allocator | `ijl_gc_alloc_typed(ptls, size, null)` | `ijl_gc_alloc_typed(ptls, size, tag)` | same | same | same | same |
 | alignment of allocations | none | the call's, at least a pointer's | same | same | same | same |
 | allocations and root queuing in a cancellation reset region (`!julia.reset_region`) | | | | | | the `_reset_safe` variants of the runtime functions |

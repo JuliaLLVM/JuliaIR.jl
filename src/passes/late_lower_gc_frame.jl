@@ -1937,8 +1937,8 @@ other_bundles(call::Instruction) =
     OperandBundle[b for b in call.operand_bundles if !(LLVM.tag(b) in JULIA_BUNDLES)]
 
 # An allocation of `size` bytes with the type tag `tag`, to replace the allocation `call`:
-# `julia.gc_alloc_bytes(ptls, size[, tag])`, and a store of the tag to the object's header
-# (`EmitGCAllocBytes`). The builder must be at `call`.
+# `julia.gc_alloc_bytes(ptls, size[, tag])`, and before Julia 1.15 a store of the tag to the
+# object's header (`EmitGCAllocBytes`). The builder must be at `call`.
 function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecialize(size::Value),
                               @nospecialize(tag::Value))
     builder = p.builder
@@ -1979,8 +1979,7 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
     end
 
     if p.dialect.gc_alloc_bytes_tag
-        # `julia.gc_alloc_bytes` specializes on the size of the object, and doesn't set
-        # its tag
+        # `julia.gc_alloc_bytes` specializes on the size of the object
         alloc_bytes = get_or_declare(p.gc, :gc_alloc_bytes)
         ptls = current_ptls_from_task!(p.gc, call.arguments[1], tbaa_tags(p.gc).gcframe)
         size = intcast!(builder, size, alloc_bytes.function_type.parameters[2];
@@ -1999,16 +1998,20 @@ function emit_gc_alloc_bytes!(p::LateLowerGCFrame, call::Instruction, @nospecial
         take_name!(new_call, call)
     end
 
-    # set the tag in IR, rather than in the allocation function
-    store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
-                   align=pointer_align(p.gc), ordering=LLVM.AtomicOrdering.Unordered)
-    store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
+    # Julia 1.14 and older set the tag in IR. From 1.15 on, the allocator does: the store
+    # writes before the pointer the call returns, outside of what LLVM takes to be the
+    # object, so LLVM may delete it when the object isn't captured.
+    if !p.dialect.gc_alloc_sets_tag
+        store = store!(builder, tag, emit_tag_ptr!(p.gc, tag_type, new_call);
+                       align=pointer_align(p.gc), ordering=LLVM.AtomicOrdering.Unordered)
+        store.metadata[LLVM.MD_tbaa] = tbaa_tags(p.gc).tag
+    end
     return new_call
 end
 
-# `julia.gc_alloc_obj(task, size, tag)` => `julia.gc_alloc_bytes(ptls, size[, tag])`, a
-# store of the tag to the object's header, and the initialization of reference fields
-# that the operand bundles ask for
+# `julia.gc_alloc_obj(task, size, tag)` => `julia.gc_alloc_bytes(ptls, size[, tag])`, before
+# Julia 1.15 a store of the tag to the object's header, and the initialization of reference
+# fields that the operand bundles ask for
 function lower_alloc_obj!(p::LateLowerGCFrame, call::Instruction, S)
     builder = p.builder
     position_before!(builder, call; debug=true)

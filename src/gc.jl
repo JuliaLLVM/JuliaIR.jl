@@ -430,20 +430,29 @@ function get_or_declare(g::GCCodegen, which::Symbol; check::Bool=false)
         return existing
     end
     f = LLVM.Function(g.mod, name, gc_declaration_type(g, which))
-    if which in (:gc_alloc_bytes, :gc_big_alloc, :gc_alloc_typed)
+    # the small and big allocators return a pointer past the header that their size
+    # includes, which `allocsize` can't describe; Julia 1.14 and older claim it anyway
+    header_allocsize = !g.dialect.gc_alloc_sets_tag
+    if which in (:gc_alloc_bytes, :gc_alloc_typed)
         push!(f.function_attributes, alloc_size_attr(1))
         add_gc_alloc_attributes!(g, f)
+    elseif which === :gc_big_alloc
+        header_allocsize && push!(f.function_attributes, alloc_size_attr(1))
+        add_gc_alloc_attributes!(g, f)
     elseif which === :gc_small_alloc
-        push!(f.function_attributes, alloc_size_attr(2))
+        header_allocsize && push!(f.function_attributes, alloc_size_attr(2))
         add_gc_alloc_attributes!(g, f)
     elseif which === :gc_alloc_genericmemory
         # without `allocsize`: its size is that of the data, not of the object
         add_gc_alloc_attributes!(g, f)
-    elseif which in (:gc_big_alloc_reset_safe, :gc_alloc_typed_reset_safe)
+    elseif which === :gc_alloc_typed_reset_safe
         push!(f.function_attributes, alloc_size_attr(1))
         add_reset_safe_gc_alloc_attributes!(f)
+    elseif which === :gc_big_alloc_reset_safe
+        header_allocsize && push!(f.function_attributes, alloc_size_attr(1))
+        add_reset_safe_gc_alloc_attributes!(f)
     elseif which === :gc_small_alloc_reset_safe
-        push!(f.function_attributes, alloc_size_attr(2))
+        header_allocsize && push!(f.function_attributes, alloc_size_attr(2))
         add_reset_safe_gc_alloc_attributes!(f)
     elseif which === :new_gc_frame
         push!(f.return_attributes, EnumAttribute("noalias"))

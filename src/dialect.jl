@@ -204,6 +204,11 @@ struct Dialect
     "Whether `julia.gc_alloc_bytes` takes the type tag as an argument and carries the
     allocation attributes (Julia 1.11 and later)."
     gc_alloc_bytes_tag::Bool
+    "Whether the runtime's small and big allocators set the type tag of the objects they
+    allocate, so that LateLowerGCFrame stores no tag after `julia.gc_alloc_bytes` and the
+    allocators have no `allocsize` attribute, as the size they take includes the header
+    that precedes the pointer they return (Julia 1.15 and later; JuliaLang/julia#65204)."
+    gc_alloc_sets_tag::Bool
     "Whether the field extractions that GC lowering creates are simplified (with LLVM's
     `InstSimplifyFolder`; Julia 1.12 and later)."
     gc_extract_simplify::Bool
@@ -423,6 +428,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         gc_names = minor >= v"1.11",
         gc_tag_load_volatile = minor >= v"1.11",
         gc_alloc_bytes_tag = minor >= v"1.11",
+        gc_alloc_sets_tag = minor >= v"1.15",
         gc_extract_simplify = minor >= v"1.12",
         gc_ptls_gep = minor <= v"1.11" ? :pointer : :byte,
         gc_barrier_lowering,
