@@ -6,7 +6,7 @@
 ; builds), so their offsets and sizes are matched with patterns.
 
 ; RUN: split-file %s %t
-; RUN: opt -passes=FinalLowerGC -S %t/frames.ll | FileCheck %t/frames.ll --check-prefixes=CHECK,%if julia-1.10 %{V110%} %else %{NAMES%}
+; RUN: opt -passes=FinalLowerGC -S %t/frames.ll | FileCheck %t/frames.ll --check-prefixes=CHECK,%if julia-1.10 %{V110%} %else %{NAMES%},%if julia-ge-1.15 %{BYTES%} %else %{POINTERS%}
 ; RUN: opt -passes=FinalLowerGC -S %t/debugloc.ll | FileCheck %t/debugloc.ll --check-prefixes=%if julia-1.10 %{V110%} %else %{NEXT%}
 ; RUN: %if julia-1.10 %{ opt -passes=FinalLowerGC -S %t/alloc-1.10.ll | FileCheck %t/alloc-1.10.ll %}
 ; RUN: %if julia-ge-1.11 %{ opt -passes=FinalLowerGC -S %t/alloc.ll | FileCheck %t/alloc.ll --check-prefixes=CHECK,%if julia-1.11 %{V111%} %else %{SMALL%},%if julia-ge-1.15 %{HEADER%} %else %{ALLOCSIZE%} %}
@@ -17,7 +17,7 @@
 ; RUN: %if julia-ge-1.15 %{ opt -passes=FinalLowerGC -S %t/barriers.ll | FileCheck %t/barriers.ll --check-prefixes=CHECK,LEVELS,RESET %}
 ; RUN: opt -passes=FinalLowerGC -S %t/amdgcn.ll | FileCheck %t/amdgcn.ll
 ; RUN: opt -passes=FinalLowerGC -S %t/i686.ll | FileCheck %t/i686.ll
-; RUN: opt -passes='function(LateLowerGCFrame,FinalLowerGC)' -S %t/overaligned.ll | FileCheck %t/overaligned.ll
+; RUN: opt -passes='function(LateLowerGCFrame,FinalLowerGC)' -S %t/overaligned.ll | FileCheck %t/overaligned.ll --check-prefixes=CHECK,%if julia-ge-1.15 %{BYTES%} %else %{POINTERS%}
 
 ; the module pass and the function pass lower functions the same way (except for the
 ; declarations on Julia 1.10)
@@ -59,7 +59,9 @@ declare void @use(ptr)
 ; NAMES-NEXT: %task.gcstack = load ptr, ptr %pgcstack, align 8
 ; NAMES-NEXT: store ptr %task.gcstack, ptr %frame.prev, align 8, !tbaa [[GCFRAME]]
 ; CHECK-NEXT: store ptr %gcframe, ptr %pgcstack, align 8
-; CHECK-NEXT: %slot = getelementptr inbounds ptr addrspace(10), ptr %gcframe, i32 3
+; slots are addressed in bytes from Julia 1.15 on, which only lowers constant indices
+; POINTERS-NEXT: %slot = getelementptr inbounds ptr addrspace(10), ptr %gcframe, i32 3
+; BYTES-NEXT: %slot = getelementptr inbounds nuw i8, ptr %gcframe, i64 24
 ; CHECK-NEXT: [[INDEX:%[0-9]+]] = add i32 %i, 2
 ; CHECK-NEXT: %dynamic = getelementptr inbounds ptr addrspace(10), ptr %gcframe, i32 [[INDEX]]
 ; CHECK: load volatile i64, ptr %page, align 8
@@ -449,7 +451,8 @@ declare void @boxed_simple(ptr addrspace(10), ptr addrspace(10))
 ; LateLowerGCFrame moves an over-aligned alloca into the frame on every version, and
 ; FinalLowerGC aligns the frame for it
 ; CHECK: %gcframe = alloca ptr addrspace(10), i32 {{[0-9]+}}, align 64
-; CHECK: %roots = getelementptr inbounds ptr addrspace(10), ptr %gcframe, i32 8
+; POINTERS: %roots = getelementptr inbounds ptr addrspace(10), ptr %gcframe, i32 8
+; BYTES: %roots = getelementptr inbounds nuw i8, ptr %gcframe, i64 64
 define void @overaligned_gc_alloca(<8 x ptr addrspace(10)> %values) {
 top:
   %pgcstack = call ptr @julia.get_pgcstack()

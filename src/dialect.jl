@@ -306,6 +306,10 @@ struct Dialect
     "Whether FinalLowerGC skips functions when no GC intrinsic in the module has a use
     (Julia 1.13 and later)."
     gc_final_skip_unused::Bool
+    "Whether FinalLowerGC addresses frame slots with byte offsets (`getelementptr inbounds
+    nuw i8`, the form InstCombine canonicalizes to) rather than with indices of pointers
+    (Julia 1.15 and later; JuliaLang/julia#65275)."
+    gc_frame_slot_bytes::Bool
     "Whether FinalLowerGC inserts the lowered frame allocation and push after the
     intrinsic, with the debug location of the next instruction (Julia 1.10)."
     gc_final_debugloc_next::Bool
@@ -456,6 +460,7 @@ function Dialect(julia::VersionNumber; fp16::Symbol=:auto, bf16::Symbol=:auto,
         boxes_kinds = minor >= v"1.14",
         gc_final_module = minor == v"1.10",
         gc_final_skip_unused = minor >= v"1.13",
+        gc_frame_slot_bytes = minor >= v"1.15",
         gc_final_debugloc_next = minor == v"1.10",
         gc_alloc_entry_points = minor == v"1.10" ? :pool :
                                 minor == v"1.11" ? :pool_instrumented : :small,

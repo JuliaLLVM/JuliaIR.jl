@@ -60,6 +60,7 @@ versions are fields of `JuliaIR.Dialect`:
 | big-object allocator | `ijl_gc_big_alloc(ptls, size)` | `ijl_gc_big_alloc_instrumented(ptls, size, tag)` | `ijl_gc_big_alloc(ptls, size, tag)` | same | same | same |
 | `allocsize` on the pool and big-object allocators | yes | yes | yes | yes | yes | no: their size includes the header before the pointer they return (JuliaLang/julia#65204) |
 | typed allocator | `ijl_gc_alloc_typed(ptls, size, null)` | `ijl_gc_alloc_typed(ptls, size, tag)` | same | same | same | same |
+| frame slot addresses | `getelementptr inbounds` over pointers | same | same | same | same | for a constant slot, `getelementptr inbounds nuw` over bytes, the form InstCombine canonicalizes to (JuliaLang/julia#65275); Julia's pass only accepts constant slots, the port keeps the GEP over pointers for others |
 | alignment of allocations | none | the call's, at least a pointer's | same | same | same | same |
 | allocations and root queuing in a cancellation reset region (`!julia.reset_region`) | | | | | | the `_reset_safe` variants of the runtime functions |
 | write barriers | | | | | lowered here (LateLowerGCFrame leaves them), without null children | same, comparing the lowest level of the children (the AND of their tags) with the parent's threshold, which also skips permanent children (JuliaLang/julia#64913) |

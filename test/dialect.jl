@@ -89,6 +89,7 @@ end
     @test map(d -> d.gc_barrier_lowering, (d10, d11, d12, d13, dm)) ==
           (:unnamed, :debug_named, :named, :image, :deferred)
     @test (d14.gc_final_barrier, dm.gc_final_barrier) == (:image, :levels)
+    @test !d14.gc_frame_slot_bytes && dm.gc_frame_slot_bytes
     @test map(d -> d.gc_transition_lowering, (d11, d12, d13, dm)) ==
           (:none, :pgcstack, :bundle, :bundle)
     @test map(d -> d.gc_safepoint_load, (d12, d13, dm)) == (:plain, :monotonic, :monotonic_named)
