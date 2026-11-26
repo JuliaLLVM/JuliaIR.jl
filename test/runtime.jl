@@ -32,12 +32,15 @@ end
     ptls = ccall(:jl_get_ptls_states, Ptr{Cvoid}, ())
 
     # the task: gcstack follows the Julia-visible fields after a 4-byte one (from Julia
-    # 1.14 on, `sizeof(Task)` also counts some of the hidden fields); ptls by value
+    # 1.14 on, `sizeof(Task)` also counts some of the hidden fields), and is the task's
+    # `pgcstack`; ptls by value
     n = fieldcount(Task)
     T = fieldtype(Task, n)
     visible = fieldoffset(Task, n) + (isbitstype(T) ? sizeof(T) : W)
     @test rt.task_gcstack == cld(visible + 4, W) * W
     GC.@preserve task begin
+        @test pointer_from_objref(task) + rt.task_gcstack ==
+              ccall(:jl_get_pgcstack, Ptr{Cvoid}, ())
         @test unsafe_load(Ptr{Ptr{Cvoid}}(pointer_from_objref(task) + rt.task_ptls)) == ptls
     end
     # `eh` follows `ptls` and `excstack`
@@ -180,6 +183,17 @@ end
     # the probes run once
     @test haskey(JuliaIR.NATIVE_FACTS, :handler)
     @test facts().handler_size === rt.handler_size
+
+    # the exported task offsets don't depend on the probe of `eh`
+    task_probe = JuliaIR.NATIVE_FACTS[:task]
+    try
+        JuliaIR.NATIVE_FACTS[:task] = JuliaIR.RuntimeError("broken")
+        @test facts().task_ptls == rt.task_ptls
+        @test facts().task_gcstack == rt.task_gcstack
+        @test_throws JuliaIR.RuntimeError facts().task_eh
+    finally
+        JuliaIR.NATIVE_FACTS[:task] = task_probe
+    end
 end
 
 @testset "explicit facts" begin
