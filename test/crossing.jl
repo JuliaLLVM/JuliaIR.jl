@@ -152,9 +152,9 @@ end
             @test [LLVM.offsetof(dl, ty, k) for k in 1:length(ty.elements)] == t.offsets
             @test LLVM.abi_size(dl, ty) == t.size
             @test LLVM.abi_alignment(dl, ty) == t.align
-            # the port's lowering of the type, in this library, is the carried one
+            # the lowering of the type, rebuilt in this library, is the carried one
             T = CrossingCorpus.TYPES[i][1]
-            @test JuliaIR.julia_type(T) == ty
+            @test JuliaIR.llvm_type(T) == ty
         end
         optimize!(mod)
         for (i, t) in enumerate(types)

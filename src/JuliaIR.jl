@@ -1,7 +1,8 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
-using LLVM: DataLayout, bit_size, storage_size, abi_size, abi_alignment, offsetof, intptr
+using LLVM: API, DataLayout, bit_size, storage_size, abi_size, abi_alignment, offsetof,
+            intptr
 
 include("dialect.jl")
 include("registration.jl")
