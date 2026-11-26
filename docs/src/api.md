@@ -81,9 +81,9 @@ JuliaIR.RuntimeError
 ## Type lowering
 
 ```@docs
-JuliaIR.julia_type
+JuliaIR.llvm_type
 JuliaIR.isboxed
-JuliaIR.julia_struct_type
+JuliaIR.isghosttype
 JuliaIR.deserves_stack
 JuliaIR.deserves_argbox
 JuliaIR.deserves_retbox
