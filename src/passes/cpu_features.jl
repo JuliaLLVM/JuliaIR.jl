@@ -308,7 +308,7 @@ const CPU_FEATURES = define_pass("jl-cpu-features", :module, cpu_features!; requ
                                  cpp_name="CPUFeatures", check=check_cpu_target)
 
 """
-    JuliaIR.CPUFeaturesPass(; target_cpu=nothing, target_features=nothing,
+    JuliaIR.CPUFeaturesPass(; ports=nothing, target_cpu=nothing, target_features=nothing,
                             target_machine=nothing)
 
 Fold the intrinsics that ask about the CPU the code will run on to constants
@@ -343,5 +343,9 @@ with the other two.
 Intrinsics that aren't called, are passed as arguments or are called with `invoke`
 make the pass throw a [`JuliaIR.CPUFeaturesError`](@ref) before it changes the module.
 Like Julia's C++ pass, it is required, so it also runs on `optnone` functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-CPUFeaturesPass(; kwargs...) = custom_pass(CPU_FEATURES; kwargs...)
+CPUFeaturesPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(CPU_FEATURES, ports; kwargs...)

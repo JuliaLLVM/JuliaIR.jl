@@ -38,7 +38,7 @@ function check_pipeline(ir::String, level::Int)
         # when it generated the module, as an IR consumer such as GPUCompiler must do.
         mod.datalayout = layout
         verify(mod)
-        JuliaIR.optimize!(mod; level)
+        JuliaIR.optimize!(mod; ports=true, level)
         verify(mod)
     end
     return nothing

@@ -43,7 +43,7 @@ const COMBINE_MULADD = define_pass("jl-combine-muladd", :function, combine_mulad
                                    required=false, cpp_name="CombineMulAdd")
 
 """
-    JuliaIR.CombineMulAddPass()
+    JuliaIR.CombineMulAddPass(; ports=nothing)
 
 Allow the back-end to fuse a multiplication and the addition or subtraction it feeds into
 a multiply-add (`jl-combine-muladd` in a pipeline): when an `fadd` or `fsub` has the
@@ -51,5 +51,9 @@ a multiply-add (`jl-combine-muladd` in a pipeline): when an `fadd` or `fsub` has
 `fmul` is marked `contract` too (if both operands qualify, only the first). Julia 1.12
 removed the pass, so it does nothing for the IR of Julia 1.12 and later. Like Julia's C++
 pass, it is skipped on `optnone` functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-CombineMulAddPass(; kwargs...) = custom_pass(COMBINE_MULADD; kwargs...)
+CombineMulAddPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(COMBINE_MULADD, ports; kwargs...)

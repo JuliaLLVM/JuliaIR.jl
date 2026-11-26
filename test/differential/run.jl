@@ -214,7 +214,7 @@ function run_side(spec::PassSpec, text::String, pipeline::String)
         tm = JuliaIR.target_machine(mod)
         try
             @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
-                JuliaIR.register!(pb)
+                JuliaIR.register!(pb; ports=true)
                 add!(pb, pipeline)
                 tm === nothing ? run!(pb, mod) : run!(pb, mod, tm)
             end

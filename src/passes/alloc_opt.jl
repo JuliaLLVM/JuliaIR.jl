@@ -1088,12 +1088,16 @@ const ALLOC_OPT = define_pass("jl-alloc-opt", :function, alloc_opt!; required=fa
                               cpp_name="AllocOpt")
 
 """
-    JuliaIR.AllocOptPass()
+    JuliaIR.AllocOptPass(; ports=nothing)
 
 Remove Julia GC allocations whose object does not escape, or move them to the stack,
 whole or split into their fields (`jl-alloc-opt` in a pipeline). From Julia 1.14 on, these
 include the allocations of Memory (`julia.gc_alloc_memory`) whose size is a constant that
 fits a GC pool; on the stack, their header is initialized like the allocation would, and
 loads of their data pointer are forwarded when nothing else may write it.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-AllocOptPass(; kwargs...) = custom_pass(ALLOC_OPT; kwargs...)
+AllocOptPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(ALLOC_OPT, ports; kwargs...)

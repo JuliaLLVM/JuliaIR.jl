@@ -99,7 +99,7 @@ end
 # the ports and the optimizer, which folds the layout computations
 function optimize!(mod)
     @dispose pb=PassBuilder() begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, "jl-remove-ni,function(jl-propagate-addrspaces,jl-alloc-opt,jl-late-lower-gc-frame,instcombine)")
         run!(pb, mod)
     end

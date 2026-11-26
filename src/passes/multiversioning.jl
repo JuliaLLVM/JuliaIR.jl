@@ -1320,6 +1320,7 @@ end
 
 const MULTIVERSIONING = define_pass("jl-multiversioning", :module, multiversioning!;
                                     required=true, cpp_name="JuliaMultiVersioning",
+                                    cpp_options=(:external,),
                                     options=(; external=false,
                                              targets=option(
                                                  Union{Nothing,Vector{MultiVersioningTarget}},
@@ -1327,7 +1328,7 @@ const MULTIVERSIONING = define_pass("jl-multiversioning", :module, multiversioni
                                                  requirement="a non-empty vector of MultiVersioningTarget")))
 
 """
-    JuliaIR.MultiVersioningPass(; external=false, targets=nothing)
+    JuliaIR.MultiVersioningPass(; ports=nothing, external=false, targets=nothing)
 
 Clone the functions of a module for several CPU targets, and emit the tables with which
 Julia's image loader picks a version of each function for the CPU it runs on
@@ -1352,5 +1353,9 @@ the module is only annotated, and entries of the table that aren't function defi
 left out. Input the image loader couldn't handle raises a
 [`JuliaIR.MultiVersioningError`](@ref) before the module is changed. Like Julia's C++ pass,
 this pass is required (it also runs on `optnone` functions' modules).
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-MultiVersioningPass(; kwargs...) = custom_pass(MULTIVERSIONING; kwargs...)
+MultiVersioningPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(MULTIVERSIONING, ports; kwargs...)

@@ -8,7 +8,9 @@ package name refers to that dialect, not to Julia's own SSA IR.
 
 The passes are ports of the C++ passes in Julia's `src/llvm-*.cpp` (and of the pipeline
 in `src/pipeline.cpp` that runs them), written against
-[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API.
+[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API, so that they work on
+any LLVM library. JuliaIR also lowers Julia types to LLVM types in a context of any
+library (see [Type lowering](type_lowering.md)).
 
 ## Why
 
@@ -49,16 +51,36 @@ using LLVM, LLVM.IR, LLVM.Passes, JuliaIR
 
 @dispose ctx=Context(; opaque_pointers=true) pb=PassBuilder() begin
     @dispose mod=parse(LLVM.Module, ir) begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, "jl-alloc-opt,jl-late-lower-gc-frame,jl-final-lower-gc")
         run!(pb, mod)
     end
 end
 ```
 
-or run a single pass: `run!(JuliaIR.RemoveNIPass(), mod)`. Julia's whole optimization
-pipeline, rebuilt from the ports for the running Julia's version, is available too (see
-[Julia's optimization pipeline](pipeline.md)):
+The pass constructors, named after Julia's C++ classes (`JuliaIR.AllocOptPass()`,
+`JuliaIR.LateLowerGCPass()`, ...), return a [`JuliaIR.Pass`](@ref): the pipeline text of
+either the port or Julia's C++ pass, by default the C++ pass when the current library is
+Julia's LLVM and the port otherwise, so that code can use Julia's passes on whichever
+library it runs. A constructor decides by the library that is active when it is called,
+and the pass keeps that choice; `JuliaIR.register!(pb)` registers the ports by the
+library of `pb`:
+
+```julia
+@dispose pb=PassBuilder() begin
+    JuliaIR.register!(pb)
+    add!(pb, FunctionPassManager()) do fpm
+        add!(fpm, JuliaIR.AllocOptPass())
+        add!(fpm, JuliaIR.LateLowerGCPass())
+    end
+    run!(pb, mod)
+end
+```
+
+`ports=true` selects the ports explicitly, also on Julia's LLVM, and `ports=false`
+Julia's C++ passes. A single pass runs with `run!(JuliaIR.RemoveNIPass(; ports=true), mod)`.
+Julia's whole optimization pipeline, rebuilt from the ports for the running Julia's
+version, is available too (see [Julia's optimization pipeline](pipeline.md)):
 
 ```julia
 JuliaIR.optimize!(mod; level=2)           # optimize a module like Julia does
@@ -85,12 +107,10 @@ From the command line, `jlopt` is an `opt`-compatible driver that runs the ports
 maps Julia's pass names (`-passes=AllocOpt`, `-passes='julia<level=2>'`) to them; see
 [`jlopt`](testing.md#jlopt) for how to run or install it.
 
-GPUCompiler uses the ports instead of Julia's C++ passes when its `CompilerConfig` has
-`julia_passes = :ports` (or GPUCompiler's `julia_passes` preference is `"ports"`) and
-JuliaIR.jl is loaded; the compilation then needs a context with opaque pointers, which
-GPUCompiler's `JuliaContext()` creates for that setting. This
-integration is proposed in
-[GPUCompiler.jl#1026](https://github.com/JuliaGPU/GPUCompiler.jl/pull/1026).
+GPUCompiler's `llvmgpu` toolchain, proposed in
+[GPUCompiler.jl#1122](https://github.com/JuliaGPU/GPUCompiler.jl/pull/1122), optimizes GPU
+code with libLLVMGPU, a newer LLVM, using the ports there and Julia's C++ passes for code
+that stays on Julia's LLVM.
 
 ## Terms
 

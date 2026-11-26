@@ -3,15 +3,17 @@
 Julia optimizes the code it generates with a pipeline of LLVM's passes and its own,
 built by `buildPipeline` in Julia's `src/pipeline.cpp` and available to `opt` as the
 pipeline element `julia<level=N;...>`. JuliaIR rebuilds this pipeline for each Julia
-version, with the ports of Julia's passes in place of the C++ ones:
+version, with the ports of Julia's passes in place of the C++ ones, or with the C++ ones
+(by default, the C++ passes on Julia's LLVM and the ports on other libraries, as for the
+pass constructors, see [`JuliaIR.Pass`](@ref)):
 
 ```julia
 using JuliaIR, LLVM
 
 JuliaIR.optimize!(mod; level=2)                  # optimize a module like Julia does
-JuliaIR.pipeline(; level=3)                      # the pipeline, as text
+JuliaIR.pipeline(; level=3, ports=true)          # the pipeline, as text
 JuliaIR.build_pipeline!(pb; level=2)             # add it to a PassBuilder
-JuliaIR.pipeline(; level=2, ports=false)         # with Julia's C++ passes instead
+JuliaIR.pipeline(; level=2, ports=false)         # with Julia's C++ passes
 ```
 
 `jlopt` replaces `julia` and `julia<...>` elements of its pipeline by the rebuilt pipeline
