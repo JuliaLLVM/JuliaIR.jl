@@ -214,6 +214,19 @@ function value_string(spec::OptionSpec, @nospecialize(v))
     return string(v)
 end
 
+# The dialect of the running Julia with the given policies, which every parse of a pass's
+# options needs: computing it takes longer than the rest of the parse. Shared between the
+# passes, which don't modify it.
+const DIALECTS = Dict{Tuple{Symbol,Symbol,Symbol},Dialect}()
+const DIALECTS_LOCK = ReentrantLock()
+
+function running_dialect(fp16::Symbol, bf16::Symbol, gc_barrier::Symbol)
+    key = (fp16, bf16, gc_barrier)
+    @lock DIALECTS_LOCK begin
+        get!(() -> Dialect(VERSION; fp16, bf16, gc_barrier), DIALECTS, key)
+    end
+end
+
 """
     JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, options=(;),
                           values)
@@ -270,7 +283,7 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
     for (k, spec) in pairs(specs)
         check_value(spec, given[k], "option $(option_key(k))")
     end
-    dialect = Dialect(VERSION; fp16, bf16, gc_barrier)
+    dialect = running_dialect(fp16, bf16, gc_barrier)
     return PassOptions(dialect, NamedTuple{keys(specs)}(Tuple(given[k] for k in keys(specs))))
 end
 
@@ -429,9 +442,11 @@ function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto
         given[k] = convert_option(def.options[k], v, "option $k of pass $(def.name)")
     end
     values = NamedTuple{keys(def.options)}(Tuple(given[k] for k in keys(def.options)))
-    parse = str -> parse_options(def, str; fp16, bf16, gc_barrier, values)
-    # validate the defaults now, rather than when the pass is first used
-    parse("")
+    # validate the defaults now, rather than when the pass is first used; their parse is
+    # also that of every occurrence without options (each gets its own module facts)
+    defaults = parse_options(def, ""; fp16, bf16, gc_barrier, values)
+    parse = str -> isempty(str) ? PassOptions(defaults.dialect, defaults.extra) :
+                                  parse_options(def, str; fp16, bf16, gc_barrier, values)
     callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
     constructor = def.kind === :module ? ModulePass :
                   def.kind === :function ? FunctionPass : LoopPass
@@ -445,6 +460,20 @@ end
 The names of the passes of this package, as used in pipelines.
 """
 passes() = unique(def.name for def in PASSES)
+
+# The registrations of `register!` without per-pass options, by the policies: every pass
+# builder can use the same ones (LLVM.jl creates the state of a run for each run). Filled
+# when first used, so not by precompilation.
+const REGISTRATIONS = Dict{Tuple{Symbol,Symbol,Symbol},Vector{LLVM.CustomPass}}()
+const REGISTRATIONS_LOCK = ReentrantLock()
+
+function registrations(fp16::Symbol, bf16::Symbol, gc_barrier::Symbol,
+                       options::AbstractDict)
+    passes = LLVM.CustomPass[custom_pass(def; fp16, bf16, gc_barrier,
+                                         get(options, def.name, (;))...)
+                             for def in PASSES]
+    return append!(passes, marker_passes())
+end
 
 """
     JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock,
@@ -463,12 +492,16 @@ function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
         any(def -> def.name == name, PASSES) ||
             throw(ArgumentError("options for unknown pass $name"))
     end
-    for def in PASSES
-        LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier,
-                                       get(options, def.name, (;))...))
+    passes = if isempty(options)
+        key = (fp16, bf16, gc_barrier)
+        @lock REGISTRATIONS_LOCK begin
+            get!(() -> registrations(key..., options), REGISTRATIONS, key)
+        end
+    else
+        registrations(fp16, bf16, gc_barrier, options)
     end
-    for marker in marker_passes()
-        LLVM.register!(pb, marker)
+    for pass in passes
+        LLVM.register!(pb, pass)
     end
     return pb
 end
