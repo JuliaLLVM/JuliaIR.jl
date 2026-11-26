@@ -264,6 +264,16 @@ end
         run!(JuliaIR.custom_pass(facts_def), mod)
         @test computed == ["first", "first"]
         @test seen[3:4] == [("f", 2), ("g", 2)]
+        # also for the same registration, and for each occurrence (without options, they
+        # share the parse of the defaults)
+        empty!(computed); empty!(seen)
+        @dispose pb=PassBuilder() begin
+            LLVM.register!(pb, JuliaIR.custom_pass(facts_def))
+            add!(pb, "function(jl-test-facts,jl-test-facts)")
+            run!(pb, mod)
+            run!(pb, mod)
+        end
+        @test computed == ["first", "first", "first", "first"]
         dispose(mod)
     end
 end

@@ -47,6 +47,9 @@ function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
     empty!(NATIVE_FACTS)
     empty!(POOL_CLASSES)
+    # (should precompiling this package fill them)
+    empty!(DIALECTS)
+    empty!(REGISTRATIONS)
 end
 
 end
