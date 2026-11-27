@@ -1,8 +1,8 @@
 module JuliaIR
 
 using LLVM, LLVM.IR, LLVM.Build, LLVM.Passes, LLVM.Analysis
-import InteractiveUtils
-using LLVM: DataLayout, bit_size, storage_size, abi_size, abi_alignment, offsetof, intptr
+using LLVM: API, DataLayout, bit_size, storage_size, abi_size, abi_alignment, offsetof,
+            intptr
 
 include("dialect.jl")
 include("registration.jl")
@@ -43,10 +43,24 @@ include("pipeline/julia-1.13.jl")
 include("pipeline/julia-1.14.jl")
 include("pipeline/julia-1.15.jl")
 
+# Compile the probe methods when building the package image. Read and cache the facts on
+# first use in each process.
+if ccall(:jl_generating_output, Cint, ()) != 0
+    for probe in unique((values(FACT_PROBES)..., :jit_fma, :jit_fp16, :jit_target))
+        precompile(run_probe, (Val{probe},))
+    end
+    precompile(native_probe, (Symbol,))
+    precompile(native_fact, (Symbol, String))
+end
+
 function __init__()
     LEDGER[] = get(ENV, "JULIAIR_LEDGER", "")
     empty!(NATIVE_FACTS)
     empty!(POOL_CLASSES)
+    # (should precompiling this package fill them)
+    empty!(DIALECTS)
+    empty!(REGISTRATIONS)
+    empty!(CPP_PASSES)
 end
 
 end

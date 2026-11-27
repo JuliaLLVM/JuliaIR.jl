@@ -214,6 +214,19 @@ function value_string(spec::OptionSpec, @nospecialize(v))
     return string(v)
 end
 
+# The dialect of the running Julia with the given policies, which every parse of a pass's
+# options needs: computing it takes longer than the rest of the parse. Shared between the
+# passes, which don't modify it.
+const DIALECTS = Dict{Tuple{Symbol,Symbol,Symbol},Dialect}()
+const DIALECTS_LOCK = ReentrantLock()
+
+function running_dialect(fp16::Symbol, bf16::Symbol, gc_barrier::Symbol)
+    key = (fp16, bf16, gc_barrier)
+    @lock DIALECTS_LOCK begin
+        get!(() -> Dialect(VERSION; fp16, bf16, gc_barrier), DIALECTS, key)
+    end
+end
+
 """
     JuliaIR.parse_options(str; fp16=:auto, bf16=:auto, gc_barrier=:stock, options=(;),
                           values)
@@ -270,7 +283,7 @@ function parse_options(str::AbstractString; fp16::Symbol=:auto, bf16::Symbol=:au
     for (k, spec) in pairs(specs)
         check_value(spec, given[k], "option $(option_key(k))")
     end
-    dialect = Dialect(VERSION; fp16, bf16, gc_barrier)
+    dialect = running_dialect(fp16, bf16, gc_barrier)
     return PassOptions(dialect, NamedTuple{keys(specs)}(Tuple(given[k] for k in keys(specs))))
 end
 
@@ -366,10 +379,11 @@ end
 # A pass of this package. `impl(ir, am, opts::PassOptions)` runs it on a module (module
 # pass), a function (function pass) or a loop (loop pass, with the loop pass manager's
 # `LoopAnalysisResults` as `am`), and returns the preserved analyses. `cpp_name` is
-# the name of Julia's C++ pass it ports, which `jlopt` maps to this pass. A pass can be
-# defined with the same name for several kinds (FinalLowerGC is a module pass in Julia
-# 1.10 and a function pass later); LLVM's pipeline parser picks the one of the pass
-# manager it is nested in, and the module pass at the top level.
+# the name of Julia's C++ pass it ports (empty for passes of this package only), which
+# `jlopt` maps to this pass, and `cpp_options` the options (flags) that the C++ pass takes
+# in a pipeline. A pass can be defined with the same name for several kinds (FinalLowerGC
+# is a module pass in Julia 1.10 and a function pass later); LLVM's pipeline parser picks
+# the one of the pass manager it is nested in, and the module pass at the top level.
 struct PassDefinition
     name::String
     kind::Symbol
@@ -381,25 +395,29 @@ struct PassDefinition
     # `check(values)` throws an `ArgumentError` for values of the pass-specific options
     # that are invalid together
     check::Any
+    cpp_options::Tuple{Vararg{Symbol}}
 
-    PassDefinition(name, kind, required, impl, options=(;), cpp_name="", check=nothing) =
-        new(name, kind, required, impl, option_specs(options), cpp_name, check)
+    PassDefinition(name, kind, required, impl, options=(;), cpp_name="", check=nothing,
+                   cpp_options=()) =
+        new(name, kind, required, impl, option_specs(options), cpp_name, check, cpp_options)
 end
 
 # the same pass with another implementation (e.g. one that captures a pass argument that
 # can't be a pipeline option)
 with_impl(def::PassDefinition, impl) =
     PassDefinition(def.name, def.kind, def.required, impl, def.options, def.cpp_name,
-                   def.check)
+                   def.check, def.cpp_options)
 
 # all passes, in the order they were defined
 const PASSES = PassDefinition[]
 
 function define_pass(name, kind, impl; required::Bool, options::NamedTuple=(;),
-                     cpp_name::String, check=nothing)
+                     cpp_name::String, check=nothing, cpp_options=())
     startswith(name, "jl-") || error("pass names must start with jl-")
     kind in (:module, :function, :loop) || error("invalid pass kind $kind")
-    def = PassDefinition(name, kind, required, impl, options, cpp_name, check)
+    all(k -> haskey(options, k), cpp_options) ||
+        error("the options of the C++ pass must be options of the port")
+    def = PassDefinition(name, kind, required, impl, options, cpp_name, check, cpp_options)
     filter!(p -> p.name != name || p.kind != kind, PASSES)
     push!(PASSES, def)
     return def
@@ -422,21 +440,29 @@ end
 # the options, converted to their types). Keyword-only options can only be set this way.
 function custom_pass(def::PassDefinition; fp16::Symbol=:auto, bf16::Symbol=:auto,
                      gc_barrier::Symbol=:stock, kwargs...)
+    values = option_values(def, kwargs)
+    # validate the defaults now, rather than when the pass is first used; their parse is
+    # also that of every occurrence without options (each gets its own module facts)
+    defaults = parse_options(def, ""; fp16, bf16, gc_barrier, values)
+    parse = str -> isempty(str) ? PassOptions(defaults.dialect, defaults.extra) :
+                                  parse_options(def, str; fp16, bf16, gc_barrier, values)
+    callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
+    constructor = def.kind === :module ? ModulePass :
+                  def.kind === :function ? FunctionPass : LoopPass
+    return constructor(def.name, callback; def.required, analyses=true,
+                       parse_options=parse)
+end
+
+# the values of the pass-specific options of `def`: the defaults, overridden by keyword
+# arguments (converted to the options' types)
+function option_values(def::PassDefinition, kwargs)
     given = Dict{Symbol,Any}(pairs(option_defaults(def.options)))
     for (k, v) in pairs(kwargs)
         haskey(def.options, k) ||
             throw(ArgumentError("unknown option $k for pass $(def.name)"))
         given[k] = convert_option(def.options[k], v, "option $k of pass $(def.name)")
     end
-    values = NamedTuple{keys(def.options)}(Tuple(given[k] for k in keys(def.options)))
-    parse = str -> parse_options(def, str; fp16, bf16, gc_barrier, values)
-    # validate the defaults now, rather than when the pass is first used
-    parse("")
-    callback = (ir, am, opts) -> run_pass(def, ir, am, opts)
-    constructor = def.kind === :module ? ModulePass :
-                  def.kind === :function ? FunctionPass : LoopPass
-    return constructor(def.name, callback; def.required, analyses=true,
-                       parse_options=parse)
+    return NamedTuple{keys(def.options)}(Tuple(given[k] for k in keys(def.options)))
 end
 
 """
@@ -446,29 +472,310 @@ The names of the passes of this package, as used in pipelines.
 """
 passes() = unique(def.name for def in PASSES)
 
-"""
-    JuliaIR.register!(pb::PassBuilder; fp16=:auto, bf16=:auto, gc_barrier=:stock,
-                      options=Dict())
 
-Register all ports and pipeline marker passes with `pb` for use by name (see
-[`JuliaIR.build_pipeline!`](@ref)). The policy keywords supply defaults for passes that
-do not specify them; see [`JuliaIR.Dialect`](@ref).
+## Julia's C++ passes
+
+# Whether the running Julia has the C++ pass that `def` ports, of the same kind. Julia's
+# passes were added, removed or changed kind in development versions that `VERSION`
+# doesn't always tell apart (CancellationLowering is in Julia 1.14's alphas, but not in
+# its release), so Julia's pipeline parser is asked, once per pass.
+const CPP_PASSES = Dict{Tuple{String,Symbol},Bool}()
+const CPP_PASSES_LOCK = ReentrantLock()
+
+function cpp_available(def::PassDefinition)
+    isempty(def.cpp_name) && return false
+    key = (def.cpp_name, def.kind)
+    @lock CPP_PASSES_LOCK begin
+        get!(() -> parses_cpp_pass(key...), CPP_PASSES, key)
+    end
+end
+
+function parses_cpp_pass(name::String, kind::Symbol)
+    text = kind === :module ? "module($name)" :
+           kind === :function ? "function($name)" : "function(loop($name))"
+    # (parsed, not run)
+    LLVM.library!(LLVM.julia_library) do
+        @dispose pb=PassBuilder() begin
+            add!(pb, text)
+            try
+                print_pipeline(devnull, pb)
+                true
+            catch err
+                err isa LLVMException || rethrow()
+                false
+            end
+        end
+    end
+end
+
+# whether `ports` selects this package's ports: `nothing` selects them unless `lib` is
+# Julia's LLVM, the only one with Julia's C++ passes
+use_ports(ports::Union{Nothing,Bool}, lib::LLVM.Library=LLVM.library()) =
+    something(ports, lib !== LLVM.julia_library)
+
+
+## passes in pipelines
+
+"""
+    JuliaIR.Pass
+
+One of Julia's passes, as returned by the pass constructors of this package (e.g.
+[`JuliaIR.AllocOptPass`](@ref)): either this package's port or Julia's C++ pass, with
+options. `string(pass)` is its pipeline text (e.g. `jl-gc-invariant-verifier<strong>` or
+`GCInvariantVerifier<strong>`). `add!(pm, pass)` adds it to a pipeline, nested in pass
+managers of its kind where needed (e.g. `function(...)` for a function pass added to a
+module pass manager), and `run!(pass, mod)` runs it on its own.
+
+The constructors take a keyword argument `ports` that selects the implementation:
+
+- `nothing` (the default): Julia's C++ pass if the current library (`LLVM.library()`) is
+  Julia's own LLVM, which is the only one that has Julia's C++ passes, and this package's
+  port otherwise. The choice is made by the library active when the pass is constructed,
+  and the pass keeps it, also in another library's scope: construct it with the library
+  selected that will run it. ([`JuliaIR.register!`](@ref) decides by the library of its
+  pass builder instead.)
+- `true`: the port, which needs to be registered with the pass builder that runs it (see
+  [`JuliaIR.register!`](@ref)).
+- `false`: Julia's C++ pass, which only works with Julia's LLVM.
+
+The options are those of the port; a C++ pass only takes the options that Julia's
+pipeline parser supports (`strong` of GCInvariantVerifier, `imaging` of LowerPTLS,
+`external` of MultiVersioning). Selecting a C++ pass that the running Julia doesn't have
+(e.g. CombineMulAdd on Julia 1.12) is an error, as are passes that only this package has
+(e.g. [`JuliaIR.LateGCCleanupPass`](@ref)) with `ports=false`.
+
+Options that can't be written in a pipeline (keyword-only options, like the target of
+CPUFeatures, or the address space mapping of `RemoveAddrspacesPass(asmap)`) are part of
+the registration of the port instead: such a pass can't be added to a pipeline with
+`add!`, but it can be run with `run!`, or registered on its own with
+`LLVM.register!(pb, pass)` (in place of registering all passes with
+`JuliaIR.register!(pb)`) and then added as `string(pass)`.
+"""
+struct Pass
+    def::PassDefinition
+    # whether this is the port, or else Julia's C++ pass
+    ports::Bool
+    text::String
+    # the policies and the options given to the constructor, for a registration of the port
+    policies::@NamedTuple{fp16::Symbol, bf16::Symbol, gc_barrier::Symbol}
+    kwargs::NamedTuple
+    # whether the pass needs a registration of its own: it has options that its pipeline
+    # text can't carry
+    configured::Bool
+end
+
+Base.string(p::Pass) = p.text
+function Base.show(io::IO, p::Pass)
+    print(io, "JuliaIR.Pass(", repr(p.text))
+    p.ports || print(io, ", C++")
+    p.configured && print(io, ", configured")
+    print(io, ")")
+end
+
+# characters that separate the options and passes of a pipeline
+const PIPELINE_SYNTAX = (';', ',', '(', ')', '<', '>')
+
+# The pass for a definition (constructors of this package's passes). `configured` marks a
+# definition with a custom implementation.
+function make_pass(def::PassDefinition, ports::Union{Nothing,Bool};
+                    configured::Bool=false, fp16::Union{Nothing,Symbol}=nothing,
+                    bf16::Union{Nothing,Symbol}=nothing,
+                    gc_barrier::Union{Nothing,Symbol}=nothing, kwargs...)
+    port = isempty(def.cpp_name) ? true : use_ports(ports)
+    policies = (; fp16, bf16, gc_barrier)
+    if !port
+        cpp = def.cpp_name
+        cpp_available(def) ||
+            throw(ArgumentError("Julia $VERSION has no C++ $(def.kind) pass $cpp; use `ports=true` for this package's port"))
+        configured &&
+            throw(ArgumentError("this form of $(def.name) is only supported by this package's port; use `ports=true`"))
+        opts = String[]
+        for (k, v) in [(k => v for (k, v) in pairs(policies) if v !== nothing)...,
+                       pairs(kwargs)...]
+            k in keys(policies) || haskey(def.options, k) ||
+                throw(ArgumentError("unknown option $k for pass $(def.name)"))
+            k in def.cpp_options ||
+                throw(ArgumentError("option $k is only supported by this package's port of $cpp; use `ports=true`"))
+            v isa Bool ||
+                throw(ArgumentError("option $k of pass $cpp must be true or false"))
+            push!(opts, v ? string(k) : "no-$k")
+        end
+        text = isempty(opts) ? cpp : "$cpp<$(join(opts, ";"))>"
+        return Pass(def, false, text, (; fp16=:auto, bf16=:auto, gc_barrier=:stock), (;),
+                    false)
+    end
+    ports === false && isempty(def.cpp_name) &&
+        throw(ArgumentError("$(def.name) is a pass of this package only, without a C++ counterpart; use `ports=true` or `nothing`"))
+
+    # the options that are given, in the text where they can be written; all of them are
+    # the defaults of a registration of the pass on its own
+    resolved = (; fp16=something(fp16, :auto), bf16=something(bf16, :auto),
+                gc_barrier=something(gc_barrier, :stock))
+    # (validates the policies)
+    fp16 === bf16 === gc_barrier === nothing || running_dialect(resolved...)
+    opts = String[]
+    for (k, v) in pairs(policies)
+        v === nothing || push!(opts, "$(option_key(k))=$(replace(string(v), '_' => '-'))")
+    end
+    keyword_only = false
+    values = option_values(def, kwargs)
+    for k in keys(kwargs)
+        spec, v = def.options[k], values[k]
+        if !spec.text
+            keyword_only = true
+        elseif v !== nothing
+            str = text_form(spec.type) === :flag ? (v ? option_key(k) : "no-" * option_key(k)) :
+                  "$(option_key(k))=$(value_string(spec, v))"
+            any(in(PIPELINE_SYNTAX), str) &&
+                throw(ArgumentError("option $k of pass $(def.name) can't be written in a pipeline: $(repr(string(v))) contains one of $(join(PIPELINE_SYNTAX, ' '))"))
+            push!(opts, str)
+        end
+    end
+    optstr = join(opts, ";")
+    # validate the options together, as the port's parser will (the defaults are valid)
+    isempty(optstr) && !keyword_only || parse_options(def, optstr; resolved..., values)
+    text = isempty(optstr) ? def.name : "$(def.name)<$optstr>"
+    given = NamedTuple{Tuple(keys(kwargs))}(Tuple(values[k] for k in keys(kwargs)))
+    return Pass(def, true, text, resolved, given, configured || keyword_only)
+end
+
+# The text of `p` in a pipeline of the given level (`:module`, `:function` or `:loop`):
+# nested in the pass managers of its kind, which also selects the kind of a pass that has
+# two under the same name (FinalLowerGC's port).
+function nested_text(p::Pass, level::Symbol)
+    kind = p.def.kind
+    kind === level && return p.text
+    if level === :module && kind === :function
+        return "function($(p.text))"
+    elseif level === :module && kind === :loop
+        return "function(loop($(p.text)))"
+    elseif level === :function && kind === :loop
+        return "loop($(p.text))"
+    end
+    throw(ArgumentError("Cannot add $kind pass $(p.text) to a $level pass manager"))
+end
+
+pipeline_level(::PassBuilder) = :module
+function pipeline_level(pm::LLVM.PassManager)
+    pm.type == "module" && return :module
+    startswith(pm.type, "function") && return :function
+    startswith(pm.type, "loop") && return :loop
+    throw(ArgumentError("Cannot add Julia's passes to a $(pm.type) pass manager"))
+end
+
+function LLVM.add!(pm::LLVM.AbstractPassManager, p::Pass)
+    p.configured &&
+        throw(ArgumentError("$p has options that its pipeline text can't carry; register it with `LLVM.register!(pb, pass)` and add `string(pass)`, or run it with `run!`"))
+    return add!(pm, nested_text(p, pipeline_level(pm)))
+end
+
+"""
+    LLVM.register!(pb::PassBuilder, pass::JuliaIR.Pass)
+
+Register the port `pass` with `pb`, with the options given to its constructor as the
+defaults of the registration (including those that can't be written in a pipeline). The
+pass can then be added by name, with or without options in the pipeline text
+(`string(pass)`). Julia's C++ passes need no registration, but Julia's LLVM.
+"""
+function LLVM.register!(pb::PassBuilder, p::Pass)
+    if !p.ports
+        pb.library === LLVM.julia_library ||
+            throw(ArgumentError("Julia's C++ pass $(p.def.cpp_name) requires the LLVM library that Julia uses; use `ports=true` for this package's port"))
+        return pb
+    end
+    return LLVM.register!(pb, custom_pass(p.def; p.policies..., p.kwargs...))
+end
+
+"""
+    run!(pass::JuliaIR.Pass, target::Union{LLVM.Module,LLVM.Function}, [tm]; kwargs...)
+    run!(pass::JuliaIR.Pass, f::LLVM.Function, am::FunctionAnalysisManager, [tm]; kwargs...)
+
+Run `pass` on its own. The pass builder is one of the target's library, created with
+`kwargs` (see `PassBuilder`). A function pass runs on each function of a module, a loop
+pass on each loop of the function(s) (without MemorySSA); a module pass can't run on a
+function. With an analysis manager, a function pass runs on `f` with the analyses of an
+enclosing pass, and returns the preserved analyses.
+"""
+function LLVM.run!(p::Pass, target::Union{LLVM.Module,LLVM.Function},
+                   tm::Union{Nothing,LLVM.TargetMachine}=nothing; kwargs...)
+    p.def.kind === :module && target isa LLVM.Function &&
+        throw(ArgumentError("Cannot run module pass $(p.def.name) on a function"))
+    text = nested_text(p, target isa LLVM.Module ? :module : :function)
+    LLVM.library!(LLVM.route_library(target, tm)) do
+        @dispose pb=PassBuilder(; kwargs...) begin
+            LLVM.register!(pb, p)
+            add!(pb, text)
+            run!(pb, target, tm)
+        end
+    end
+end
+
+function LLVM.run!(p::Pass, f::LLVM.Function, am::FunctionAnalysisManager,
+                   tm::Union{Nothing,LLVM.TargetMachine}=nothing; kwargs...)
+    p.def.kind === :function ||
+        throw(ArgumentError("Cannot run $(p.def.kind) pass $(p.def.name) on a function with an analysis manager"))
+    @dispose pb=PassBuilder(; kwargs...) begin
+        LLVM.register!(pb, p)
+        add!(pb, p.text)
+        run!(pb, f, am, tm)
+    end
+end
+
+
+## registration
+
+# The registrations of `register!` without per-pass options, by whether the ports are
+# registered and the policies: every pass builder can use the same ones (LLVM.jl creates
+# the state of a run for each run). Filled when first used, so not by precompilation.
+const REGISTRATIONS = Dict{Tuple{Bool,Symbol,Symbol,Symbol},Vector{LLVM.CustomPass}}()
+const REGISTRATIONS_LOCK = ReentrantLock()
+
+# whether `register!` registers the port `def`: the ports of Julia's C++ passes only if
+# they're asked for, the passes of this package only always
+registers(def::PassDefinition, ports::Bool) = ports || isempty(def.cpp_name)
+
+function registrations(ports::Bool, fp16::Symbol, bf16::Symbol, gc_barrier::Symbol,
+                       options::AbstractDict)
+    passes = LLVM.CustomPass[custom_pass(def; fp16, bf16, gc_barrier,
+                                         get(options, def.name, (;))...)
+                             for def in PASSES if registers(def, ports)]
+    return append!(passes, marker_passes())
+end
+
+"""
+    JuliaIR.register!(pb::PassBuilder; ports=nothing, fp16=:auto, bf16=:auto,
+                      gc_barrier=:stock, options=Dict())
+
+Register this package's passes with `pb`, for use by name (see
+[`JuliaIR.build_pipeline!`](@ref)). These are the ports of Julia's passes if `ports`
+selects them (by default, if `pb.library` is another library than Julia's LLVM, whatever
+the current library; see [`JuliaIR.Pass`](@ref)), and always the passes that only this
+package has and the pipeline marker passes. The policy keywords supply defaults for
+passes that do not specify them; see [`JuliaIR.Dialect`](@ref).
 
 `options` maps pass names to default constructor keywords, e.g.
 `Dict("jl-cpu-features" => (; target_cpu="haswell"))`.
 """
-function register!(pb::PassBuilder; fp16::Symbol=:auto, bf16::Symbol=:auto,
-                   gc_barrier::Symbol=:stock, options::AbstractDict=Dict{String,NamedTuple}())
+function register!(pb::PassBuilder; ports::Union{Nothing,Bool}=nothing,
+                   fp16::Symbol=:auto, bf16::Symbol=:auto, gc_barrier::Symbol=:stock,
+                   options::AbstractDict=Dict{String,NamedTuple}())
+    ports = use_ports(ports, pb.library)
     for name in keys(options)
         any(def -> def.name == name, PASSES) ||
             throw(ArgumentError("options for unknown pass $name"))
+        any(def -> def.name == name && registers(def, ports), PASSES) ||
+            throw(ArgumentError("options for pass $name, which isn't registered without `ports=true`"))
     end
-    for def in PASSES
-        LLVM.register!(pb, custom_pass(def; fp16, bf16, gc_barrier,
-                                       get(options, def.name, (;))...))
+    passes = if isempty(options)
+        key = (ports, fp16, bf16, gc_barrier)
+        @lock REGISTRATIONS_LOCK begin
+            get!(() -> registrations(key..., options), REGISTRATIONS, key)
+        end
+    else
+        registrations(ports, fp16, bf16, gc_barrier, options)
     end
-    for marker in marker_passes()
-        LLVM.register!(pb, marker)
+    for pass in passes
+        LLVM.register!(pb, pass)
     end
     return pb
 end

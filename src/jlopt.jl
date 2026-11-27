@@ -89,7 +89,8 @@ cpp_mapping() = Dict(def.cpp_name => def.name for def in PASSES if !isempty(def.
 
 # the pipeline that runs the ports in place of Julia's C++ passes and pipeline
 port_pipeline(pipeline::AbstractString) =
-    map_pipeline(nest_pipeline(expand_julia_pipeline(pipeline), Dialect(VERSION)),
+    map_pipeline(nest_pipeline(expand_julia_pipeline(pipeline; ports=true),
+                               Dialect(VERSION)),
                  cpp_mapping())
 
 # raise an error that `opt` would report as a crash, for `not --crash` tests
@@ -306,7 +307,7 @@ function run_jlopt(opts::JloptOptions, pipeline::String, data, name::String, std
             cpu_target = (; target_cpu=cpu, target_features=features)
             try
                 @dispose pb=PassBuilder() begin
-                    register!(pb; options=Dict(CPU_FEATURES.name => cpu_target))
+                    register!(pb; ports=true, options=Dict(CPU_FEATURES.name => cpu_target))
                     add!(pb, pipeline)
                     run!(pb, mod, tm)
                 end

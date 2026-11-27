@@ -1,26 +1,157 @@
-# Lowering of Julia types to LLVM types: a port of the "mapping between julia and llvm
-# types" in Julia's src/cgutils.cpp (`julia_type_to_llvm`, `_julia_struct_to_llvm`,
-# `bitstype_to_llvm`) and of the calling-convention queries of src/codegen.cpp
-# (`deserves_stack` and friends). See docs/src/type_lowering.md.
-#
-# Like the C++, the lowering never consults a data layout: it builds LLVM types from the
-# layout that the running Julia computed for each type (field offsets and sizes, which
-# fields are references, inline unions), so the results are only meaningful for the
-# running Julia. `check_layout` compares them with a data layout.
+# Lowering of Julia types to LLVM types. Julia's code generator (`jl_type_to_llvm`) lowers
+# them with Julia's LLVM, into a context of that library; for a context of another library,
+# the result is rebuilt there. The calling-convention queries port those of Julia's
+# src/codegen.cpp (`deserves_stack` and friends). See docs/src/type_lowering.md.
+
+
+## lowering
+
+# Julia's code generator lowers a type into a context of Julia's LLVM
+function julia_type_to_llvm(@nospecialize(T::Type), ctx::Union{Context,API.LLVMContextRef})
+    boxed = Ref{Bool}()
+    ref = ccall(:jl_type_to_llvm, API.LLVMTypeRef, (Any, API.LLVMContextRef, Ptr{Bool}),
+                T, ctx, boxed)
+    return ref, boxed[]
+end
+
+# call `f` with a temporary context of Julia's LLVM: not an LLVM.jl `Context`, which would
+# be kept alive when disposed of while an exception is being handled, and neither activated
+# nor changing the current library
+function with_julia_context(f; opaque_pointers::Bool=true)
+    lib = LLVM.julia_library
+    LLVM.check_loaded(lib)
+    ref = API.LLVMContextCreate(lib)
+    try
+        LLVM.atleast(17, lib) || API.LLVMContextSetOpaquePointers(lib, ref, opaque_pointers)
+        return f(ref)
+    finally
+        API.LLVMContextDispose(lib, ref)
+    end
+end
+
+check_boxed(@nospecialize(T), boxed::Bool, allow_boxed::Bool) =
+    !allow_boxed && boxed && error("Conversion of boxed type $T is not allowed")
+
+# rebuild a type of another library in the active context. this only covers the types that
+# Julia's code generator lowers Julia types to, which are literal types.
+function import_type(lib::LLVM.Library, ref::API.LLVMTypeRef)
+    kind = API.LLVMGetTypeKind(lib, ref)
+    if kind == API.LLVMVoidTypeKind
+        LLVM.VoidType()
+    elseif kind == API.LLVMIntegerTypeKind
+        LLVM.IntType(API.LLVMGetIntTypeWidth(lib, ref))
+    elseif kind == API.LLVMHalfTypeKind
+        LLVM.HalfType()
+    elseif kind == API.LLVMBFloatTypeKind
+        LLVM.BFloatType()
+    elseif kind == API.LLVMFloatTypeKind
+        LLVM.FloatType()
+    elseif kind == API.LLVMDoubleTypeKind
+        LLVM.DoubleType()
+    elseif kind == API.LLVMPointerTypeKind
+        addrspace = API.LLVMGetPointerAddressSpace(lib, ref)
+        if !supports_typed_pointers()
+            LLVM.PointerType(addrspace)
+        elseif !Bool(API.LLVMPointerTypeIsOpaque(lib, ref))
+            LLVM.PointerType(import_type(lib, API.LLVMGetElementType(lib, ref)), addrspace)
+        else
+            error("Cannot lower a Julia type with pointers in a context with typed pointers: Julia's LLVM $(lib.version) only lowers to opaque pointers")
+        end
+    elseif kind == API.LLVMArrayTypeKind
+        n = LLVM.atleast(17, lib) ? API.LLVMGetArrayLength2(lib, ref) :
+                                    API.LLVMGetArrayLength(lib, ref)
+        LLVM.ArrayType(import_type(lib, API.LLVMGetElementType(lib, ref)), n)
+    elseif kind == API.LLVMVectorTypeKind
+        LLVM.VectorType(import_type(lib, API.LLVMGetElementType(lib, ref)),
+                        API.LLVMGetVectorSize(lib, ref))
+    elseif kind == API.LLVMStructTypeKind && Bool(API.LLVMIsLiteralStruct(lib, ref))
+        elems = LLVMType[import_type(lib, API.LLVMStructGetTypeAtIndex(lib, ref, i))
+                         for i in 0:Int(API.LLVMCountStructElementTypes(lib, ref))-1]
+        LLVM.StructType(elems; packed=Bool(API.LLVMIsPackedStruct(lib, ref)))
+    else
+        str = LLVM.unsafe_message(lib, API.LLVMPrintTypeToString(lib, ref))
+        error("Cannot rebuild LLVM type $str of LLVM library :$(lib.name) in another context")
+    end
+end
+
+"""
+    JuliaIR.llvm_type(T; allow_boxed=false)::LLVMType
+
+The LLVM type that Julia's code generator uses for values of the Julia type `T`, in the
+active context, which can belong to any LLVM library. Values of types that Julia boxes are
+pointers to objects (`ptr addrspace(10)`), which is an error unless `allow_boxed` is set.
+
+Julia's code generator lowers the type with Julia's LLVM; for a context of another
+library, the result is rebuilt there. In a context with typed pointers, types that
+contain pointers require Julia's LLVM to support typed pointers as well (LLVM 16 or older,
+Julia 1.11 and older).
+
+See also [`JuliaIR.isboxed`](@ref) and [`JuliaIR.isghosttype`](@ref).
+"""
+function llvm_type(@nospecialize(T::Type); allow_boxed::Bool=false)
+    ctx = context()
+    if ctx.library === LLVM.julia_library
+        ref, boxed = julia_type_to_llvm(T, ctx)
+        check_boxed(T, boxed, allow_boxed)
+        return LLVMType(ref)
+    end
+    # typed pointers are only used if Julia's LLVM supports them too
+    with_julia_context(; opaque_pointers=!supports_typed_pointers(ctx)) do jlctx
+        ref, boxed = julia_type_to_llvm(T, jlctx)
+        check_boxed(T, boxed, allow_boxed)
+        return import_type(LLVM.julia_library, ref)
+    end
+end
+
+@deprecate julia_type(T; allow_boxed::Bool=false) llvm_type(T; allow_boxed) false
+
+# lower `T` with Julia's code generator, without rebuilding the result, to query it
+function query_lowering(f, @nospecialize(T::Type))
+    ctx = context(; throw_error=false)
+    ctx !== nothing && ctx.library === LLVM.julia_library &&
+        return f(julia_type_to_llvm(T, ctx)...)
+    return with_julia_context(jlctx -> f(julia_type_to_llvm(T, jlctx)...))
+end
+
+"""
+    JuliaIR.isboxed(T)::Bool
+
+Whether Julia's code generator represents values of type `T` as pointers to boxed objects
+(see [`JuliaIR.llvm_type`](@ref)). This is not the calling convention: whether a function
+receives an argument of type `T` as a box is [`JuliaIR.deserves_argbox`](@ref) (a struct
+with an undefined reference field is lowered unboxed but passed boxed, for example). It
+doesn't need an active context.
+"""
+isboxed(@nospecialize(T::Type)) = query_lowering((ref, boxed) -> boxed, T)
+
+"""
+    JuliaIR.isghosttype(T::Type)::Bool
+    JuliaIR.isghosttype(T::LLVMType)::Bool
+
+Whether values of the Julia type `T` have no representation in the code Julia generates,
+because they contain no data (`Nothing`, empty structs, `Union{}`): Julia's code generator
+lowers `T` to `void` (see [`JuliaIR.llvm_type`](@ref)). For an LLVM type, whether it is
+`void` or an empty type. The Julia method doesn't need an active context.
+"""
+isghosttype(@nospecialize(T::Type)) =
+    query_lowering((ref, boxed) -> API.LLVMGetTypeKind(LLVM.julia_library, ref) ==
+                                   API.LLVMVoidTypeKind, T)
+isghosttype(@nospecialize(T::LLVMType)) = T isa LLVM.VoidType || isemptytype(T)
 
 
 ## facts about the running Julia
 
 # Julia's `GenericMemory` (1.11 and later) changed how the runtime reports layouts, see
-# `datatype_layout`, and introduced `GenericMemoryRef`.
+# `datatype_layout`.
 const HAS_MEMORY = isdefined(Core, :GenericMemory)
 
 # `MAX_ALIGN` (Julia's src/julia_internal.h, src/julia.h before 1.12), the largest
 # alignment Julia gives a primitive type, which caps the integers that represent inline
 # unions. Julia aligns a primitive type to its size rounded up to a power of two, capped at
 # `MAX_ALIGN`; the only other rule, 4-byte alignment of 8-byte types on 32-bit x86 outside
-# Windows, doesn't apply to a 32-byte type. So the alignment of a 256-bit primitive is `MAX_ALIGN`, as long
-# as that is at most 32 bytes (it is at most 16 on every platform and version).
+# Windows, doesn't apply to a 32-byte type. So the alignment of a 256-bit primitive is
+# `MAX_ALIGN`, as long as that is at most 32 bytes (it is at most 16 on every platform and
+# version).
 primitive type MaxAlignProbe 256 end
 max_align() = Base.datatype_alignment(MaxAlignProbe)
 
@@ -36,7 +167,7 @@ is_opaque(L::Base.DataTypeLayout) = L.nfields == 0 && L.npointers > 0
 
 # `jl_datatype_layout`: from Julia 1.11 on, a type without a layout or with an opaque one
 # reports the layout of its type constructor's body instead (that of `GenericMemory`'s
-# fields, for `Memory{T}`). Throws where the C++ dereferences a null layout.
+# fields, for `Memory{T}`)
 function datatype_layout(T::DataType)
     L = own_layout(T)
     if HAS_MEMORY && (L === nothing || is_opaque(L))
@@ -48,281 +179,32 @@ function datatype_layout(T::DataType)
 end
 datatype_size(T::DataType) = Int(datatype_layout(T).size)
 
-# `jl_datatype_nbits` of a primitive type: Julia 1.14 stores primitives of any number of
-# bits (`primitive type P7 7`) and reports the bits that are not used.
-primitive_bits(T::DataType) =
-    @static isdefined(Core, :bitsizeof) ? Int(Core.bitsizeof(T)) : 8 * sizeof(T)
-
-# `jl_struct_try_layout`: whether `T` has a layout, computing it if the runtime deferred
-# that (asking for a field offset makes it compute the layout, or fail when the type has
-# none).
-function try_layout(T::DataType)
-    T.layout != C_NULL && return true
-    HAS_MEMORY && T.name === Base.typename(Core.GenericMemory) && return true
-    fieldcount(T) == 0 && return false
-    try
-        fieldoffset(T, 1)
-    catch
-        return false
-    end
-    return T.layout != C_NULL
-end
-
 # the kinds: the types of types (`jl_is_kind`)
 const KINDS = (DataType, Union, UnionAll, Core.TypeofBottom,
                (@static isdefined(Core, :TypeEq) ? (Core.TypeEq, Core.TypeEgal) : ())...)
 is_kind(@nospecialize(T)) = any(K -> K === T, KINDS)
-
-# `Union{}`, and what the dialect lowers like it (`is_typeofbottom_typealias`)
-function is_bottom_alias(@nospecialize(T), d::Dialect)
-    T === Union{} && return true
-    d.bottom_aliases === :bottom && return false
-    # `typeof(Union{})` is hidden from inference: Julia 1.10's fails internally on
-    # comparisons with it and with `Type{Union{}}`, which are `==` but not `===`
-    # (JuliaLang/julia#56913, fixed in 1.11)
-    T === Base.inferencebarrier(Core.TypeofBottom) && return true
-    if d.bottom_aliases === :typeofbottom_super
-        return T === Type{Union{}}
-    end
-    # `:some_type`: `Type{Union{}}` is a `Core.TypeEq` object
-    @static if isdefined(Core, :TypeEq)
-        return (T isa Core.TypeEq || T isa Core.TypeEgal) && T.T === Union{}
-    end
-    return false
-end
 
 # `jl_is_concrete_immutable`
 is_concrete_immutable(@nospecialize(T), d::Dialect) =
     T isa DataType && !ismutabletype(T) && isconcretetype(T) &&
     !(d.boxes_kinds && is_kind(T))
 
-is_tuple_type(T::DataType) = T.name === Base.typename(Tuple)
 is_vecelement_type(@nospecialize(T)) = T isa DataType && T.name === Base.typename(VecElement)
-is_cpointer_type(T::DataType) = T.name === Base.typename(Ptr)
-is_llvmpointer_type(T::DataType) = T.name === Base.typename(Core.LLVMPtr)
-is_array_type(T::DataType) = T.name === Base.typename(Array)
-is_genericmemory_type(T::DataType) = HAS_MEMORY && T.name === Base.typename(Core.GenericMemory)
-is_genericmemoryref_type(T::DataType) = HAS_MEMORY && T.name === Base.typename(Core.GenericMemoryRef)
-
-# `jl_special_vector_alignment`, as of Julia 1.14 (whose odd-bit primitives can't be
-# vector elements; older versions have no odd-bit primitives): the alignment of an
-# `NTuple{n,T}` that is lowered to an LLVM vector, or 0 if it isn't one.
-function special_vector_alignment(n::Int, @nospecialize(T))
-    is_vecelement_type(T) || return 0
-    E = fieldtype(T, 1)
-    (E isa DataType && isprimitivetype(E)) || return 0
-    size = sizeof(E)
-    ispow2(size) || return 0
-    primitive_bits(E) == 8size || return 0
-    return nextpow(2, n * size)
-end
-
-
-## lowering
-
-# the LLVM type of the Julia type, and whether its values are boxed (passed as a
-# `ptr addrspace(10)` to the object)
-struct Lowered
-    type::LLVMType
-    boxed::Bool
-end
-
-boxed_type() = Lowered(PointerType(10), true)
-unboxed(@nospecialize(T::LLVMType)) = Lowered(T, false)
-
-is_ghost(@nospecialize(T::LLVMType)) = T isa LLVM.VoidType || isemptytype(T)
-
-# `_julia_type_to_llvm`
-function lower_type(@nospecialize(T), no_boxing::Bool, d::Dialect)
-    is_bottom_alias(T, d) && return unboxed(LLVM.VoidType())
-    if is_concrete_immutable(T, d) || no_boxing
-        T isa DataType || throw(ArgumentError("$T is not a data type, and has no layout"))
-        datatype_size(T) == 0 && return unboxed(LLVM.VoidType())
-        return lower_struct(T, false, d)
-    end
-    return boxed_type()
-end
-
-# `_julia_struct_to_llvm`: the representation of a value of type `T` (`llvmcall`: in a
-# `ccall` with the `llvmcall` calling convention).
-function lower_struct(@nospecialize(T), llvmcall::Bool, d::Dialect)
-    is_bottom_alias(T, d) && return unboxed(LLVM.VoidType())
-    d.boxes_kinds && is_kind(T) && return boxed_type()
-    T isa DataType || return boxed_type()
-    isprimitivetype(T) && return unboxed(lower_bitstype(T, llvmcall, d))
-    if !isabstracttype(T) &&
-       !(T.layout != C_NULL && is_opaque(own_layout(T))) &&
-       !is_array_type(T) && !is_genericmemory_type(T)
-        is_genericmemoryref_type(T) && return unboxed(lower_memoryref(T, d))
-        return unboxed(lower_fields(T, llvmcall, d))
-    end
-    return boxed_type()
-end
-
-# `bitstype_to_llvm`
-function lower_bitstype(T::DataType, llvmcall::Bool, d::Dialect)
-    T === Bool && return llvmcall ? LLVM.Int1Type() : LLVM.Int8Type()
-    T === Float16 && return LLVM.HalfType()
-    T === Float32 && return LLVM.FloatType()
-    T === Float64 && return LLVM.DoubleType()
-    @static if isdefined(Core, :BFloat16)
-        T === Core.BFloat16 && return LLVM.BFloatType()
-    end
-    is_cpointer_type(T) && d.cpointer_type === :pointer && return PointerType(0)
-    if is_llvmpointer_type(T)
-        as = T.parameters[2]
-        as isa Union{Int32,Int64} || error("invalid pointer address space")
-        return PointerType(as)
-    end
-    return LLVM.IntType(primitive_bits(T))
-end
-
-# the `GenericMemoryRef` types: the element's address (its index, for memory of unions or
-# of types without data) and the memory object
-function lower_memoryref(T::DataType, d::Dialect)
-    M = fieldtype(T, 2)
-    elem = Base.datatype_arrayelem(M)   # 0: inline, 1: boxed, 2: union
-    index = elem == 2 || (elem == 0 && own_layout(M).size == 0)
-    # `GenericMemoryRef`'s address-space parameter is not used: the C++ always uses 0
-    ptr_or_offset = index ? lower_bitstype(Int, false, d) : PointerType(0)
-    return StructType(LLVMType[ptr_or_offset, PointerType(10)])
-end
-
-# the types that represent an inline union field of `fieldsize` bytes (data, then the
-# selector byte): integers sized to make the alignment generally correct, preceded by an
-# alignment marker when that alignment exceeds `MAX_ALIGN`
-function push_union_field!(elts::Vector{LLVMType}, @nospecialize(U), fieldsize::Int)
-    _, _, al = Base.uniontype_layout(U)
-    fsz1 = fieldsize - 1
-    if fsz1 > 0
-        if al > max_align()
-            push!(elts, ArrayType(VectorType(LLVM.Int8Type(), al), 0))
-            al = max_align()
-        end
-        for _ in 1:div(fsz1, al)
-            push!(elts, LLVM.IntType(8al))
-        end
-        for _ in 1:rem(fsz1, al)
-            push!(elts, LLVM.Int8Type())
-        end
-    end
-    push!(elts, LLVM.Int8Type())
-    return elts
-end
-
-# the struct case of `_julia_struct_to_llvm`: the fields that hold data, as one LLVM type
-function lower_fields(T::DataType, llvmcall::Bool, d::Dialect)
-    try_layout(T) ||
-        throw(ArgumentError("type $T has no fixed layout, and cannot be lowered"))
-    ftypes = fieldtypes(T)
-    n = length(ftypes)
-    (n == 0 || datatype_size(T) == 0) && return LLVM.VoidType()
-
-    # one element per field, except that fields without data are dropped and inline unions
-    # take several
-    elts = LLVMType[]
-    has_union = false
-    desc = Base.DataTypeFieldDesc(T)
-    for (i, F) in enumerate(ftypes)
-        Base.isfieldatomic(T, i) &&
-            throw(ArgumentError("type $T has an atomic field ($(fieldname(T, i))), which cannot be lowered"))
-        fd = desc[i]
-        if fd.isptr
-            push!(elts, PointerType(10))
-        elseif F isa Union
-            push_union_field!(elts, F, Int(fd.size))
-            has_union = true
-        else
-            lty = lower_struct(F, llvmcall, d).type
-            is_ghost(lty) || push!(elts, lty)
-        end
-    end
-
-    isempty(elts) && return LLVM.VoidType()
-    # `VecElement` is unwrapped, unless its element is a union (even a boxed one)
-    is_vecelement_type(T) && !(ftypes[1] isa Union) && return only(elts)
-    # fields of one LLVM type, none of them dropped, form an array, or a vector for tuples
-    # of `VecElement`s of a suitable size
-    if !has_union && length(elts) == n && all(==(elts[1]), elts)
-        if is_tuple_type(T) && all(F -> F === ftypes[1], ftypes) &&
-           special_vector_alignment(n, ftypes[1]) != 0
-            return VectorType(elts[1], n)
-        elseif is_tuple_type(T) || !llvmcall
-            return ArrayType(elts[1], n)
-        end
-    end
-    return StructType(elts)
-end
-
-
-## entry points
-
-function require_opaque_context()
-    ctx = context()
-    supports_typed_pointers(ctx) &&
-        throw(ArgumentError("JuliaIR's type lowering requires a context with opaque pointers; create it with `Context(; opaque_pointers=true)`, or use `convert(LLVMType, T)` in a typed context of Julia's own LLVM"))
-    return
-end
 
 const DIALECT = Dialect(VERSION)
 
-function check_boxed(@nospecialize(T), l::Lowered, allow_boxed::Bool)
-    !allow_boxed && l.boxed && error("Conversion of boxed type $T is not allowed")
-    return l.type
-end
-
-"""
-    JuliaIR.julia_type(T; allow_boxed=false, no_boxing=false)::LLVMType
-
-The LLVM type that Julia's code generator uses for values of the Julia type `T`, in the
-current context (which must use opaque pointers): a port of Julia's
-`julia_type_to_llvm`, giving the same types as `convert(LLVMType, T)` does in a context of
-Julia's own LLVM, but in any context, e.g. of another LLVM library.
-
-The result depends on the running Julia: it is built from the layout of `T` that the
-running Julia computed, never from a data layout. Values of types that Julia boxes are
-lowered to `ptr addrspace(10)`, which is an error unless `allow_boxed` is set.
-
-With `no_boxing=true`, `T` is lowered like an immutable type even if it is mutable or
-abstract, as by Julia's `jl_struct_to_llvm` (which Enzyme uses); the result can still be
-boxed (for `Memory`, for example). Types for which Julia's C++ would abort throw an
-`ArgumentError` instead: types with atomic fields, types without a layout and types
-without a fixed layout.
-
-See also [`JuliaIR.isboxed`](@ref) and [`JuliaIR.julia_struct_type`](@ref).
-"""
-function julia_type(@nospecialize(T); allow_boxed::Bool=false, no_boxing::Bool=false)
-    require_opaque_context()
-    return check_boxed(T, lower_type(T, no_boxing, DIALECT), allow_boxed)
-end
-
-"""
-    JuliaIR.isboxed(T)::Bool
-
-Whether [`JuliaIR.julia_type`](@ref) lowers values of type `T` to a pointer to a boxed
-object. This is not the calling convention: whether a function receives an argument of
-type `T` as a box is [`JuliaIR.deserves_argbox`](@ref) (a struct with an undefined
-reference field is lowered unboxed but passed boxed, for example).
-"""
-function isboxed(@nospecialize(T))
-    require_opaque_context()
-    return lower_type(T, false, DIALECT).boxed
-end
-
-"""
-    JuliaIR.julia_struct_type(T; llvmcall=false, allow_boxed=false)::LLVMType
-
-The structural representation of a value of type `T` that Julia's code generator uses
-when calling C (`ccall`, `@cfunction`) and for intrinsics: a port of
-`_julia_struct_to_llvm`. Unlike [`JuliaIR.julia_type`](@ref), `T` is not checked to be a
-concrete immutable type first, and with `llvmcall=true` the result is the variant that
-`ccall(..., llvmcall, ...)` declares: `Bool` is `i1`, and structs (but not tuples) whose
-fields have the same LLVM type are LLVM structs rather than arrays. This is no ABI
-classification for C calls, which Julia's code generator does separately.
-"""
-function julia_struct_type(@nospecialize(T); llvmcall::Bool=false, allow_boxed::Bool=false)
-    require_opaque_context()
-    return check_boxed(T, lower_struct(T, llvmcall, DIALECT), allow_boxed)
+# The elements that Julia's code generator lowers an inline union field of `fieldsize`
+# bytes to: integers sized to the union's alignment (at most `MAX_ALIGN`) covering its
+# data, preceded by an alignment marker (`[0 x <al x i8>]`) when that alignment exceeds
+# `MAX_ALIGN`, then the selector byte. Returns the number of elements, and the index of
+# the first data element among them.
+function union_field_elements(@nospecialize(U), fieldsize::Int)
+    fsz1 = fieldsize - 1
+    fsz1 > 0 || return 1, 1
+    _, _, al = Base.uniontype_layout(U)
+    marker = al > max_align()
+    al = min(al, max_align())
+    return marker + div(fsz1, al) + rem(fsz1, al) + 1, marker + 1
 end
 
 
@@ -402,7 +284,7 @@ Base.show(io::IO, d::LayoutDivergence) =
     JuliaIR.check_layout(T, dl::LLVM.DataLayout)::Vector{JuliaIR.LayoutDivergence}
 
 Compare the layout the running Julia uses for values of type `T` with the layout that the
-data layout `dl` gives the LLVM type [`JuliaIR.julia_type`](@ref) lowers `T` to, and return
+data layout `dl` gives the LLVM type [`JuliaIR.llvm_type`](@ref) lowers `T` to, and return
 the differences: the size, allocation size and alignment of `T`, and the offset of every
 field that occupies memory, with the size and alignment of the field's value (recursively
 for inline fields). An empty result means that code generated for `dl` addresses values
@@ -414,14 +296,12 @@ the representation. The lowering itself never consults a data layout; this is a
 diagnostic. The tests check agreement with the running Julia's data layout and known
 differences for GPU targets.
 """
-function check_layout(@nospecialize(T), dl::DataLayout)
-    require_opaque_context()
+function check_layout(@nospecialize(T::Type), dl::DataLayout)
     out = LayoutDivergence[]
-    l = lower_type(T, false, DIALECT)
-    if l.boxed
+    if isboxed(T)
         check_pointer!(out, string(T), dl)
     else
-        check_value!(out, string(T), T, l.type, dl)
+        check_value!(out, string(T), T, llvm_type(T), dl)
     end
     return out
 end
@@ -430,12 +310,12 @@ compare!(out, path, property, julia, llvm) =
     julia == llvm || push!(out, LayoutDivergence(path, property, julia, llvm))
 
 check_pointer!(out, path, dl) =
-    compare!(out, path, :pointer_size, sizeof(Ptr{Cvoid}), storage_size(dl, PointerType(10)))
+    compare!(out, path, :pointer_size, sizeof(Ptr{Cvoid}), LLVM.pointersize(dl, 10))
 
 # a value of type `T` stored inline as `lty`, at the top or in a field: its size and
 # alignment, and the layout of its fields
 function check_value!(out, path, @nospecialize(T), @nospecialize(lty::LLVMType), dl)
-    is_ghost(lty) && return
+    isghosttype(lty) && return
     jsize = datatype_size(T)
     jalign = Base.datatype_alignment(T)
     # Julia's size can include padding that LLVM doesn't store (`<3 x float>`) or
@@ -489,15 +369,15 @@ function check_struct_fields!(out, path, T::DataType, lty, dl)
         offset = Int(fd.offset)
         if !fd.isptr && F isa Union
             # the data (after an alignment marker, if any), then the selector byte
-            elts = push_union_field!(LLVMType[], F, Int(fd.size))
-            data = elts[1] isa ArrayType ? 2 : 1
-            if length(elts) > data
+            n, data = union_field_elements(F, Int(fd.size))
+            if n > data
                 compare!(out, fpath, :offset, offset, LLVM.offsetof(dl, lty, idx + data - 1))
             end
             compare!(out, string(fpath, " (selector)"), :offset, offset + Int(fd.size) - 1,
-                     LLVM.offsetof(dl, lty, idx + length(elts) - 1))
-            idx += length(elts)
-        elseif fd.isptr || !is_ghost(lower_struct(F, false, DIALECT).type)
+                     LLVM.offsetof(dl, lty, idx + n - 1))
+            idx += n
+        elseif fd.isptr || fd.size > 0
+            # (inline fields without data are dropped)
             compare!(out, fpath, :offset, offset, LLVM.offsetof(dl, lty, idx))
             check_field!(out, path, T, i, lty.elements[idx], dl)
             idx += 1

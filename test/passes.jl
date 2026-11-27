@@ -18,17 +18,17 @@ dialect = JuliaIR.Dialect(VERSION)
         @test JuliaIR.remove_ni!(mod, nothing, opts) == PreservedAnalyses(AllAnalyses)
 
         mod.datalayout = "e-i64:64-ni:10:11:12:13"
-        run!(JuliaIR.RemoveNIPass(), mod)
+        run!(JuliaIR.RemoveNIPass(; ports=true), mod)
         @test string(mod.datalayout) == "e-i64:64"
     end
 
     # a required pass: it runs on `optnone` functions too, which for a module pass
     # means that it is part of the pipeline even at -O0
-    @test JuliaIR.RemoveNIPass().required
+    @test JuliaIR.RemoveNIPass(; ports=true).def.required
 end
 
 @testset "PropagateJuliaAddrspaces" begin
-    @test JuliaIR.PropagateAddrspacesPass().required
+    @test JuliaIR.PropagateJuliaAddrspacesPass(; ports=true).def.required
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             define i64 @f() {
               %stack = alloca i64
@@ -36,7 +36,7 @@ end
               %load = load i64, ptr addrspace(11) %casted
               ret i64 %load
             }""") begin
-        run!(JuliaIR.PropagateAddrspacesPass(), mod)
+        run!(JuliaIR.PropagateJuliaAddrspacesPass(; ports=true), mod)
         load = collect(first(first(mod.functions).blocks).instructions)[3]
         @test load.operands[1] == first(first(first(mod.functions).blocks).instructions)
     end
@@ -51,7 +51,7 @@ end
               %m = add i64 %n, 1
               ret i64 %m
             }""") begin
-        run!(JuliaIR.PropagateAddrspacesPass(), mod)
+        run!(JuliaIR.PropagateJuliaAddrspacesPass(; ports=true), mod)
         f = mod.functions["f"]
         @test occursin("call void @llvm.memcpy.p0.p0.i64(ptr %stack, ptr %src, i64 %n, i1 false)",
                        string(mod))
@@ -62,16 +62,16 @@ end
 end
 
 @testset "DemoteFloat16" begin
-    @test JuliaIR.DemoteFloat16Pass().required
-    @test_throws "invalid bf16 policy" JuliaIR.DemoteFloat16Pass(; bf16=:never)
+    @test JuliaIR.DemoteFloat16Pass(; ports=true).def.required
+    @test_throws "invalid bf16 policy" JuliaIR.DemoteFloat16Pass(; ports=true, bf16=:never)
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, """
             define half @f(half %a) {
               %r = fadd half %a, %a
               ret half %r
             }""") begin
-        run!(JuliaIR.DemoteFloat16Pass(; fp16=:keep), mod)
+        run!(JuliaIR.DemoteFloat16Pass(; ports=true, fp16=:keep), mod)
         @test occursin("%r = fadd half", string(mod))
-        run!(JuliaIR.DemoteFloat16Pass(; fp16=:demote), mod)
+        run!(JuliaIR.DemoteFloat16Pass(; ports=true, fp16=:demote), mod)
         @test occursin("%r = fptrunc float", string(mod))
     end
 
@@ -92,17 +92,17 @@ end
                                   features=nothing)
             facts[:jit_fp16] = true
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-                run!(JuliaIR.DemoteFloat16Pass(), mod)
+                run!(JuliaIR.DemoteFloat16Pass(; ports=true), mod)
                 @test occursin("%r = fadd half", string(mod))
                 # unless the JIT is ignored, like in `opt`
-                run!(JuliaIR.DemoteFloat16Pass(; jit_features=false), mod)
+                run!(JuliaIR.DemoteFloat16Pass(; ports=true, jit_features=false), mod)
                 @test occursin("%r = fptrunc float", string(mod))
             end
             # or the module is for another architecture
             facts[:jit_target] = (; triple="x86_64-unknown-linux-gnu", cpu=nothing,
                                   features=nothing)
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-                run!(JuliaIR.DemoteFloat16Pass(), mod)
+                run!(JuliaIR.DemoteFloat16Pass(; ports=true), mod)
                 @test occursin("%r = fptrunc float", string(mod))
             end
         finally
@@ -118,8 +118,8 @@ end
 end
 
 @testset "GCInvariantVerifier" begin
-    @test JuliaIR.GCInvariantVerifierPass().required
-    @test_throws ArgumentError("option strong of pass jl-gc-invariant-verifier must be true or false") JuliaIR.GCInvariantVerifierPass(; strong=1)
+    @test JuliaIR.GCInvariantVerifierPass(; ports=true).def.required
+    @test_throws ArgumentError("option strong of pass jl-gc-invariant-verifier must be true or false") JuliaIR.GCInvariantVerifierPass(; ports=true, strong=1)
     ir = """
         define ptr addrspace(11) @f(ptr addrspace(10) %obj, ptr %p) {
           %derived = addrspacecast ptr addrspace(10) %obj to ptr addrspace(11)
@@ -130,7 +130,7 @@ end
     # every violation is reported, and the error outlives the module
     err = @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         try
-            run!(JuliaIR.GCInvariantVerifierPass(; strong=true), mod)
+            run!(JuliaIR.GCInvariantVerifierPass(; ports=true, strong=true), mod)
             nothing
         catch err
             err
@@ -148,7 +148,7 @@ end
     # without the strong check, GEPs of tracked pointers are fine
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         err = try
-            run!(JuliaIR.GCInvariantVerifierPass(), mod)
+            run!(JuliaIR.GCInvariantVerifierPass(; ports=true), mod)
         catch err
             err
         end
@@ -157,8 +157,8 @@ end
 end
 
 @testset "LateGCCleanup" begin
-    @test JuliaIR.LateGCCleanupPass().required
-    @test JuliaIR.LateLowerGCFramePass().required
+    @test JuliaIR.LateGCCleanupPass(; ports=true).def.required
+    @test JuliaIR.LateLowerGCPass(; ports=true).def.required
 
     # Calls marked julia.safepoint are safepoints whatever memory effects they, or the
     # functions they call, claim, and lose them, so that optimizations after FinalLowerGC
@@ -192,7 +192,7 @@ end
               %t = call ptr addrspace(10) @julia.typeof(ptr addrspace(10) %obj)
               ret ptr addrspace(10) %t
             }""") begin
-        run!(JuliaIR.LateLowerGCFramePass(), mod)
+        run!(JuliaIR.LateLowerGCPass(; ports=true), mod)
         @test !occursin("julia.typeof(", string(mod.functions["f"]))
         tag = dialect.gc_names ? "%obj.tag" : "%[0-9]+"
         @test occursin(Regex("and i64 $tag, -16"), string(mod.functions["f"]))
@@ -212,13 +212,13 @@ end
           ret ptr addrspace(10) %v
         }"""
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
-        run!(JuliaIR.LateLowerGCFramePass(; task_ptls=128), mod)
+        run!(JuliaIR.LateLowerGCPass(; ports=true, task_ptls=128), mod)
         # Julia 1.11 and older address the field in pointers, later versions in bytes
         index = dialect.gc_ptls_gep === :pointer ? "i64 16" : "i32 128"
         @test occursin("ptr %task, $index", string(mod.functions["alloc"]))
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, alloc_ir) begin
-        run!(JuliaIR.LateLowerGCFramePass(), mod)
+        run!(JuliaIR.LateLowerGCPass(; ports=true), mod)
         @test occursin(r"%ptls_field = getelementptr inbounds \w+, ptr %task, i\d+ \d+",
                        string(mod.functions["alloc"]))
         @test !occursin("julia.gc_alloc_obj(", string(mod.functions["alloc"]))
@@ -238,7 +238,7 @@ end
                       ret void
                     }""") begin
                 err = try
-                    run!(JuliaIR.LateLowerGCFramePass(), mod)
+                    run!(JuliaIR.LateLowerGCPass(; ports=true), mod)
                     nothing
                 catch err
                     err
@@ -265,7 +265,7 @@ end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         before = string(mod)
         err = try
-            run!(JuliaIR.LateGCCleanupPass(), mod)
+            run!(JuliaIR.LateGCCleanupPass(; ports=true), mod)
             nothing
         catch err
             err
@@ -303,7 +303,7 @@ end
               %a = call ptr addrspace(10) @julia.gc_alloc_obj(ptr %task, i64 8, ptr addrspace(10) null)
               ret ptr addrspace(10) %a
             }""") begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, "function(jl-late-lower-gc-frame<task-ptls=8>,jl-late-gc-cleanup)")
         err = try
             run!(pb, mod)
@@ -359,7 +359,7 @@ end
 end
 
 @testset "AllocOpt" begin
-    @test !JuliaIR.AllocOptPass().required
+    @test !JuliaIR.AllocOptPass(; ports=true).def.required
 
     @testset "fields" begin
         @dispose ctx=Context(; opaque_pointers=true) begin
@@ -435,7 +435,7 @@ end
                   %v = call i8 @useobj(ptr addrspace(10) %a)
                   ret i8 %v
                 }""")
-            JuliaIR.register!(pb)
+            JuliaIR.register!(pb; ports=true)
             add!(pb, "repeat<2>(function(jl-alloc-opt),always-inline,strip-dead-prototypes)")
             run!(pb, mod)
             str = string(mod.functions["f"])
@@ -491,7 +491,7 @@ end
             }"""
         function alloc_opt(ir)
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-                run!(JuliaIR.AllocOptPass(), mod)
+                run!(JuliaIR.AllocOptPass(; ports=true), mod)
                 @test verify(mod) === nothing
                 return string(mod.functions["f"])
             end
@@ -573,7 +573,7 @@ end
                   call void @external(ptr addrspace(10) %escaped)
                   ret void
                 }""")
-            run!(JuliaIR.AllocOptPass(), mod; remarks=r -> push!(remarks, r))
+            run!(JuliaIR.AllocOptPass(; ports=true), mod; remarks=r -> push!(remarks, r))
         end
         @test any(r -> r.kind === :passed && r.name == "Dead Allocation", remarks)
         @test any(r -> r.kind === :missed && r.name == "Escaped", remarks)
@@ -587,7 +587,7 @@ end
 end
 
 @testset "CombineMulAdd" begin
-    @test !JuliaIR.CombineMulAddPass().required
+    @test !JuliaIR.CombineMulAddPass(; ports=true).def.required
     ir = """
         define double @f(double %a, double %b, double %c) {
           %once = fmul double %a, %b
@@ -601,7 +601,7 @@ end
     changed = dialect.has_combine_muladd
     remarks = []
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
-        run!(JuliaIR.CombineMulAddPass(), mod; remarks=r -> push!(remarks, r))
+        run!(JuliaIR.CombineMulAddPass(; ports=true), mod; remarks=r -> push!(remarks, r))
         @test occursin("%once = fmul contract double", string(mod)) == changed
         @test occursin("%twice = fmul double", string(mod))
     end
@@ -616,7 +616,7 @@ end
 end
 
 @testset "LowerSIMDLoop" begin
-    @test !JuliaIR.LowerSIMDLoopPass().required
+    @test !JuliaIR.LowerSIMDLoopPass(; ports=true).def.required
     ir = """
         define double @f(ptr %p) !dbg !3 {
         entry:
@@ -653,7 +653,7 @@ end
     remarks = []
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
-            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass())
+            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass(; ports=true))
             add!(pb, "function(loop-mssa(jl-lower-simdloop))")
             run!(pb, mod)
         end
@@ -685,7 +685,7 @@ end
                           "!5 = distinct !{!5, !\"julia.simdloop\", null, !6}")
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, null_ir) begin
         @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
-            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass())
+            LLVM.register!(pb, JuliaIR.LowerSIMDLoopPass(; ports=true))
             add!(pb, "function(loop-mssa(jl-lower-simdloop))")
             run!(pb, mod)
         end
@@ -696,11 +696,11 @@ end
 end
 
 @testset "JuliaLICM" begin
-    @test !JuliaIR.JuliaLICMPass().required
+    @test !JuliaIR.JuliaLICMPass(; ports=true).def.required
     @test JuliaIR.JULIA_LICM.kind === :loop
     @test JuliaIR.JULIA_LICM.cpp_name == "JuliaLICM"
-    @test JuliaIR.JuliaLICMPass(; gc_barrier=:snapshot) isa LLVM.CustomPass
-    @test_throws ArgumentError JuliaIR.JuliaLICMPass(; gc_barrier=:nonsense)
+    @test JuliaIR.JuliaLICMPass(; ports=true, gc_barrier=:snapshot) isa JuliaIR.Pass
+    @test_throws ArgumentError JuliaIR.JuliaLICMPass(; ports=true, gc_barrier=:nonsense)
 
     object_barriers = dialect.barrier_flavour === :object_field
     barrier = object_barriers ? "julia.object_write_barrier" : "julia.write_barrier"
@@ -739,7 +739,7 @@ end
         remarks = []
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
             @dispose pb=PassBuilder(; remarks=r -> push!(remarks, r)) begin
-                JuliaIR.register!(pb)
+                JuliaIR.register!(pb; ports=true)
                 add!(pb, "function(loop-mssa(jl-licm))")
                 run!(pb, mod)
             end
@@ -781,7 +781,7 @@ end
             open(out, "w") do io
                 redirect_stderr(io) do
                     @dispose pb=PassBuilder() begin
-                        JuliaIR.register!(pb)
+                        JuliaIR.register!(pb; ports=true)
                         add!(pb, pipeline)
                         run!(pb, mod)
                     end
@@ -861,7 +861,7 @@ end
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bad) begin
                 err = try
                     @dispose pb=PassBuilder() begin
-                        JuliaIR.register!(pb)
+                        JuliaIR.register!(pb; ports=true)
                         add!(pb, "function(loop-mssa(jl-licm))")
                         run!(pb, mod)
                     end
@@ -888,7 +888,7 @@ end
 end
 
 @testset "LowerExcHandlers" begin
-    @test JuliaIR.LowerExcHandlersPass().required
+    @test JuliaIR.LowerExcHandlersPass(; ports=true).def.required
     # a handler in the running Julia's dialect; Julia 1.13 and later emit none (and have
     # no LowerExcHandlers), for them the IR of 1.12 checks that the pass does nothing
     kind = dialect.except_enter === :none ? :task_buffer : dialect.except_enter
@@ -907,7 +907,7 @@ end
     lowered(mod) = !occursin(r"call [^\n]*@julia.except_enter\(", string(mod))
     function lower(triple; kwargs...)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir(; triple)) begin
-            run!(JuliaIR.LowerExcHandlersPass(; kwargs...), mod)
+            run!(JuliaIR.LowerExcHandlersPass(; ports=true, kwargs...), mod)
             @test lowered(mod)
             return string(mod)
         end
@@ -926,7 +926,7 @@ end
     if dialect.except_enter === :none
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
             before = string(mod)
-            run!(JuliaIR.LowerExcHandlersPass(), mod)
+            run!(JuliaIR.LowerExcHandlersPass(; ports=true), mod)
             @test string(mod) == before
         end
     else
@@ -971,7 +971,7 @@ end
                     target triple = "x86_64-w64-windows-gnu"
                     declare i32 @__sigsetjmp(ptr) returns_twice
                     $(ir())""") begin
-                run!(JuliaIR.LowerExcHandlersPass(; handler_size=264, handler_align=16,
+                run!(JuliaIR.LowerExcHandlersPass(; ports=true, handler_size=264, handler_align=16,
                                                   setjmp="__sigsetjmp"), mod)
                 @test lowered(mod)
                 @test occursin("call i32 @__sigsetjmp(ptr %1)", string(mod))
@@ -995,7 +995,7 @@ end
 
         @testset "lowering" begin
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir()) begin
-                run!(JuliaIR.LowerExcHandlersPass(; handler_size=200, handler_align=16,
+                run!(JuliaIR.LowerExcHandlersPass(; ports=true, handler_size=200, handler_align=16,
                                                   setjmp="sigsetjmp"), mod)
                 @test lowered(mod)
                 @test occursin("alloca i8, i32 200, align 16", string(mod))
@@ -1023,7 +1023,7 @@ end
 
 
 @testset "LowerPTLS" begin
-    @test JuliaIR.LowerPTLSPass().required
+    @test JuliaIR.LowerPTLSPass(; ports=true).def.required
     ir(body; triple="x86_64-unknown-linux-gnu") = """
         $(isempty(triple) ? "" : "target triple = \"$triple\"")
         declare ptr @julia.get_pgcstack()
@@ -1064,8 +1064,8 @@ end
         @test opts.extra.tls_offset === nothing
         @test_throws ArgumentError("option pgcstack-getter requires an address (a non-negative integer)") JuliaIR.parse_options("pgcstack-getter=-1";
                                                                  options=JuliaIR.LOWER_PTLS.options)
-        @test JuliaIR.LowerPTLSPass(; imaging=true, tls_offset=-8,
-                                    pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).required
+        @test JuliaIR.LowerPTLSPass(; ports=true, imaging=true, tls_offset=-8,
+                                    pgcstack_getter=Ptr{Cvoid}(UInt(0x1000))).def.required
         if dialect.ptls_jit_getter === :resolved
             _, out = lower(ir(get_ir), "tls-getters;tls-offset=-8;tls-elf-support=yes")
             @test occursin("call ptr @jl_get_pgcstack_resolved()", out)
@@ -1219,7 +1219,7 @@ end
 end
 
 @testset "ExpandAtomicModify" begin
-    @test !JuliaIR.ExpandAtomicModifyPass().required
+    @test !JuliaIR.ExpandAtomicModifyPass(; ports=true).def.required
     decls = """
         declare {i64, i64} @julia.atomicmodify.i64(ptr, ptr, i8, i8, ...)
         declare {double, double} @julia.atomicmodify.f64(ptr, ptr, i8, i8, ...)
@@ -1243,7 +1243,7 @@ end
     function expand(body)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, decls * body) begin
             err = try
-                run!(JuliaIR.ExpandAtomicModifyPass(), mod)
+                run!(JuliaIR.ExpandAtomicModifyPass(; ports=true), mod)
                 nothing
             catch err
                 err
@@ -1310,7 +1310,7 @@ end
                   %old = extractvalue {i64, i64} %r, 0
                   ret i64 %old
                 }""") begin
-                run!(JuliaIR.ExpandAtomicModifyPass(), mod)
+                run!(JuliaIR.ExpandAtomicModifyPass(; ports=true), mod)
                 @test occursin("""atomicrmw add ptr %p, i64 %v syncscope("scope128") seq_cst""",
                                string(mod))
             end
@@ -1341,7 +1341,7 @@ end
 end
 
 @testset "CancellationLowering" begin
-    @test JuliaIR.CancellationLoweringPass().required
+    @test JuliaIR.CancellationLoweringPass(; ports=true).def.required
     ir = """
         declare i32 @julia.cancellation_point()
         declare ptr @julia.get_pgcstack()
@@ -1416,7 +1416,7 @@ end
         # LateLowerGCFrame took the object that `GC.@preserve` keeps alive across the call
         # after the point for dead, without a GC frame to root it.
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) pb=PassBuilder() begin
-            JuliaIR.register!(pb)
+            JuliaIR.register!(pb; ports=true)
             add!(pb, "function(require<domtree>,jl-cancellation-lowering,jl-late-lower-gc-frame)")
             run!(pb, mod)
             str = string(mod.functions["preserve"])
@@ -1427,9 +1427,9 @@ end
 end
 
 @testset "RemoveAddrspaces" begin
-    @test JuliaIR.RemoveJuliaAddrspacesPass().required
-    @test JuliaIR.RemoveAddrspacesPass().required
-    @test JuliaIR.RemoveAddrspacesPass(identity).required
+    @test JuliaIR.RemoveJuliaAddrspacesPass(; ports=true).def.required
+    @test JuliaIR.RemoveAddrspacesPass(; ports=true).def.required
+    @test JuliaIR.RemoveAddrspacesPass(identity; ports=true).def.required
     mapping = JuliaIR.cpp_mapping()
     @test mapping["RemoveJuliaAddrspaces"] == "jl-remove-addrspaces"
     @test mapping["RemoveAddrspaces"] == "jl-remove-all-addrspaces"
@@ -1451,27 +1451,27 @@ end
     end
 
     # Julia's address spaces only
-    str = remove(JuliaIR.RemoveJuliaAddrspacesPass())
+    str = remove(JuliaIR.RemoveJuliaAddrspacesPass(; ports=true))
     @test occursin("@g = global i64 0", str)
     @test occursin("@s = addrspace(3) global i64 0", str)
     @test occursin("define ptr addrspace(3) @f(ptr %p, ptr addrspace(3) %q, ptr addrspace(1) %r)", str)
     @test occursin("%T = type { ptr, ptr addrspace(3) }", str)
 
     # all of them
-    str = remove(JuliaIR.RemoveAddrspacesPass())
+    str = remove(JuliaIR.RemoveAddrspacesPass(; ports=true))
     @test occursin("@s = global i64 0", str)
     @test occursin("define ptr @f(ptr %p, ptr %q, ptr %r)", str)
 
     # a mapping of our own
-    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 3 ? 0 : as))
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 3 ? 0 : as; ports=true))
     @test occursin("@g = addrspace(10) global i64 0", str)
     @test occursin("@s = global i64 0", str)
     @test occursin("define ptr @f(ptr addrspace(10) %p, ptr %q, ptr addrspace(1) %r)", str)
     @test occursin("%T = type { ptr addrspace(10), ptr }", str)
-    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 1 ? 7 : as))
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as == 1 ? 7 : as; ports=true))
     @test occursin("ptr addrspace(7) %r", str)
     # the mapping is applied once, also when it maps to an address space it changes
-    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as))
+    str = remove(JuliaIR.RemoveAddrspacesPass(as -> as in (1, 3) ? as + 2 : as; ports=true))
     @test occursin("define ptr addrspace(5) @f(ptr addrspace(10) %p, ptr addrspace(5) %q, ptr addrspace(3) %r)", str)
 
     # From Julia 1.15 on, the blocks and instructions of a function keep the order of their
@@ -1507,7 +1507,7 @@ end
         f = mod.functions["f"]
         br = LLVM.terminator(collect(f.blocks)[3])
         LLVM.operands(br)[1] = collect(f.blocks)[2]
-        run!(JuliaIR.RemoveAddrspacesPass(as -> as == 10 ? 0 : as), mod)
+        run!(JuliaIR.RemoveAddrspacesPass(as -> as == 10 ? 0 : as; ports=true), mod)
         moves = JuliaIR.Dialect(VERSION).remove_addrspaces_moves_bodies
         @test occursin(moves ? "; preds = %b, %a" : "; preds = %a, %b",
                        string(mod.functions["f"]))
@@ -1547,7 +1547,7 @@ end
     # errors of the mapping are rethrown
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         err = try
-            run!(JuliaIR.RemoveAddrspacesPass(as -> error("no mapping for $as")), mod)
+            run!(JuliaIR.RemoveAddrspacesPass(as -> error("no mapping for $as"); ports=true), mod)
             nothing
         catch err
             err
@@ -1557,7 +1557,7 @@ end
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
         err = try
-            run!(JuliaIR.RemoveAddrspacesPass(as -> -1), mod)
+            run!(JuliaIR.RemoveAddrspacesPass(as -> -1; ports=true), mod)
             nothing
         catch err
             err
@@ -1568,7 +1568,7 @@ end
     for bad in (2^24, 1.0, :zero)
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
             err = try
-                run!(JuliaIR.RemoveAddrspacesPass(as -> bad), mod)
+                run!(JuliaIR.RemoveAddrspacesPass(as -> bad; ports=true), mod)
                 nothing
             catch err
                 err
@@ -1585,7 +1585,7 @@ end
         other = LLVM.Module("other")
         GlobalVariable(other, ctx.types["T"], "h")
         f = mod.functions["f"]
-        run!(JuliaIR.RemoveJuliaAddrspacesPass(), mod)
+        run!(JuliaIR.RemoveJuliaAddrspacesPass(; ports=true), mod)
         @test mod.functions["f"] != f
         @test occursin("%T.bad = type { ptr addrspace(10), ptr addrspace(3) }", string(other))
         @test occursin("@h = external global %T.bad", string(other))
@@ -1596,7 +1596,7 @@ end
     # the analyses of deleted functions are removed, so that later passes don't see stale
     # results for a function that reuses the address
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) pb=PassBuilder() begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, "function(instcombine),jl-remove-addrspaces,function(instcombine,simplifycfg,gvn),jl-remove-addrspaces")
         run!(pb, mod)
         @test verify(mod) === nothing
@@ -1604,11 +1604,11 @@ end
 end
 
 @testset "FinalLowerGC" begin
-    @test JuliaIR.FinalLowerGCPass().required
-    @test JuliaIR.FinalLowerGCPass(; kind=:module).type === :module
-    @test JuliaIR.FinalLowerGCPass(; kind=:function).type === :function
-    @test JuliaIR.FinalLowerGCPass().type === (dialect.gc_final_module ? :module : :function)
-    @test_throws ArgumentError JuliaIR.FinalLowerGCPass(; kind=:loop)
+    @test JuliaIR.FinalLowerGCPass(; ports=true).def.required
+    @test JuliaIR.FinalLowerGCPass(; ports=true, kind=:module).def.kind === :module
+    @test JuliaIR.FinalLowerGCPass(; ports=true, kind=:function).def.kind === :function
+    @test JuliaIR.FinalLowerGCPass(; ports=true).def.kind === (dialect.gc_final_module ? :module : :function)
+    @test_throws ArgumentError JuliaIR.FinalLowerGCPass(; ports=true, kind=:loop)
 
     frame_ir = """
         target datalayout = "e-m:e-i64:64-n8:16:32:64-S128-ni:10:11:12:13"
@@ -1637,11 +1637,11 @@ end
 
     # both kinds lower functions the same way, run directly or in a pipeline (where the
     # name is registered at both levels)
-    direct = [lowered(mod -> run!(JuliaIR.FinalLowerGCPass(; kind), mod))
+    direct = [lowered(mod -> run!(JuliaIR.FinalLowerGCPass(; ports=true, kind), mod))
               for kind in (:module, :function)]
     piped = [lowered() do mod
                  @dispose pb=PassBuilder() begin
-                     JuliaIR.register!(pb)
+                     JuliaIR.register!(pb; ports=true)
                      add!(pb, pipeline)
                      run!(pb, mod)
                  end
@@ -1658,7 +1658,7 @@ end
             declare void @ijl_gc_queue_root(ptr)""") begin
         before = string(mod)
         err = try
-            run!(JuliaIR.FinalLowerGCPass(), mod)
+            run!(JuliaIR.FinalLowerGCPass(; ports=true), mod)
             nothing
         catch err
             err
@@ -1681,7 +1681,7 @@ end
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
             before = string(mod)
             err = try
-                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                run!(JuliaIR.FinalLowerGCPass(; ports=true, kind), mod)
                 nothing
             catch err
                 err
@@ -1707,13 +1707,13 @@ end
             }"""
         for kind in (:module, :function)
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("null")) begin
-                run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                run!(JuliaIR.FinalLowerGCPass(; ports=true, kind), mod)
                 @test !occursin("write_barrier(", string(mod.functions["f"]))
             end
             @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, barrier_ir("%c")) begin
                 before = string(mod)
                 err = try
-                    run!(JuliaIR.FinalLowerGCPass(; kind), mod)
+                    run!(JuliaIR.FinalLowerGCPass(; ports=true, kind), mod)
                     nothing
                 catch err
                     err
@@ -1757,7 +1757,7 @@ end
               %v = call ptr addrspace(10) @julia.gc_alloc_bytes(ptr %ptls, i64 $sz$tag)
               ret ptr addrspace(10) %v
             }"""
-        pass = mod -> run!(JuliaIR.FinalLowerGCPass(), mod)
+        pass = mod -> run!(JuliaIR.FinalLowerGCPass(; ports=true), mod)
         offset, osize = JuliaIR.gc_pool_class(dialect, max_szclass)
         small_alloc = JuliaIR.gc_alloc_function_name(dialect, :gc_small_alloc)
         big_alloc = JuliaIR.gc_alloc_function_name(dialect, :gc_big_alloc)
@@ -1770,17 +1770,17 @@ end
 
 @testset "CPUFeatures" begin
     subtarget = dialect.cpu_features_rule === :subtarget
-    @test JuliaIR.CPUFeaturesPass().required
+    @test JuliaIR.CPUFeaturesPass(; ports=true).def.required
 
     # the target can only be given as keyword arguments
-    @test_throws ArgumentError("option target_cpu of pass jl-cpu-features must be a string or `nothing`") JuliaIR.CPUFeaturesPass(; target_cpu=:haswell)
-    @test_throws ArgumentError("option target_machine of pass jl-cpu-features must be an LLVM.TargetMachine or `nothing`") JuliaIR.CPUFeaturesPass(; target_machine="x86")
+    @test_throws ArgumentError("option target_cpu of pass jl-cpu-features must be a string or `nothing`") JuliaIR.CPUFeaturesPass(; ports=true, target_cpu=:haswell)
+    @test_throws ArgumentError("option target_machine of pass jl-cpu-features must be an LLVM.TargetMachine or `nothing`") JuliaIR.CPUFeaturesPass(; ports=true, target_machine="x86")
     @dispose pb=PassBuilder() begin
-        @test_throws "target_cpu of pass jl-cpu-features must be a string" JuliaIR.register!(pb;
+        @test_throws "target_cpu of pass jl-cpu-features must be a string" JuliaIR.register!(pb; ports=true,
             options=Dict("jl-cpu-features" => (; target_cpu=42)))
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=LLVM.Module("m") pb=PassBuilder() begin
-        JuliaIR.register!(pb)
+        JuliaIR.register!(pb; ports=true)
         add!(pb, "jl-cpu-features<target-features=+fma>")
         @test_throws PassException run!(pb, mod)
     end
@@ -1792,7 +1792,7 @@ end
                 declare i1 @julia.cpu.have_fma.f32()
                 declare i1 @julia.cpu.have_fma.f64()
                 $ir""") begin
-            run!(JuliaIR.CPUFeaturesPass(; kwargs...), mod)
+            run!(JuliaIR.CPUFeaturesPass(; ports=true, kwargs...), mod)
             return [parse(Bool, m[1]) for m in eachmatch(r"ret i1 (true|false)", string(mod))]
         end
     end
@@ -1843,7 +1843,7 @@ end
         @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, ir) begin
             before = string(mod)
             err = try
-                run!(JuliaIR.CPUFeaturesPass(), mod)
+                run!(JuliaIR.CPUFeaturesPass(; ports=true), mod)
                 nothing
             catch err
                 err
@@ -1936,7 +1936,7 @@ end
             @dispose tm=LLVM.TargetMachine(target, "x86_64-unknown-linux-gnu";
                                            features="+fma") begin
                 @test fold(plain; target_machine=tm) == [true, true]
-                @test_throws "can't be combined" JuliaIR.CPUFeaturesPass(; target_machine=tm,
+                @test_throws "can't be combined" JuliaIR.CPUFeaturesPass(; ports=true, target_machine=tm,
                                                                           target_cpu="haswell")
             end
         end

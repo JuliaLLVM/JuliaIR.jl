@@ -240,7 +240,7 @@ const LOWER_EXC_HANDLERS =
                 cpp_name="LowerExcHandlers")
 
 """
-    JuliaIR.LowerExcHandlersPass(; handler_size=nothing, handler_align=nothing,
+    JuliaIR.LowerExcHandlersPass(; ports=nothing, handler_size=nothing, handler_align=nothing,
                                  setjmp=nothing, setjmp_savemask=nothing)
 
 Lower Julia's exception handlers (`julia.except_enter` and the matching
@@ -255,5 +255,9 @@ handlers; `handler_size`, `handler_align` and `setjmp` give these facts explicit
 Julia's pass, `setjmp` is called with a `savemask` argument unless the module's triple is
 for Windows; `setjmp_savemask` (`true` or `false`, `setjmp-savemask=yes` or `no` in a
 pipeline) overrides that.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-LowerExcHandlersPass(; kwargs...) = custom_pass(LOWER_EXC_HANDLERS; kwargs...)
+LowerExcHandlersPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(LOWER_EXC_HANDLERS, ports; kwargs...)

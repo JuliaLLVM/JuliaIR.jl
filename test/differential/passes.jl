@@ -72,7 +72,7 @@ function available(pipeline::String)
             mod = LLVM.Module("probe")
             try
                 @dispose pb=PassBuilder() begin
-                    JuliaIR.register!(pb)
+                    JuliaIR.register!(pb; ports=true)
                     add!(pb, pipeline)
                     run!(pb, mod)
                 end
@@ -237,7 +237,7 @@ for level in 0:3
         # both sides run FinalLowerGC's port, so its deviations don't apply
         inherits = filter(!=("FinalLowerGC"), inherits)
     end
-    push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp, port=JuliaIR.pipeline(; level),
+    push!(PASS_SPECS, PassSpec("julia<level=$level>"; cpp, port=JuliaIR.pipeline(; ports=true, level),
                                kind=:module, prepare=Pair{String,Any}["" => host_triple!],
                                cpp_runs=8, aborts=true, inherits))
 end

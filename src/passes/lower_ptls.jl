@@ -477,10 +477,10 @@ const LOWER_PTLS = define_pass("jl-lower-ptls", :module,
                                required=true,
                                options=(; imaging=false, tls_getters=false,
                                       runtime_options(PTLS_RUNTIME_FACTS...)...),
-                               cpp_name="LowerPTLSPass")
+                               cpp_name="LowerPTLSPass", cpp_options=(:imaging,))
 
 """
-    JuliaIR.LowerPTLSPass(; imaging=false, tls_getters=false, facts...)
+    JuliaIR.LowerPTLSPass(; ports=nothing, imaging=false, tls_getters=false, facts...)
 
 Julia's lowering of the GC stack getters (`jl-lower-ptls` in a pipeline, `LowerPTLSPass`
 in Julia's pipelines): calls of `julia.get_pgcstack` and `julia.get_pgcstack_or_new`
@@ -501,5 +501,9 @@ The other keyword arguments give the runtime facts explicitly (see
 `tls_elf_support`, `tls_offset` (-1 for "can't be read from the thread pointer"),
 `pgcstack_getter` and `pgcstack_key`. By default, they are read from the running Julia
 when a module needs them.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-LowerPTLSPass(; kwargs...) = custom_pass(LOWER_PTLS; kwargs...)
+LowerPTLSPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(LOWER_PTLS, ports; kwargs...)

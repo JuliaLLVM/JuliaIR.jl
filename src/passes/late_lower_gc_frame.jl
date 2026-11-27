@@ -2571,7 +2571,7 @@ const LATE_LOWER_GC_FRAME = define_pass("jl-late-lower-gc-frame", :function,
                                         cpp_name="LateLowerGCFrame")
 
 """
-    JuliaIR.LateLowerGCFramePass(; gc_barrier=:stock, task_gcstack=nothing,
+    JuliaIR.LateLowerGCPass(; ports=nothing, gc_barrier=:stock, task_gcstack=nothing,
                                  task_ptls=nothing, tls_safepoint=nothing,
                                  tls_gc_state=nothing)
 
@@ -2585,5 +2585,11 @@ Lowering allocations and GC state transitions needs the layout of the runtime's 
 thread-local state, which is taken from the running Julia (see
 [`JuliaIR.runtime_layout`](@ref)) only for functions that need it. The other keyword
 arguments give these offsets explicitly.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-LateLowerGCFramePass(; kwargs...) = custom_pass(LATE_LOWER_GC_FRAME; kwargs...)
+LateLowerGCPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(LATE_LOWER_GC_FRAME, ports; kwargs...)
+
+@deprecate LateLowerGCFramePass(; kwargs...) LateLowerGCPass(; kwargs...) false

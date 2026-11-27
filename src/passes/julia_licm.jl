@@ -320,7 +320,7 @@ const JULIA_LICM = define_pass("jl-licm", :loop, julia_licm!; required=false,
                                cpp_name="JuliaLICM")
 
 """
-    JuliaIR.JuliaLICMPass(; gc_barrier=:stock)
+    JuliaIR.JuliaLICMPass(; ports=nothing, gc_barrier=:stock)
 
 Hoist Julia's GC operations out of loops (`jl-licm` in a pipeline). This loop pass
 supports `loop(...)` and `loop-mssa(...)` pipelines and updates MemorySSA. It moves the
@@ -332,5 +332,9 @@ write barrier whose slots vary in the loop is hoisted as an object barrier. The
 `gc_barrier` option is the GC's barrier configuration from Julia 1.14 on: no barrier is
 hoisted with snapshot barriers, and no field barrier demoted with field-precise ones. Like
 Julia's C++ pass, it is skipped on `optnone` functions.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-JuliaLICMPass(; kwargs...) = custom_pass(JULIA_LICM; kwargs...)
+JuliaLICMPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(JULIA_LICM, ports; kwargs...)

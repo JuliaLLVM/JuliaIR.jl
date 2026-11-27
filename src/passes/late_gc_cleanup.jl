@@ -160,12 +160,16 @@ const LATE_GC_CLEANUP = define_pass("jl-late-gc-cleanup", :function, late_gc_cle
                                     required=true, cpp_name="")
 
 """
-    JuliaIR.LateGCCleanupPass()
+    JuliaIR.LateGCCleanupPass(; ports=nothing)
 
-[`JuliaIR.LateLowerGCFramePass`](@ref) for functions without a GC frame
+[`JuliaIR.LateLowerGCPass`](@ref) for functions without a GC frame
 (`jl-late-gc-cleanup` in a pipeline), as GPU back-ends emit them: the part of Julia's
 `LateLowerGCFrame` pass that applies to GPU code. See the input contract in the
 documentation; functions that need Julia's runtime or a GC frame make the pass throw a
 [`JuliaIR.UnsupportedInputError`](@ref) before anything is changed.
+
+See [`JuliaIR.Pass`](@ref) for `ports`, which selects this package's port or Julia's
+C++ pass.
 """
-LateGCCleanupPass(; kwargs...) = custom_pass(LATE_GC_CLEANUP; kwargs...)
+LateGCCleanupPass(; ports::Union{Nothing,Bool}=nothing, kwargs...) =
+    make_pass(LATE_GC_CLEANUP, ports; kwargs...)

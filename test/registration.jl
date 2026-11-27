@@ -264,6 +264,16 @@ end
         run!(JuliaIR.custom_pass(facts_def), mod)
         @test computed == ["first", "first"]
         @test seen[3:4] == [("f", 2), ("g", 2)]
+        # also for the same registration, and for each occurrence (without options, they
+        # share the parse of the defaults)
+        empty!(computed); empty!(seen)
+        @dispose pb=PassBuilder() begin
+            LLVM.register!(pb, JuliaIR.custom_pass(facts_def))
+            add!(pb, "function(jl-test-facts,jl-test-facts)")
+            run!(pb, mod)
+            run!(pb, mod)
+        end
+        @test computed == ["first", "first", "first", "first"]
         dispose(mod)
     end
 end
@@ -403,7 +413,7 @@ end
     @test JuliaIR.passes() isa Vector{String}
     @test all(startswith("jl-"), JuliaIR.passes())
     @dispose pb=PassBuilder() begin
-        @test JuliaIR.register!(pb; fp16=:keep) === pb
+        @test JuliaIR.register!(pb; ports=true, fp16=:keep) === pb
         # FinalLowerGC is registered as a module and as a function pass, and the marker
         # passes of Julia's pipeline are registered too
         @test length(pb.custom_passes) ==
@@ -413,15 +423,225 @@ end
     # defaults for the options of a pass
     @dispose pb=PassBuilder() begin
         options = Dict("jl-gc-invariant-verifier" => (; strong=true))
-        @test JuliaIR.register!(pb; options) === pb
+        @test JuliaIR.register!(pb; ports=true, options) === pb
     end
     @dispose pb=PassBuilder() begin
-        @test_throws "must be true or false" JuliaIR.register!(pb;
+        @test_throws "must be true or false" JuliaIR.register!(pb; ports=true,
             options=Dict("jl-gc-invariant-verifier" => (; strong=:yes)))
     end
     @dispose pb=PassBuilder() begin
-        @test_throws "options for unknown pass" JuliaIR.register!(pb;
+        @test_throws "options for unknown pass" JuliaIR.register!(pb; ports=true,
             options=Dict("jl-nonexistent" => (; strong=true)))
+    end
+
+    # without the ports, only the passes that only this package has, and the markers
+    own = count(def -> isempty(def.cpp_name), JuliaIR.PASSES)
+    @test own == 2  # jl-late-gc-cleanup and jl-irce-with-cleanup
+    @dispose pb=PassBuilder() begin
+        JuliaIR.register!(pb; ports=false)
+        @test length(pb.custom_passes) == own + length(JuliaIR.marker_passes())
+        @test_throws "isn't registered without `ports=true`" JuliaIR.register!(pb;
+            ports=false, options=Dict("jl-gc-invariant-verifier" => (; strong=true)))
+    end
+    # by default, the ports are registered for any library but Julia's
+    @dispose pb=PassBuilder() begin
+        JuliaIR.register!(pb)
+        @test any(p -> p.name == "jl-alloc-opt", pb.custom_passes) ==
+              (LLVM.library() !== LLVM.julia_library)
+    end
+    # the registrations are built once, also for other pass builders
+    passes = @dispose pb=PassBuilder() begin
+        JuliaIR.register!(pb; ports=true)
+        copy(pb.custom_passes)
+    end
+    @dispose pb=PassBuilder() begin
+        JuliaIR.register!(pb; ports=true)
+        @test all(splat(===), zip(pb.custom_passes, passes))
+    end
+end
+
+# what the pass constructors return: the pipeline text of a port or of Julia's C++ pass
+@testset "pass constructors" begin
+    julia = LLVM.library() === LLVM.julia_library
+    # by default, Julia's C++ pass on Julia's LLVM, and the port on another library
+    p = JuliaIR.AllocOptPass()
+    @test p isa JuliaIR.Pass
+    @test string(p) == (julia ? "AllocOpt" : "jl-alloc-opt")
+    @test string(JuliaIR.AllocOptPass(; ports=true)) == "jl-alloc-opt"
+    @test string(JuliaIR.AllocOptPass(; ports=false)) == "AllocOpt"
+    @test string(JuliaIR.LateGCCleanupPass()) == "jl-late-gc-cleanup"
+    @test_throws "without a C++ counterpart" JuliaIR.LateGCCleanupPass(; ports=false)
+    @test !JuliaIR.JuliaPipeline(; ports=false).ports
+    @test JuliaIR.JuliaPipeline().ports == !julia
+
+    # options: only those given, written like in a pipeline
+    @test string(JuliaIR.GCInvariantVerifierPass(; ports=true, strong=true)) ==
+          "jl-gc-invariant-verifier<strong>"
+    @test string(JuliaIR.DemoteFloat16Pass(; ports=true, fp16=:keep, jit_features=false)) ==
+          "jl-demote-float16<fp16=keep;no-jit-features>"
+    @test string(JuliaIR.LateLowerGCPass(; ports=true, gc_barrier=:field_precise,
+                                         task_ptls=16)) ==
+          "jl-late-lower-gc-frame<gc-barrier=field-precise;task-ptls=16>"
+    @test string(JuliaIR.LateLowerGCPass(; ports=true, task_ptls=nothing)) ==
+          "jl-late-lower-gc-frame"
+    @test_throws "invalid fp16 policy" JuliaIR.DemoteFloat16Pass(; ports=true, fp16=:maybe)
+    @test_throws "unknown option frobnicate" JuliaIR.AllocOptPass(; ports=true, frobnicate=1)
+    @test_throws "can't be written in a pipeline" JuliaIR.LowerExcHandlersPass(;
+        ports=true, setjmp="a,b")
+    # Julia's C++ passes only take one flag each
+    @test string(JuliaIR.GCInvariantVerifierPass(; ports=false, strong=true)) ==
+          "GCInvariantVerifier<strong>"
+    @test string(JuliaIR.LowerPTLSPass(; ports=false, imaging=false)) ==
+          "LowerPTLSPass<no-imaging>"
+    @test string(JuliaIR.MultiVersioningPass(; ports=false, external=true)) ==
+          "JuliaMultiVersioning<external>"
+    @test_throws "only supported by this package's port" JuliaIR.DemoteFloat16Pass(;
+        ports=false, fp16=:keep)
+    @test_throws "only supported by this package's port" JuliaIR.LowerPTLSPass(;
+        ports=false, tls_getters=true)
+    @test_throws "unknown option frobnicate" JuliaIR.AllocOptPass(; ports=false, frobnicate=1)
+    @test_throws "only supported by this package's port" JuliaIR.RemoveAddrspacesPass(
+        identity; ports=false)
+
+    # the renamed constructors
+    @test_deprecated JuliaIR.LateLowerGCFramePass(; ports=true)
+    @test_deprecated JuliaIR.PropagateAddrspacesPass(; ports=true)
+
+    # options that the text can't carry need a registration of their own
+    tm_pass = JuliaIR.CPUFeaturesPass(; ports=true, target_cpu="haswell")
+    @test string(tm_pass) == "jl-cpu-features"
+    @test_throws "pipeline text can't carry" add!(ModulePassManager(), tm_pass)
+    @test_throws "pipeline text can't carry" add!(ModulePassManager(),
+                                                  JuliaIR.RemoveAddrspacesPass(identity;
+                                                                               ports=true))
+    @dispose pb=PassBuilder() begin
+        LLVM.register!(pb, tm_pass)
+        @test only(pb.custom_passes).name == "jl-cpu-features"
+        add!(pb, string(tm_pass))
+    end
+    # registered on its own, with all the options given to the constructor as defaults
+    @dispose pb=PassBuilder() begin
+        LLVM.register!(pb, JuliaIR.GCInvariantVerifierPass(; ports=true, strong=true))
+        @test only(pb.custom_passes).parse_options("").extra.strong
+    end
+    @test_throws "invalid fp16 policy" JuliaIR.GCInvariantVerifierPass(; ports=true,
+        fp16=Symbol("keep;strong"))
+
+    # passes are nested in pass managers of their kind
+    pm = ModulePassManager()
+    add!(pm, JuliaIR.RemoveNIPass(; ports=true))
+    add!(pm, JuliaIR.GCInvariantVerifierPass(; ports=false))
+    add!(pm, JuliaIR.JuliaLICMPass(; ports=true))
+    @test pm.passes == ["jl-remove-ni", "function(GCInvariantVerifier)",
+                        "function(loop(jl-licm))"]
+    fpm = FunctionPassManager()
+    add!(fpm, JuliaIR.JuliaLICMPass(; ports=true))
+    add!(fpm, JuliaIR.AllocOptPass(; ports=true))
+    @test fpm.passes == ["loop(jl-licm)", "jl-alloc-opt"]
+    @test_throws "Cannot add module pass" add!(fpm, JuliaIR.RemoveNIPass(; ports=true))
+    # which selects the kind of FinalLowerGC's port
+    @dispose ctx=Context(; opaque_pointers=true) begin
+        for kind in (:module, :function)
+            @dispose pb=PassBuilder() mod=parse(LLVM.Module, "define void @f() { ret void }") begin
+                JuliaIR.register!(pb; ports=true)
+                add!(pb, JuliaIR.FinalLowerGCPass(; ports=true, kind))
+                @test pb.passes == [kind === :module ? "jl-final-lower-gc" :
+                                                       "function(jl-final-lower-gc)"]
+                run!(pb, mod)
+            end
+        end
+    end
+
+    # Julia's C++ passes, as far as the running Julia has them, by the constructors and in
+    # Julia's pass builder (only of Julia's own library)
+    constructors = [JuliaIR.RemoveNIPass, JuliaIR.AllocOptPass,
+                    JuliaIR.PropagateJuliaAddrspacesPass, JuliaIR.DemoteFloat16Pass,
+                    JuliaIR.GCInvariantVerifierPass, JuliaIR.LateLowerGCPass,
+                    JuliaIR.FinalLowerGCPass, JuliaIR.CombineMulAddPass,
+                    JuliaIR.LowerExcHandlersPass, JuliaIR.LowerSIMDLoopPass,
+                    JuliaIR.JuliaLICMPass, JuliaIR.ExpandAtomicModifyPass,
+                    JuliaIR.CancellationLoweringPass, JuliaIR.RemoveJuliaAddrspacesPass,
+                    JuliaIR.RemoveAddrspacesPass, JuliaIR.LowerPTLSPass,
+                    JuliaIR.CPUFeaturesPass, JuliaIR.MultiVersioningPass]
+    Context(; library=:julia, opaque_pointers=true) do ctx
+        @dispose mod=parse(LLVM.Module, "define void @f() { ret void }") begin
+            LLVM.library!(LLVM.julia_library) do
+                cpp = Set{String}()
+                for ctor in constructors
+                    pass = try
+                        ctor()
+                    catch err
+                        @test occursin("has no C++", sprint(showerror, err))
+                        continue
+                    end
+                    @test !pass.ports
+                    @test run!(pass, mod) === nothing
+                    push!(cpp, pass.def.cpp_name)
+                end
+                # every pass that ports one of Julia's
+                @test cpp == Set(def.cpp_name for def in JuliaIR.PASSES
+                                 if JuliaIR.cpp_available(def))
+                # which Julia's releases have
+                if isempty(VERSION.prerelease)
+                    @test ("CombineMulAdd" in cpp) == (VERSION < v"1.12")
+                    @test ("LowerExcHandlers" in cpp) == (VERSION < v"1.13")
+                    @test ("ExpandAtomicModify" in cpp) == (VERSION >= v"1.13")
+                    @test ("CancellationLowering" in cpp) == (VERSION >= v"1.15")
+                end
+                for flag in (true, false)
+                    run!(JuliaIR.GCInvariantVerifierPass(; strong=flag), mod)
+                    run!(JuliaIR.LowerPTLSPass(; imaging=flag), mod)
+                    run!(JuliaIR.MultiVersioningPass(; external=flag), mod)
+                end
+                module_pass = JuliaIR.cpp_available(JuliaIR.FINAL_LOWER_GC_MODULE)
+                @test module_pass != JuliaIR.cpp_available(JuliaIR.FINAL_LOWER_GC_FUNCTION)
+                @test JuliaIR.FinalLowerGCPass().def.kind === (module_pass ? :module : :function)
+                @test_throws "has no C++" JuliaIR.FinalLowerGCPass(;
+                    kind=module_pass ? :function : :module)
+            end
+        end
+    end
+end
+
+# running a single pass, at the level of its kind
+@testset "running a pass" begin
+    @dispose ctx=Context(; opaque_pointers=true) begin
+        ir = """
+            define void @f(ptr %p) {
+            entry:
+              br label %loop
+            loop:
+              %i = phi i64 [ 0, %entry ], [ %j, %loop ]
+              %j = add i64 %i, 1
+              %c = icmp eq i64 %j, 10
+              br i1 %c, label %exit, label %loop
+            exit:
+              ret void
+            }"""
+        @dispose mod=parse(LLVM.Module, ir) begin
+            # function and loop passes, on a module and on a function
+            @test run!(JuliaIR.AllocOptPass(; ports=true), mod) === nothing
+            @test run!(JuliaIR.JuliaLICMPass(; ports=true), mod) === nothing
+            f = mod.functions["f"]
+            @test run!(JuliaIR.AllocOptPass(; ports=true), f) === nothing
+            @test run!(JuliaIR.JuliaLICMPass(; ports=true), f) === nothing
+            @test_throws "Cannot run module pass" run!(JuliaIR.RemoveNIPass(; ports=true), f)
+            # with the analyses of an enclosing pass
+            preserved = Ref{Any}()
+            @dispose pb=PassBuilder() begin
+                LLVM.register!(pb, FunctionPass("outer", (f, am) -> begin
+                    preserved[] = run!(JuliaIR.AllocOptPass(; ports=true), f, am)
+                    preserved[]
+                end; analyses=true))
+                add!(pb, "function(outer)")
+                run!(pb, mod)
+            end
+            @test preserved[] isa PreservedAnalyses
+            if LLVM.library() !== LLVM.julia_library
+                @test_throws "requires the LLVM library that Julia uses" run!(
+                    JuliaIR.AllocOptPass(; ports=false), mod)
+            end
+        end
     end
 end
 

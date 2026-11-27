@@ -80,23 +80,12 @@ end
 using .LoweringCorpus: TYPES
 
 # Julia's C++ lowering in the current context, which must be one of Julia's LLVM
-function cpp_lowering(@nospecialize(T); no_boxing::Bool=false)
+function cpp_lowering(@nospecialize(T))
     boxed = Ref{Bool}(false)
-    ref = no_boxing ?
-        ccall(:jl_struct_to_llvm, LLVM.API.LLVMTypeRef,
-              (Any, LLVM.API.LLVMContextRef, Ptr{Bool}), T, context(), boxed) :
-        ccall(:jl_type_to_llvm, LLVM.API.LLVMTypeRef,
-              (Any, LLVM.API.LLVMContextRef, Ptr{Bool}), T, context(), boxed)
+    ref = ccall(:jl_type_to_llvm, LLVM.API.LLVMTypeRef,
+                (Any, LLVM.API.LLVMContextRef, Ptr{Bool}), T, context(), boxed)
     return LLVMType(ref), boxed[]
 end
-
-has_atomic_field(@nospecialize(T)) =
-    T isa DataType && any(i -> Base.isfieldatomic(T, i), 1:fieldcount(T))
-
-# whether Julia's `jl_struct_to_llvm` gives a result for `T` instead of aborting
-cpp_struct_lowers(@nospecialize(T)) =
-    T isa DataType && isconcretetype(T) &&
-    ((JuliaIR.DIALECT.boxes_kinds && JuliaIR.is_kind(T)) || !has_atomic_field(T))
 
 # the data layout of the running Julia's own modules
 host_datalayout() =
@@ -116,22 +105,26 @@ end
     Context(; library=:julia, opaque_pointers=true) do ctx
         for T in TYPES
             ref, boxed = cpp_lowering(T)
-            @test JuliaIR.julia_type(T; allow_boxed=true) == ref
+            @test JuliaIR.llvm_type(T; allow_boxed=true) == ref
             @test JuliaIR.isboxed(T) == boxed
-            if cpp_struct_lowers(T)
-                @test JuliaIR.julia_type(T; allow_boxed=true, no_boxing=true) ==
-                      first(cpp_lowering(T; no_boxing=true))
-            end
+            @test JuliaIR.isghosttype(T) == (ref isa LLVM.VoidType)
+            # the rebuilding of a lowering in another context
+            @test JuliaIR.with_julia_context() do jlctx
+                JuliaIR.import_type(LLVM.julia_library,
+                                    first(JuliaIR.julia_type_to_llvm(T, jlctx)))
+            end == ref
         end
     end
+    # without an active context
+    @test JuliaIR.isboxed(Any) && !JuliaIR.isboxed(Int)
+    @test JuliaIR.isghosttype(Nothing) && !JuliaIR.isghosttype(Int)
 end
 
 @testset "rules" begin
     C = LoweringCorpus
     d = JuliaIR.DIALECT
     @dispose ctx=Context(; opaque_pointers=true) begin
-        lower(T) = string(JuliaIR.julia_type(T; allow_boxed=true))
-        lower_unboxed(T) = string(JuliaIR.julia_type(T; no_boxing=true))
+        lower(T) = string(JuliaIR.llvm_type(T; allow_boxed=true))
         iword = "i$(8sizeof(Int))"
         @test lower(Int) == iword
         @test lower(Bool) == "i8"
@@ -170,82 +163,33 @@ end
         @test startswith(lower(C.UHi), "{ i8, [0 x <32 x i8>], ")
 
         # boxing
-        @test_throws "boxed type" JuliaIR.julia_type(C.Mut)
-        @test lower_unboxed(C.Mut) == "[1 x $iword]"
+        @test_throws "boxed type" JuliaIR.llvm_type(C.Mut)
         @test JuliaIR.isboxed(Any) && !JuliaIR.isboxed(Int) && !JuliaIR.isboxed(C.Uninit)
     end
 end
 
-# where Julia's C++ aborts, the port throws
-@testset "unsupported types" begin
-    C = LoweringCorpus
+@testset "errors" begin
     @dispose ctx=Context(; opaque_pointers=true) begin
-        # an atomic field (C++: `abort()`)
-        @test_throws "atomic field" JuliaIR.julia_type(C.WithAtomic; no_boxing=true)
-        @test JuliaIR.isboxed(C.WithAtomic)
-        # no layout (C++: null dereference)
-        @test_throws "no layout" JuliaIR.julia_type(Integer; no_boxing=true)
-        @test_throws "not a data type" JuliaIR.julia_type(Union{Int,Nothing}; no_boxing=true)
-        @test_throws "not a data type" JuliaIR.julia_type(Vector; no_boxing=true)
-        # no fixed layout (C++: `abort()`)
-        @test_throws "no fixed layout" JuliaIR.julia_struct_type(Base.unwrap_unionall(Some))
-        # an address space that is no integer (C++: an error too)
-        @test_throws "invalid pointer address space" JuliaIR.julia_type(Core.LLVMPtr{Int8,:x})
+        @test_throws "invalid pointer address space" JuliaIR.llvm_type(Core.LLVMPtr{Int8,:x})
+        @test_throws "boxed type" JuliaIR.llvm_type(Any)
     end
+    @test_throws "No LLVM context is active" JuliaIR.llvm_type(Int)
 
-    # typed pointers are rejected
+    # in a context with typed pointers, pointers can only be rebuilt from typed ones
     if LLVM.version() < v"17"
         @dispose ctx=Context(; opaque_pointers=false) begin
-            @test_throws "opaque pointers" JuliaIR.julia_type(Int)
-            @test_throws "opaque pointers" JuliaIR.isboxed(Int)
-            @test_throws "opaque pointers" JuliaIR.julia_struct_type(Int)
-        end
-    end
-end
-
-# the declarations that `ccall(..., llvmcall, ...)` emits
-llvmcall_expect(x) = ccall("llvm.expect.i1", llvmcall, Bool, (Bool, Bool), x, true)
-llvmcall_overflow(x) = ccall("llvm.sadd.with.overflow.i32", llvmcall, Tuple{Int32,Bool},
-                    (Int32, Int32), x, x)
-llvmcall_ctpop(x) = ccall("llvm.ctpop.v4i1", llvmcall, NTuple{4,VecElement{Bool}},
-                 (NTuple{4,VecElement{Bool}},), x)
-llvmcall_ptrmask(x) = ccall("llvm.ptrmask.p3.i64", llvmcall, Core.LLVMPtr{Int8,3},
-                   (Core.LLVMPtr{Int8,3}, Int64), x, -1)
-llvmcall_rdrand() = ccall("llvm.x86.rdrand.32", llvmcall, LoweringCorpus.Hetero, ())
-
-@testset "llvmcall" begin
-    C = LoweringCorpus
-    @dispose ctx=Context(; opaque_pointers=true) begin
-        lower(T) = JuliaIR.julia_struct_type(T; llvmcall=true, allow_boxed=true)
-        @test string(lower(Bool)) == "i1"
-        @test string(lower(NTuple{4,VecElement{Bool}})) == "<4 x i1>"
-        @test string(lower(C.Hetero)) == "{ i32, i32 }"
-        @test string(lower(Tuple{Int32,Int32})) == "[2 x i32]"
-        @test string(JuliaIR.julia_struct_type(C.Hetero)) == "[2 x i32]"
-    end
-
-    cases = Any[(llvmcall_expect, (Bool,), "llvm.expect.i1", Bool, [Bool, Bool]),
-                (llvmcall_overflow, (Int32,), "llvm.sadd.with.overflow.i32", Tuple{Int32,Bool},
-                 [Int32, Int32]),
-                (llvmcall_ctpop, (NTuple{4,VecElement{Bool}},), "llvm.ctpop.v4i1",
-                 NTuple{4,VecElement{Bool}}, [NTuple{4,VecElement{Bool}}]),
-               ]
-    if Sys.WORD_SIZE == 64
-        # the mask must have the width of the host's pointers
-        push!(cases, (llvmcall_ptrmask, (Core.LLVMPtr{Int8,3},), "llvm.ptrmask.p3.i64",
-                      Core.LLVMPtr{Int8,3}, [Core.LLVMPtr{Int8,3}, Int64]))
-    end
-    if Sys.ARCH === :x86_64
-        push!(cases, (llvmcall_rdrand, (), "llvm.x86.rdrand.32", C.Hetero, []))
-    end
-    @dispose ctx=Context(; opaque_pointers=true) begin
-        for (f, types, name, rt, argtypes) in cases
-            mod = julia_module(f, types)
-            ft = mod.functions[name].function_type
-            @test ft.return_type == JuliaIR.julia_struct_type(rt; llvmcall=true)
-            @test collect(ft.parameters) == [JuliaIR.julia_struct_type(T; llvmcall=true)
-                                     for T in argtypes]
-            dispose(mod)
+            @test string(JuliaIR.llvm_type(Int32)) == "i32"
+            # a box doesn't need to be rebuilt to check its layout
+            dl = LLVM.DataLayout(host_datalayout())
+            @test isempty(JuliaIR.check_layout(Any, dl))
+            if Base.libllvm_version < v"17"
+                @test string(JuliaIR.llvm_type(Core.LLVMPtr{Int8,3})) == "i8 addrspace(3)*"
+                @test string(JuliaIR.llvm_type(Any; allow_boxed=true)) == "{} addrspace(10)*"
+                @test isempty(JuliaIR.check_layout(LoweringCorpus.WithRef, dl))
+            else
+                @test_throws "typed pointers" JuliaIR.llvm_type(Core.LLVMPtr{Int8,3})
+                @test_throws "typed pointers" JuliaIR.check_layout(LoweringCorpus.WithRef, dl)
+            end
         end
     end
 end
@@ -270,7 +214,7 @@ end
             (T isa DataType && isconcretetype(T)) || T isa Union || continue
             # the argument (and for some aggregates, its roots)
             params = sink_parameters(T)
-            lowered = JuliaIR.julia_type(T; allow_boxed=true)
+            lowered = JuliaIR.llvm_type(T; allow_boxed=true)
             if isempty(params)
                 @test JuliaIR.deserves_stack(T)
                 @test lowered isa LLVM.VoidType
@@ -299,10 +243,10 @@ end
     @test !JuliaIR.deserves_argbox(LoweringCorpus.WithRef)
 
     @dispose ctx=Context(; opaque_pointers=true) begin
-        @test JuliaIR.deserves_sret(LoweringCorpus.Pad, JuliaIR.julia_type(LoweringCorpus.Pad))
-        @test !JuliaIR.deserves_sret(Int, JuliaIR.julia_type(Int))
+        @test JuliaIR.deserves_sret(LoweringCorpus.Pad, JuliaIR.llvm_type(LoweringCorpus.Pad))
+        @test !JuliaIR.deserves_sret(Int, JuliaIR.llvm_type(Int))
         V = NTuple{4,VecElement{Float64}}
-        @test !JuliaIR.deserves_sret(V, JuliaIR.julia_type(V))
+        @test !JuliaIR.deserves_sret(V, JuliaIR.llvm_type(V))
     end
 end
 
@@ -389,7 +333,7 @@ end
     end
     @dispose ctx=Context(; opaque_pointers=true) mod=parse(LLVM.Module, bitcode) begin
         for (i, T) in enumerate(TYPES)
-            ty = JuliaIR.julia_type(T; allow_boxed=true)
+            ty = JuliaIR.llvm_type(T; allow_boxed=true)
             if voids[i]
                 @test ty isa LLVM.VoidType
             else

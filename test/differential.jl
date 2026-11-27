@@ -167,7 +167,7 @@ end
         @test length(collect(mod.functions["device_call"].uses)) == 1
         @test isempty(JuliaIR.unsupported_constructs(mod.functions["kernel"],
                                                     JuliaIR.Dialect(VERSION)))
-        run!(JuliaIR.LateGCCleanupPass(), mod)
+        run!(JuliaIR.LateGCCleanupPass(; ports=true), mod)
         @test length(collect(mod.functions["device_call"].uses)) == 1
         @test LLVM.verify(mod) === nothing
     end

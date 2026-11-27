@@ -11,11 +11,13 @@
 [codecov-img]: https://codecov.io/gh/JuliaLLVM/JuliaIR.jl/branch/main/graph/badge.svg
 [codecov-url]: https://codecov.io/gh/JuliaLLVM/JuliaIR.jl
 
-JuliaIR.jl ports Julia's C++ LLVM passes to Julia using
-[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API. The passes operate
-on *Julia's LLVM IR dialect*: GC pointers in address spaces 10 to 13, intrinsics such
-as `julia.gc_alloc_obj`, and Julia-specific metadata and operand bundles. They can run
-on LLVM libraries other than the one Julia bundles.
+JuliaIR.jl provides Julia's LLVM passes, optimization pipeline and IR dialect on any LLVM
+library, not only the one Julia bundles, and lowers Julia types to LLVM types in a context
+of any library. It ports Julia's C++ passes to Julia using
+[LLVM.jl](https://github.com/JuliaLLVM/LLVM.jl)'s custom-pass API, and picks Julia's C++
+pass or the port depending on the library. The passes operate on *Julia's LLVM IR dialect*: GC pointers in
+address spaces 10 to 13, intrinsics such as `julia.gc_alloc_obj`, and Julia-specific
+metadata and operand bundles.
 
 "IR" in the package name refers to that dialect, not to Julia's own SSA IR.
 
